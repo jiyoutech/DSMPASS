@@ -29,3 +29,13 @@ func TestRequiredNamesDoNotFallback(t *testing.T) {
 		t.Fatal("expected unusable group name to fail")
 	}
 }
+
+func TestSanitizeGroupNameKeepsDepartmentPathReadable(t *testing.T) {
+	got, err := SanitizeGroupName("matrix/sup1/sup2/sup5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "matrix_sup1_sup2_sup5" {
+		t.Fatalf("SanitizeGroupName got %q", got)
+	}
+}

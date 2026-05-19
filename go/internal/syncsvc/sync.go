@@ -2,6 +2,7 @@ package syncsvc
 
 import (
 	"context"
+	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
@@ -79,6 +80,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	groups = disambiguateDuplicateGroupNames(groups)
 	for _, group := range groups {
 		providerGroup, err := identityService.EnsureProviderGroup(ctx, group.ProviderSlug, group.Subject, group.ParentSubject, group.Name, group.Path)
 		if err != nil {
@@ -160,6 +162,31 @@ func usersDepartmentMemberships(users []provider.User) map[string][]string {
 			}
 			result[departmentSubject] = append(result[departmentSubject], user.Subject)
 		}
+	}
+	return result
+}
+
+func disambiguateDuplicateGroupNames(groups []provider.Group) []provider.Group {
+	nameCounts := map[string]int{}
+	for _, group := range groups {
+		name := strings.ToLower(strings.TrimSpace(group.Name))
+		if name == "" {
+			continue
+		}
+		nameCounts[name]++
+	}
+	result := make([]provider.Group, len(groups))
+	copy(result, groups)
+	for index, group := range result {
+		name := strings.ToLower(strings.TrimSpace(group.Name))
+		if nameCounts[name] <= 1 {
+			continue
+		}
+		path := strings.TrimSpace(group.Path)
+		if path == "" {
+			continue
+		}
+		result[index].Name = path
 	}
 	return result
 }

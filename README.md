@@ -94,14 +94,14 @@ make test
 ## DSM SPK 打包
 
 ```bash
-DSMPASS_VERSION=0.8.5 make package-spk
+DSMPASS_VERSION=0.8.6 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.5-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.5-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.6-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.6-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 

@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.5 make package-spk
+DSMPASS_VERSION=0.8.6 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.5-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.5-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.6-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.6-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -175,7 +175,14 @@ contact:contact.base:readonly
 - 「部门」：确认飞书部门已经映射为 DSM 部门组。
 - 「成员」：确认部门成员关系已经生成。
 
-如果用户或部门显示「待开通」，点击对应行的「开通」。开通动作会通过 DSM Helper 调用 DSM 本地用户和群组命令。
+部门组名规则：
+
+- 飞书部门名不重名时，DSM 部门组名使用原部门名，例如 `marketing`。
+- 飞书部门名重名时，DSM 部门组名使用完整部门路径并把路径分隔符转成 `_`，例如 `matrix/sup1/sup2/sup5` 会生成 `matrix_sup1_sup2_sup5`。
+
+正常情况下，点击「同步」会自动通过 DSM Helper 创建或更新 DSM 用户、DSM 部门组和成员关系，不需要逐个点击「开通」。
+
+如果用户或部门显示「待开通」，说明这条记录已经从飞书同步到 DSM Pass 数据库，但还没有成功落到 DSM 本地用户或部门组里。常见原因是 Helper 还没有完成提权、上次同步中断、DSM 已存在同名对象产生冲突，或某个空部门需要等有成员关系时再由 DSM 创建。修好问题后可以重新同步；页面里的「开通」按钮只作为单条记录的补偿操作。
 
 如果出现冲突，常见原因是：
 
