@@ -1,5 +1,6 @@
 .DS_Store
 .env
+msg
 data/
 log/
 *.log

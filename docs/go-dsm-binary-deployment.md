@@ -34,7 +34,7 @@ make package-dsm
 如果需要指定版本：
 
 ```bash
-DSMPASS_VERSION=0.8.4 make package-dsm
+DSMPASS_VERSION=0.8.5 make package-dsm
 ```
 
 ## 安装到 DSM

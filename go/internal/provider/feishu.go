@@ -128,48 +128,44 @@ func (f Feishu) ListUsers() ([]User, error) {
 	}
 	usersBySubject := map[string]User{}
 	for _, department := range departments {
-		pageToken := ""
-		for {
-			endpoint := fmt.Sprintf("%s/users/find_by_department?department_id=%s&page_size=%d&department_id_type=open_department_id&user_id_type=open_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.QueryEscape(department.Subject), f.cfg.FeishuDirectoryPageSize)
-			if pageToken != "" {
-				endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		items, err := f.departmentUsers(token, department.Subject)
+		if err != nil {
+			return nil, err
+		}
+		for _, raw := range items {
+			subject := firstString(raw, "user_id", "open_id", "union_id")
+			if subject == "" {
+				continue
 			}
-			var out map[string]any
-			if err := f.getJSON(endpoint, token, &out); err != nil {
-				return nil, err
-			}
-			data, _ := out["data"].(map[string]any)
-			items, _ := data["items"].([]any)
-			for _, item := range items {
-				raw, _ := item.(map[string]any)
-				subject := firstString(raw, "user_id", "open_id", "union_id")
-				if subject == "" {
-					continue
-				}
-				displayName := userDisplayName(raw)
-				if displayName == "" {
-					return nil, MissingFeishuFieldError{
-						Resource:       "用户",
-						ResourceID:     subject,
-						Field:          "用户姓名 name/en_name",
-						RequiredScopes: []string{"contact:user.base:readonly"},
-						Advice:         "如果接口本身无权限，还需要开通 contact:contact.base:readonly 或以应用身份读取通讯录权限，并发布版本/管理员审批。",
-					}
-				}
-				usersBySubject[subject] = User{
-					ProviderSlug: f.slug,
-					Subject:      subject,
-					DisplayName:  displayName,
-					Email:        firstString(raw, "email"),
-					Mobile:       firstString(raw, "mobile"),
-					Active:       true,
+			displayName := userDisplayName(raw)
+			if displayName == "" {
+				return nil, MissingFeishuFieldError{
+					Resource:       "用户",
+					ResourceID:     subject,
+					Field:          "用户姓名 name/en_name",
+					RequiredScopes: []string{"contact:user.base:readonly"},
+					Advice:         "如果接口本身无权限，还需要开通 contact:contact.base:readonly 或以应用身份读取通讯录权限，并发布版本/管理员审批。",
 				}
 			}
-			hasMore, _ := data["has_more"].(bool)
-			pageToken, _ = data["page_token"].(string)
-			if !hasMore || pageToken == "" {
-				break
+			departmentSubjects := uniqueStrings(firstStringSlice(raw, "department_ids", "departments"))
+			if len(departmentSubjects) == 0 {
+				departmentSubjects = []string{department.Subject}
 			}
+			existing := usersBySubject[subject]
+			user := User{
+				ProviderSlug: f.slug,
+				Subject:      subject,
+				DisplayName:  displayName,
+				Email:        firstString(raw, "email"),
+				Mobile:       firstString(raw, "mobile"),
+				Active:       true,
+			}
+			if existing.Subject != "" {
+				user.DepartmentSubjects = uniqueStrings(append(existing.DepartmentSubjects, departmentSubjects...))
+			} else {
+				user.DepartmentSubjects = departmentSubjects
+			}
+			usersBySubject[subject] = user
 		}
 	}
 	users := make([]User, 0, len(usersBySubject))
@@ -189,10 +185,14 @@ func (f Feishu) ListGroups() ([]Group, error) {
 		return nil, err
 	}
 	var result []Group
-	queue := roots
+	queue := make([]departmentQueueItem, 0, len(roots))
+	for _, department := range roots {
+		queue = append(queue, departmentQueueItem{raw: department})
+	}
 	for len(queue) > 0 {
-		department := queue[0]
+		item := queue[0]
 		queue = queue[1:]
+		department := item.raw
 		subject := firstString(department, "open_department_id", "department_id")
 		name := departmentName(department, "")
 		parent := firstString(department, "open_parent_department_id", "parent_department_id")
@@ -207,6 +207,12 @@ func (f Feishu) ListGroups() ([]Group, error) {
 					parent = firstString(info, "open_parent_department_id", "parent_department_id")
 				}
 			}
+			if parent == "" {
+				parent = item.parentSubject
+			}
+			if parent == "0" {
+				parent = ""
+			}
 			if name == "" {
 				return nil, MissingFeishuFieldError{
 					Resource:       "部门",
@@ -216,21 +222,30 @@ func (f Feishu) ListGroups() ([]Group, error) {
 					Advice:         "同步部门树还需要 contact:department.organize:readonly；如果接口本身无权限，还需要 contact:contact.base:readonly 或以应用身份读取通讯录权限，并发布版本/管理员审批。",
 				}
 			}
+			path := departmentPath(item.parentPath, name)
 			result = append(result, Group{
 				ProviderSlug:  f.slug,
 				Subject:       subject,
 				ParentSubject: parent,
 				Name:          name,
-				Path:          name,
+				Path:          path,
 			})
 			children, err := f.departmentChildren(token, subject)
 			if err != nil {
 				return nil, err
 			}
-			queue = append(queue, children...)
+			for _, child := range children {
+				queue = append(queue, departmentQueueItem{raw: child, parentSubject: subject, parentPath: path})
+			}
 		}
 	}
 	return result, nil
+}
+
+type departmentQueueItem struct {
+	raw           map[string]any
+	parentSubject string
+	parentPath    string
 }
 
 func (f Feishu) ListGroupMembers(groupSubject string) ([]string, error) {
@@ -238,22 +253,46 @@ func (f Feishu) ListGroupMembers(groupSubject string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s/users/find_by_department?department_id=%s&page_size=%d&department_id_type=open_department_id&user_id_type=open_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.QueryEscape(groupSubject), f.cfg.FeishuDirectoryPageSize)
-	var out map[string]any
-	if err := f.getJSON(endpoint, token, &out); err != nil {
+	items, err := f.departmentUsers(token, groupSubject)
+	if err != nil {
 		return nil, err
 	}
-	data, _ := out["data"].(map[string]any)
-	items, _ := data["items"].([]any)
 	var members []string
-	for _, item := range items {
-		raw, _ := item.(map[string]any)
+	for _, raw := range items {
 		subject := firstString(raw, "user_id", "open_id", "union_id")
 		if subject != "" {
 			members = append(members, subject)
 		}
 	}
 	return members, nil
+}
+
+func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, error) {
+	var result []map[string]any
+	pageToken := ""
+	for {
+		endpoint := fmt.Sprintf("%s/users/find_by_department?department_id=%s&page_size=%d&department_id_type=open_department_id&user_id_type=open_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.QueryEscape(departmentID), f.cfg.FeishuDirectoryPageSize)
+		if pageToken != "" {
+			endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+		var out map[string]any
+		if err := f.getJSON(endpoint, token, &out); err != nil {
+			return nil, err
+		}
+		data, _ := out["data"].(map[string]any)
+		items, _ := data["items"].([]any)
+		for _, item := range items {
+			if raw, ok := item.(map[string]any); ok {
+				result = append(result, raw)
+			}
+		}
+		hasMore, _ := data["has_more"].(bool)
+		pageToken, _ = data["page_token"].(string)
+		if !hasMore || pageToken == "" {
+			break
+		}
+	}
+	return result, nil
 }
 
 func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any, error) {
@@ -415,6 +454,45 @@ func firstString(raw map[string]any, keys ...string) string {
 	return ""
 }
 
+func firstStringSlice(raw map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case []string:
+			return typed
+		case []any:
+			result := make([]string, 0, len(typed))
+			for _, item := range typed {
+				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+					result = append(result, strings.TrimSpace(text))
+				}
+			}
+			return result
+		}
+	}
+	return nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
 func departmentName(raw map[string]any, fallback string) string {
 	if value := firstString(raw, "name"); value != "" {
 		return value
@@ -428,6 +506,18 @@ func departmentName(raw map[string]any, fallback string) string {
 		return "dep_" + shortHash(fallback, 10)
 	}
 	return ""
+}
+
+func departmentPath(parentPath, name string) string {
+	parentPath = strings.Trim(strings.TrimSpace(parentPath), "/")
+	name = strings.Trim(strings.TrimSpace(name), "/")
+	if parentPath == "" {
+		return name
+	}
+	if name == "" {
+		return parentPath
+	}
+	return parentPath + "/" + name
 }
 
 func userDisplayName(raw map[string]any) string {

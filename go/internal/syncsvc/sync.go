@@ -112,14 +112,19 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	membersByGroup := usersDepartmentMemberships(users)
 	for _, group := range groups {
 		dsmGroup, ok := groupMap[group.Subject]
 		if !ok {
 			continue
 		}
-		members, err := directory.ListGroupMembers(group.Subject)
-		if err != nil {
-			return result, err
+		members := membersByGroup[group.Subject]
+		if len(membersByGroup) == 0 {
+			var err error
+			members, err = directory.ListGroupMembers(group.Subject)
+			if err != nil {
+				return result, err
+			}
 		}
 		for _, memberSubject := range members {
 			account, ok := accountMap[memberSubject]
@@ -141,4 +146,20 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		}
 	}
 	return result, nil
+}
+
+func usersDepartmentMemberships(users []provider.User) map[string][]string {
+	result := map[string][]string{}
+	for _, user := range users {
+		if len(user.DepartmentSubjects) == 0 {
+			continue
+		}
+		for _, departmentSubject := range user.DepartmentSubjects {
+			if departmentSubject == "" {
+				continue
+			}
+			result[departmentSubject] = append(result[departmentSubject], user.Subject)
+		}
+	}
+	return result
 }

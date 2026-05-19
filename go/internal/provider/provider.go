@@ -1,12 +1,13 @@
 package provider
 
 type User struct {
-	ProviderSlug string
-	Subject      string
-	DisplayName  string
-	Email        string
-	Mobile       string
-	Active       bool
+	ProviderSlug       string
+	Subject            string
+	DisplayName        string
+	Email              string
+	Mobile             string
+	DepartmentSubjects []string
+	Active             bool
 }
 
 type Group struct {

@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.4 make package-spk
+DSMPASS_VERSION=0.8.5 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.4-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.4-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.5-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.5-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -172,15 +172,15 @@ contact:contact.base:readonly
 同步完成后检查三个页面：
 
 - 「用户」：确认飞书用户已经映射为 DSM 用户。
-- 「群组」：确认飞书部门已经映射为 DSM 群组。
+- 「部门」：确认飞书部门已经映射为 DSM 部门组。
 - 「成员」：确认部门成员关系已经生成。
 
-如果用户或群组显示「待开通」，点击对应行的「开通」。开通动作会通过 DSM Helper 调用 DSM 本地用户和群组命令。
+如果用户或部门显示「待开通」，点击对应行的「开通」。开通动作会通过 DSM Helper 调用 DSM 本地用户和群组命令。
 
 如果出现冲突，常见原因是：
 
 - 飞书姓名清洗后不符合 DSM 用户名规则。
-- DSM 已存在同名用户或群组。
+- DSM 已存在同名用户或部门组。
 - 飞书应用通讯录权限范围不包含该用户或部门。
 
 处理冲突后重新同步。

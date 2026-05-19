@@ -13,8 +13,8 @@ DSM Pass 是一个面向 Synology DSM 的企业身份登录网关。它把外部
 当前支持：
 
 - 飞书 OAuth 登录
-- 飞书通讯录用户、群组、成员同步
-- DSM 用户、群组、成员关系开通
+- 飞书通讯录用户、部门、成员同步
+- DSM 用户、部门映射、成员关系开通
 - 用户级禁止飞书登录
 - 身份源级登录/同步独立开关
 - 身份源级定时同步
@@ -94,14 +94,14 @@ make test
 ## DSM SPK 打包
 
 ```bash
-DSMPASS_VERSION=0.8.4 make package-spk
+DSMPASS_VERSION=0.8.5 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.4-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.4-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.5-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.5-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 

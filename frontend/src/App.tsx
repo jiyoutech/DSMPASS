@@ -128,7 +128,7 @@ const sourceFieldHelp = {
   initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
   loginEnabled: "控制这个身份源是否允许用户通过飞书登录 DSM。关闭后同步功能仍可单独使用。",
-  syncEnabled: "控制是否允许从飞书通讯录同步用户、群组和成员关系到本地映射/DSM。",
+  syncEnabled: "控制是否允许从飞书通讯录同步用户、部门和成员关系到本地映射/DSM。",
   syncInterval: "自动同步间隔。0 表示不自动同步，只能手动点击同步。",
   disableMissingUsers: "同步时如果用户已不在飞书通讯录中，就禁用对应 DSM 用户登录。"
 };
@@ -1137,7 +1137,7 @@ function SourceDetail({
                 }
                 toolbar={
                   <Space wrap className="toolbar-content">
-                    <Input.Search allowClear placeholder="搜索用户、身份 ID、群组" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} />
+                    <Input.Search allowClear placeholder="搜索用户、身份 ID、部门" value={userQuery} onChange={(event) => setUserQuery(event.target.value)} />
                     <Segmented
                       value={userStatusFilter}
                       onChange={(value) => setUserStatusFilter(String(value))}
@@ -1179,7 +1179,7 @@ function SourceDetail({
                             pagination={false}
                             dataSource={record.member_records}
                             columns={[
-                              { title: "DSM 群组", dataIndex: "dsm_groupname", ellipsis: true },
+                              { title: "DSM 部门", dataIndex: "dsm_groupname", ellipsis: true },
                               { title: "关系状态", dataIndex: "provision_status", width: 120, render: statusTag }
                             ]}
                           />
@@ -1189,8 +1189,8 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.app_identity_id} /> },
-                      { title: "群组数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="群组" /> },
-                      { title: "所属群组", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
+                      { title: "部门数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="部门" /> },
+                      { title: "所属部门", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
                       { title: "登录", dataIndex: "allow_login", width: 100, render: (value) => value ? <Tag color="success">允许</Tag> : <Tag color="error">禁止</Tag> },
                       { title: "状态", dataIndex: "provision_status", width: 120, render: statusTag },
                       {
@@ -1215,7 +1215,7 @@ function SourceDetail({
           },
           {
             key: "groups",
-            label: "群组",
+            label: "部门",
             children: (
               <SourceTable
                 error={groups.error}
@@ -1225,7 +1225,7 @@ function SourceDetail({
                 metrics={
                   <MetricStrip
                     items={[
-                      { label: "群组", value: sourceStats.groups },
+                      { label: "部门", value: sourceStats.groups },
                       { label: "成员关系", value: sourceStats.members },
                       { label: "待开通", value: sourceStats.pendingGroups, tone: sourceStats.pendingGroups ? "warning" : "default" },
                       { label: "冲突", value: sourceStats.conflicts, tone: sourceStats.conflicts ? "danger" : "default" }
@@ -1234,7 +1234,7 @@ function SourceDetail({
                 }
                 toolbar={
                   <Space wrap className="toolbar-content">
-                    <Input.Search allowClear placeholder="搜索群组、成员、状态" value={groupQuery} onChange={(event) => setGroupQuery(event.target.value)} />
+                    <Input.Search allowClear placeholder="搜索部门、成员、状态" value={groupQuery} onChange={(event) => setGroupQuery(event.target.value)} />
                     <Segmented
                       value={groupStatusFilter}
                       onChange={(value) => setGroupStatusFilter(String(value))}
@@ -1274,7 +1274,7 @@ function SourceDetail({
                       rowExpandable: (record) => record.members.length > 0
                     }}
                     columns={[
-                      { title: "群组", dataIndex: "dsm_groupname", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_groupname} secondary={record.conflict_reason ?? undefined} /> },
+                      { title: "部门", dataIndex: "dsm_groupname", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_groupname} secondary={record.conflict_reason ?? undefined} /> },
                       { title: "成员数", dataIndex: "members", width: 110, render: (value: string[]) => <RelationCount value={value.length} label="成员" /> },
                       { title: "成员预览", dataIndex: "members", render: (value: string[]) => <EntityList values={value} limit={5} /> },
                       { title: "状态", dataIndex: "provision_status", width: 120, render: statusTag },

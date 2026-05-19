@@ -285,7 +285,13 @@ VALUES (?, ?, ?, 'managed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 func (s *Service) EnsureGroupMember(ctx context.Context, dsmGroupID, dsmAccountID string) (db.GroupMember, error) {
 	existing, err := s.getGroupMember(ctx, dsmGroupID, dsmAccountID)
 	if err == nil {
-		return existing, nil
+		_, err = s.q.DBTX().ExecContext(ctx, `
+UPDATE group_members SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+`, existing.ID)
+		if err != nil {
+			return db.GroupMember{}, err
+		}
+		return s.getGroupMemberByID(ctx, existing.ID)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return db.GroupMember{}, err

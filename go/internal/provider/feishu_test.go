@@ -1,6 +1,10 @@
 package provider
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -110,6 +114,124 @@ func TestDepartmentNameFallbackIsUnique(t *testing.T) {
 	}
 }
 
+func TestListGroupsBuildsDepartmentPathFromTraversal(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 50,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/departments/0/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{{"open_department_id": "matrix", "name": "matrix"}}}}, http.StatusOK
+		case "/departments/matrix/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{{"open_department_id": "sup1", "name": "sup1"}}}}, http.StatusOK
+		case "/departments/sup1/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{{"open_department_id": "sup2", "name": "sup2"}}}}, http.StatusOK
+		case "/departments/sup2/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{{"open_department_id": "sup5", "name": "sup5"}}}}, http.StatusOK
+		case "/departments/sup5/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{}}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	groups, err := feishu.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]string{}
+	for _, group := range groups {
+		paths[group.Subject] = group.Path
+	}
+	if got := paths["sup5"]; got != "matrix/sup1/sup2/sup5" {
+		t.Fatalf("sup5 path got %q", got)
+	}
+}
+
+func TestListGroupMembersReadsAllPages(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 1,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/users/find_by_department":
+			if r.URL.Query().Get("page_token") == "" {
+				return map[string]any{"data": map[string]any{
+					"items":      []map[string]any{{"open_id": "ou_1"}},
+					"has_more":   true,
+					"page_token": "next",
+				}}, http.StatusOK
+			}
+			return map[string]any{"data": map[string]any{
+				"items": []map[string]any{{"open_id": "ou_2"}},
+			}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	members, err := feishu.ListGroupMembers("sup5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(members, ","); got != "ou_1,ou_2" {
+		t.Fatalf("members got %q", got)
+	}
+}
+
+func TestListUsersMergesMultipleDepartmentIDs(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 50,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/departments/0/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{
+				{"open_department_id": "sup2", "name": "sup2"},
+				{"open_department_id": "sup3", "name": "sup3"},
+			}}}, http.StatusOK
+		case "/departments/sup2/children", "/departments/sup3/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{}}}, http.StatusOK
+		case "/users/find_by_department":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{
+				{"open_id": "ou_amk", "name": "amktest", "department_ids": []any{"marketing", "sup2", "sup3"}},
+			}}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	users, err := feishu.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("users length got %d", len(users))
+	}
+	got := strings.Join(users[0].DepartmentSubjects, ",")
+	if got != "marketing,sup2,sup3" {
+		t.Fatalf("DepartmentSubjects got %q", got)
+	}
+}
+
 func TestUserDisplayNameUsesI18NMap(t *testing.T) {
 	raw := map[string]any{
 		"open_id": "ou_123",
@@ -121,4 +243,20 @@ func TestUserDisplayNameUsesI18NMap(t *testing.T) {
 	if got := userDisplayName(raw); got != "张三" {
 		t.Fatalf("userDisplayName got %q", got)
 	}
+}
+
+type fakeTransport func(*http.Request) (any, int)
+
+func (f fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, status := f(r)
+	var buffer bytes.Buffer
+	if err := json.NewEncoder(&buffer).Encode(body); err != nil {
+		return nil, err
+	}
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(&buffer),
+		Header:     make(http.Header),
+		Request:    r,
+	}, nil
 }
