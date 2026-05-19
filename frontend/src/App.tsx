@@ -1252,7 +1252,8 @@ function SourceDetail({
       <Modal
         title={`待处理冲突：${source.display_name}`}
         open={conflictModalOpen}
-        width={1120}
+        width="min(1480px, calc(100vw - 32px))"
+        style={{ top: 24 }}
         okText="关闭"
         cancelButtonProps={{ style: { display: "none" } }}
         onOk={() => setConflictModalOpen(false)}
@@ -1277,7 +1278,7 @@ function SourceDetail({
                 dataSource={conflictGroups}
                 pagination={{ pageSize: 6, hideOnSinglePage: true }}
                 rowClassName="conflict-row"
-                scroll={{ x: 900 }}
+                scroll={{ x: 1180 }}
                 columns={[
                   { title: "飞书部门", width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                   { title: "当前 DSM 部门组名", width: 260, render: (_, record: DSMGroup) => (
@@ -1315,7 +1316,7 @@ function SourceDetail({
                       dataSource={group.items}
                       pagination={false}
                       rowClassName="conflict-row"
-                      scroll={{ x: 1180 }}
+                      scroll={{ x: 1320 }}
                       columns={accountConflictColumns}
                     />
                   </div>
@@ -1335,7 +1336,7 @@ function SourceDetail({
                 dataSource={nonFeishuDuplicateConflictAccounts}
                 pagination={{ pageSize: 6, hideOnSinglePage: true }}
                 rowClassName="conflict-row"
-                scroll={{ x: 1180 }}
+                scroll={{ x: 1320 }}
                 columns={accountConflictColumns}
               />
             </div>

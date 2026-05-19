@@ -26,7 +26,7 @@ SUPPORT_URL=${DSMPASS_SPK_SUPPORT_URL:-"https://github.com/dsm-pass/dsm-pass"}
 export DSMPASS_VERSION="$VERSION"
 "$GO_DIR/scripts/dsm/package-dsm.sh"
 cd "$GO_DIR"
-GOCACHE="${DSMPASS_ICON_GOCACHE:-/private/tmp/dsmpassgocache}" go run scripts/dsm/icon-gen.go -out "$DIST_DIR/icons"
+GOCACHE="${DSMPASS_ICON_GOCACHE:-$GO_DIR/.gocache}" go run scripts/dsm/icon-gen.go -out "$DIST_DIR/icons"
 
 checksum_file() {
   if command -v md5sum >/dev/null 2>&1; then
