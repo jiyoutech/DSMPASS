@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.15 make package-spk
+DSMPASS_VERSION=0.8.16 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.15-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.15-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.16-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.16-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -89,9 +89,10 @@ https://<NAS-IP-or-domain>:25000/
 - `IDP 协议`：用户访问 IDP 入口使用的协议。生产建议 `HTTPS`。
 - `访问 IP / 域名`：用户和飞书回调能访问到的 NAS 域名或 IP，不包含协议和路径，例如 `nas.example.com`。
 - `IDP 入口端口`：建议 `26000`，必须大于 `1024` 且未被占用。
-- `管理端口允许网段`：默认仅允许本机和内网访问；如果需要外网管理，必须明确加入对应公网网段。
-- `认证端口允许网段`：默认允许所有网络访问；只给内网登录时可改成内网网段。
-- 点击「仅内网访问」可以快速填入本机、IPv4 内网和 IPv6 内网网段。保存管理端网段时，系统会确认当前访问 IP 仍在允许范围内，避免误操作后无法进入后台。
+- `管理端口安全组`：默认策略为禁止未匹配来源，并放行本机和内网；如果需要外网管理，必须明确添加对应公网放行规则。
+- `认证端口安全组`：默认策略为放行所有来源；只给内网登录时可改成「默认禁止 + 放行内网」。
+- 安全组规则按顺序匹配，命中 `放行` 就允许，命中 `禁止` 就拒绝，所有规则都没命中时走该端口自己的默认策略。
+- 防火墙只管理 DSMPASS 自己的管理端口和认证端口，两个端口各自独立；被禁止的访问会记录到独立的 `firewall.db`。
 - `IDP 地址`：自动生成，例如 `https://nas.example.com:26000`。
 - `DSM 地址`：自动生成，HTTPS 对应 `https://nas.example.com:5001/`。
 - `DSM Auth API`：自动生成，HTTPS 对应 `https://nas.example.com:5001/webapi/entry.cgi`。

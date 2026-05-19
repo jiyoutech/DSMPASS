@@ -54,6 +54,7 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.GET("/providers/:slug/sync-logs", s.sourceSyncLogs)
 		admin.GET("/audit/logins", s.loginAuditLogs)
 		admin.GET("/audit/admin-operations", s.adminOperationLogs)
+		admin.GET("/firewall/logs", s.firewallLogs)
 		admin.GET("/external-accounts", s.externalAccounts)
 		admin.GET("/identities", s.identities)
 		admin.GET("/provider-groups", s.providerGroups)

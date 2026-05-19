@@ -210,6 +210,17 @@ export interface LoginAuditLog {
   created_at: string;
 }
 
+export interface FirewallAccessLog {
+  id: string;
+  scope: string;
+  decision: string;
+  remote_ip: string | null;
+  method: string;
+  path: string;
+  reason: string | null;
+  created_at: string;
+}
+
 export interface SystemSettings {
   access_host: string;
   access_scheme: "http" | "https";
