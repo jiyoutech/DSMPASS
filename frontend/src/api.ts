@@ -6,7 +6,6 @@ import type {
   DSMGroup,
   GroupMember,
   HelperStatus,
-  FirewallAccessLog,
   LoginAuditLog,
   ProviderUpsert,
   ProviderItem,
@@ -100,6 +99,5 @@ export const api = {
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),
   loginAuditLogs: (provider?: string) => request<{ items: LoginAuditLog[] }>(`/api/admin/audit/logins${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
-  firewallLogs: () => request<{ items: FirewallAccessLog[] }>("/api/admin/firewall/logs"),
   relayJournals: () => request<{ items: unknown[] }>("/api/admin/relay/journals")
 };

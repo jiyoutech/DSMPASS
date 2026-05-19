@@ -308,7 +308,6 @@ function Onboarding({
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
         admin_allowed_cidrs: settings.admin_allowed_cidrs,
-        idp_allowed_cidrs: settings.idp_allowed_cidrs,
         public_base_url: withPreferredPort(settings.public_base_url, idpPort),
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
@@ -352,8 +351,7 @@ function Onboarding({
           initialValues={{
             access_scheme: "https",
             idp_port: defaultIDPPort,
-            admin_allowed_cidrs: "default ban\nallow private",
-            idp_allowed_cidrs: "default allow",
+            admin_allowed_cidrs: "all",
             helper_dsm_login_mode: "browser",
             helper_dsm_browser_login_ttl_seconds: 30,
             helper_dsm_tls_skip_verify: true

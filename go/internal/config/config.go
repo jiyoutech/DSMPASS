@@ -6,8 +6,8 @@ import (
 )
 
 const defaultAccessHost = "127.0.0.1"
-const defaultAdminAllowedCIDRs = "default:ban;allow:private"
-const defaultIDPAllowedCIDRs = "default:allow"
+const defaultAdminAllowedCIDRs = "all"
+const defaultIDPAllowedCIDRs = "all"
 
 type BackendConfig struct {
 	Listen                     string

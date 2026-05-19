@@ -220,8 +220,8 @@ DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt
 DSMPASS_TLS_KEY_FILE=$PKGVAR/data/tls/server.key
 DSMPASS_IDP_TLS_CERT_FILE=$PKGVAR/data/tls/idp.crt
 DSMPASS_IDP_TLS_KEY_FILE=$PKGVAR/data/tls/idp.key
-DSMPASS_ADMIN_ALLOWED_CIDRS='default:ban;allow:private'
-DSMPASS_IDP_ALLOWED_CIDRS='default:allow'
+DSMPASS_ADMIN_ALLOWED_CIDRS=all
+DSMPASS_IDP_ALLOWED_CIDRS=all
 EOF_ENV
   chmod 600 "$ENVFILE"
 else
@@ -241,10 +241,10 @@ else
     printf '%s\n' "DSMPASS_IDP_TLS_KEY_FILE=$PKGVAR/data/tls/idp.key" >> "$ENVFILE"
   fi
   if ! grep -q '^DSMPASS_ADMIN_ALLOWED_CIDRS=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_ADMIN_ALLOWED_CIDRS='default:ban;allow:private'" >> "$ENVFILE"
+    printf '%s\n' 'DSMPASS_ADMIN_ALLOWED_CIDRS=all' >> "$ENVFILE"
   fi
   if ! grep -q '^DSMPASS_IDP_ALLOWED_CIDRS=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_IDP_ALLOWED_CIDRS='default:allow'" >> "$ENVFILE"
+    printf '%s\n' 'DSMPASS_IDP_ALLOWED_CIDRS=all' >> "$ENVFILE"
   fi
 fi
 

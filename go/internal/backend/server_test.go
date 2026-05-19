@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -118,7 +117,7 @@ func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 		DSMRedirectURL:    "https://nas.example.com/",
 		DSMCookieName:     "id",
 		DSMCookieSameSite: "Lax",
-		AdminAllowedCIDRs: "default ban\nallow 10.0.0.0/8",
+		AdminAllowedCIDRs: "10.0.0.0/8",
 	}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
 	if err != nil {
@@ -144,65 +143,6 @@ func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	}
 }
 
-func TestFirewallRulesMatchInOrderWithDefaultPolicy(t *testing.T) {
-	ip := net.ParseIP("10.1.2.3")
-	if allowed, _ := firewallDecision(ip, "default allow\nban 10.0.0.0/8\nallow 10.1.2.3", "allow"); allowed {
-		t.Fatal("expected first matching ban rule to reject")
-	}
-	if allowed, _ := firewallDecision(ip, "default:allow;ban:10.0.0.0/8;allow:10.1.2.3", "allow"); allowed {
-		t.Fatal("expected compact first matching ban rule to reject")
-	}
-	if allowed, _ := firewallDecision(ip, "default ban\nallow 10.1.2.3\nban 10.0.0.0/8", "ban"); !allowed {
-		t.Fatal("expected first matching allow rule to pass")
-	}
-	if allowed, _ := firewallDecision(net.ParseIP("203.0.113.10"), "default allow\nban 10.0.0.0/8", "allow"); !allowed {
-		t.Fatal("expected default allow when no rule matches")
-	}
-	if allowed, _ := firewallDecision(net.ParseIP("203.0.113.10"), "default ban\nallow 10.0.0.0/8", "ban"); allowed {
-		t.Fatal("expected default ban when no rule matches")
-	}
-}
-
-func TestFirewallDenyWritesSeparateLogDatabase(t *testing.T) {
-	dataDir := t.TempDir()
-	cfg := config.BackendConfig{
-		DataDir:           dataDir,
-		RelayMode:         "socket",
-		DSMRedirectURL:    "https://nas.example.com/",
-		DSMCookieName:     "id",
-		DSMCookieSameSite: "Lax",
-		AdminAllowedCIDRs: "default ban\nallow 10.0.0.0/8",
-	}
-	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
-
-	blocked := httptest.NewRecorder()
-	blockedRequest := httptest.NewRequest("GET", "/api/admin/auth/status", nil)
-	blockedRequest.RemoteAddr = "203.0.113.10:12345"
-	router.ServeHTTP(blocked, blockedRequest)
-	if blocked.Code != http.StatusForbidden {
-		t.Fatalf("expected forbidden, got %d body=%s", blocked.Code, blocked.Body.String())
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, "firewall.db")); err != nil {
-		t.Fatalf("expected separate firewall database: %v", err)
-	}
-
-	logs := httptest.NewRecorder()
-	logsRequest := httptest.NewRequest("GET", "/api/admin/firewall/logs", nil)
-	logsRequest.RemoteAddr = "10.1.2.3:12345"
-	router.ServeHTTP(logs, logsRequest)
-	if logs.Code != http.StatusOK {
-		t.Fatalf("expected ok, got %d body=%s", logs.Code, logs.Body.String())
-	}
-	if !strings.Contains(logs.Body.String(), "203.0.113.10") {
-		t.Fatalf("expected denied remote ip in firewall logs, got %s", logs.Body.String())
-	}
-}
-
 func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
@@ -213,7 +153,7 @@ func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
 
 	rejected := httptest.NewRecorder()
-	rejectedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader("{\"admin_allowed_cidrs\":\"default ban\\nallow 10.0.0.0/8\"}"))
+	rejectedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"admin_allowed_cidrs":"10.0.0.0/8"}`))
 	rejectedRequest.Header.Set("Content-Type", "application/json")
 	rejectedRequest.RemoteAddr = "203.0.113.10:12345"
 	router.ServeHTTP(rejected, rejectedRequest)
@@ -222,7 +162,7 @@ func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	}
 
 	accepted := httptest.NewRecorder()
-	acceptedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader("{\"admin_allowed_cidrs\":\"default ban\\nallow 10.0.0.0/8\"}"))
+	acceptedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"admin_allowed_cidrs":"10.0.0.0/8"}`))
 	acceptedRequest.Header.Set("Content-Type", "application/json")
 	acceptedRequest.RemoteAddr = "10.1.2.3:12345"
 	router.ServeHTTP(accepted, acceptedRequest)
@@ -384,6 +324,15 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	launchResponse := httptest.NewRecorder()
 	launchRequest := httptest.NewRequest("GET", "/idp/"+created.Slug+"/launch", nil)
 	launchRequest.Host = "evil.example.com"
+	launchRequest.Header.Set("X-Forwarded-Host", "evil-forwarded.example.com")
+	router.ServeHTTP(launchResponse, launchRequest)
+	if launchResponse.Code != http.StatusForbidden {
+		t.Fatalf("launch through wrong IDP host got %d body=%s", launchResponse.Code, launchResponse.Body.String())
+	}
+
+	launchResponse = httptest.NewRecorder()
+	launchRequest = httptest.NewRequest("GET", "/idp/"+created.Slug+"/launch", nil)
+	launchRequest.Host = "nas.example.com:25000"
 	launchRequest.Header.Set("X-Forwarded-Host", "evil-forwarded.example.com")
 	router.ServeHTTP(launchResponse, launchRequest)
 	if launchResponse.Code != http.StatusOK {

@@ -3,6 +3,7 @@ package backend
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -10,72 +11,70 @@ import (
 )
 
 func (s *Server) adminAccessControl() gin.HandlerFunc {
-	return s.accessControl(func() string { return s.cfg.AdminAllowedCIDRs }, "admin")
+	return s.accessControl(func() string { return s.cfg.AdminAllowedCIDRs })
 }
 
 func (s *Server) idpAccessControl() gin.HandlerFunc {
-	return s.accessControl(func() string { return s.cfg.IDPAllowedCIDRs }, "idp")
+	return func(c *gin.Context) {
+		if !requestMatchesPublicBaseURL(c.Request, s.cfg.PublicBaseURL) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "idp entry address is not allowed"})
+			return
+		}
+		c.Next()
+	}
 }
 
-func (s *Server) accessControl(cidrs func() string, scope string) gin.HandlerFunc {
+func (s *Server) accessControl(cidrs func() string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		remoteIP := requestRemoteIP(c.Request)
-		allowed, reason := firewallDecision(remoteIP, cidrs(), defaultFirewallPolicy(cidrs()))
-		if allowed {
+		if allowedByCIDRs(requestRemoteIP(c.Request), cidrs()) {
 			c.Next()
 			return
 		}
-		s.recordFirewallAccess(c.Request, scope, "deny", reason)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": scope + " access is not allowed from this network"})
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "admin access is not allowed from this network"})
 	}
+}
+
+func requestMatchesPublicBaseURL(r *http.Request, publicBaseURL string) bool {
+	base, err := url.Parse(strings.TrimSpace(publicBaseURL))
+	if err != nil || base.Host == "" {
+		return true
+	}
+	return normalizeHostPort(r.Host) == normalizeHostPort(base.Host)
+}
+
+func normalizeHostPort(value string) string {
+	host := strings.ToLower(strings.TrimSpace(value))
+	if host == "" {
+		return ""
+	}
+	parsedHost, parsedPort, err := net.SplitHostPort(host)
+	if err == nil {
+		parsedHost = strings.Trim(parsedHost, "[]")
+		if parsedPort != "" {
+			return parsedHost + ":" + parsedPort
+		}
+		return parsedHost
+	}
+	return strings.Trim(host, "[]")
 }
 
 func allowedByCIDRs(ip net.IP, raw string) bool {
-	allowed, _ := firewallDecision(ip, raw, defaultFirewallPolicy(raw))
-	return allowed
-}
-
-func firewallDecision(ip net.IP, raw, defaultPolicy string) (bool, string) {
 	if ip == nil {
-		return false, "source ip is invalid"
+		return false
 	}
 	if strings.TrimSpace(raw) == "" {
-		return defaultPolicyAllows(defaultPolicy), "matched default policy"
-	}
-	rules, err := parseFirewallRuleList(raw)
-	if err != nil {
-		return false, "firewall rules are invalid"
-	}
-	if len(rules) == 0 {
-		return defaultPolicyAllows(defaultPolicy), "matched default policy"
-	}
-	for _, rule := range rules {
-		for _, item := range rule.Ranges {
-			if item.Contains(ip) {
-				if rule.Action == "allow" {
-					return true, "matched allow rule"
-				}
-				return false, "matched ban rule"
-			}
-		}
-	}
-	return defaultPolicyAllows(defaultPolicy), "matched default policy"
-}
-
-func defaultFirewallPolicy(raw string) string {
-	if policy, rules := splitFirewallPolicy(raw); strings.TrimSpace(rules) != "" || policy != "" {
-		return policy
-	}
-	return "allow"
-}
-
-func defaultPolicyAllows(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "ban", "deny", "drop", "block", "reject", "禁止", "拒绝":
-		return false
-	default:
 		return true
 	}
+	ranges, err := parseCIDRList(raw)
+	if err != nil {
+		return false
+	}
+	for _, item := range ranges {
+		if item.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestRemoteIP(r *http.Request) net.IP {
@@ -87,109 +86,10 @@ func requestRemoteIP(r *http.Request) net.IP {
 }
 
 func validateCIDRList(raw, name string) error {
-	if _, err := parseFirewallRuleList(raw); err != nil {
-		return badRequest(name + " contains invalid firewall rule")
+	if _, err := parseCIDRList(raw); err != nil {
+		return badRequest(name + " contains invalid CIDR")
 	}
 	return nil
-}
-
-type firewallRule struct {
-	Action string
-	Ranges []*net.IPNet
-}
-
-func parseFirewallRuleList(raw string) ([]firewallRule, error) {
-	_, raw = splitFirewallPolicy(raw)
-	lines := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ';'
-	})
-	rules := make([]firewallRule, 0, len(lines))
-	for _, line := range lines {
-		value := strings.TrimSpace(line)
-		if value == "" {
-			continue
-		}
-		action, sources := parseFirewallRuleLine(value)
-		ranges, err := parseCIDRList(sources)
-		if err != nil {
-			return nil, err
-		}
-		rules = append(rules, firewallRule{Action: action, Ranges: ranges})
-	}
-	if len(rules) == 0 {
-		return rules, nil
-	}
-	return rules, nil
-}
-
-func splitFirewallPolicy(raw string) (string, string) {
-	lines := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ';'
-	})
-	if len(lines) == 0 {
-		return "allow", raw
-	}
-	first := strings.TrimSpace(lines[0])
-	parts := strings.Fields(first)
-	if len(parts) >= 2 && strings.EqualFold(parts[0], "default") {
-		policy := normalizedFirewallAction(parts[1])
-		if policy == "" {
-			policy = "allow"
-		}
-		return policy, strings.Join(lines[1:], "\n")
-	}
-	if strings.HasPrefix(strings.ToLower(first), "default:") || strings.HasPrefix(strings.ToLower(first), "default=") {
-		policy := normalizedFirewallAction(first[len("default:"):])
-		if policy == "" {
-			policy = "allow"
-		}
-		return policy, strings.Join(lines[1:], "\n")
-	}
-	return "allow", raw
-}
-
-func parseFirewallRuleLine(value string) (string, string) {
-	if action, source, ok := parseCompactFirewallRuleLine(value); ok {
-		return action, source
-	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return "allow", value
-	}
-	switch normalizedFirewallAction(fields[0]) {
-	case "allow":
-		return "allow", strings.TrimSpace(strings.TrimPrefix(value, fields[0]))
-	case "ban":
-		return "ban", strings.TrimSpace(strings.TrimPrefix(value, fields[0]))
-	default:
-		return "allow", value
-	}
-}
-
-func parseCompactFirewallRuleLine(value string) (string, string, bool) {
-	for _, sep := range []string{":", "="} {
-		parts := strings.SplitN(value, sep, 2)
-		if len(parts) != 2 {
-			continue
-		}
-		action := normalizedFirewallAction(parts[0])
-		if action == "" {
-			continue
-		}
-		return action, strings.TrimSpace(parts[1]), true
-	}
-	return "", "", false
-}
-
-func normalizedFirewallAction(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "allow", "accept", "permit", "允许", "放行":
-		return "allow"
-	case "ban", "deny", "drop", "block", "reject", "拒绝", "禁止":
-		return "ban"
-	default:
-		return ""
-	}
 }
 
 func parseCIDRList(raw string) ([]*net.IPNet, error) {
