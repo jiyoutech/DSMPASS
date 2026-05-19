@@ -1,0 +1,144 @@
+package syncsvc
+
+import (
+	"context"
+
+	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
+	"github.com/dsmpass/dsmpass/go/internal/provider"
+)
+
+type PlanItem struct {
+	Action          string `json:"action"`
+	ProviderSlug    string `json:"provider_slug"`
+	Subject         string `json:"subject"`
+	DisplayName     string `json:"display_name"`
+	DSMUsername     string `json:"dsm_username"`
+	DSMGroupname    string `json:"dsm_groupname"`
+	ProvisionStatus string `json:"provision_status"`
+}
+
+type Result struct {
+	ProviderSlug string     `json:"provider_slug"`
+	Items        []PlanItem `json:"items"`
+}
+
+type Engine struct {
+	cfg config.BackendConfig
+	q   *db.Queries
+}
+
+func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
+	return &Engine{cfg: cfg, q: q}
+}
+
+func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
+	identityService := identity.NewService(e.cfg, e.q)
+	result := Result{ProviderSlug: directory.Slug()}
+	users, err := directory.ListUsers()
+	if err != nil {
+		return result, err
+	}
+	for _, user := range users {
+		verified := true
+		external, err := identityService.UpsertProfile(ctx, identity.ExternalProfile{
+			ProviderSlug:  user.ProviderSlug,
+			Subject:       user.Subject,
+			SubjectType:   "directory_subject",
+			DisplayName:   user.DisplayName,
+			Email:         user.Email,
+			EmailVerified: &verified,
+			Mobile:        user.Mobile,
+		})
+		if err != nil {
+			return result, err
+		}
+		appIdentity, err := identityService.ResolveOrCreateIdentity(ctx, external)
+		if err != nil {
+			return result, err
+		}
+		account, err := identityService.EnsureDSMAccount(ctx, appIdentity)
+		if err != nil {
+			return result, err
+		}
+		action := "update_external_account"
+		if account.ProvisionStatus == "pending" {
+			action = "ensure_dsm_user"
+		}
+		result.Items = append(result.Items, PlanItem{
+			Action:          action,
+			ProviderSlug:    user.ProviderSlug,
+			Subject:         user.Subject,
+			DisplayName:     user.DisplayName,
+			DSMUsername:     account.DSMUsername,
+			ProvisionStatus: account.ProvisionStatus,
+		})
+	}
+	groups, err := directory.ListGroups()
+	if err != nil {
+		return result, err
+	}
+	for _, group := range groups {
+		providerGroup, err := identityService.EnsureProviderGroup(ctx, group.ProviderSlug, group.Subject, group.ParentSubject, group.Name, group.Path)
+		if err != nil {
+			return result, err
+		}
+		dsmGroup, err := identityService.EnsureDSMGroup(ctx, providerGroup)
+		if err != nil {
+			return result, err
+		}
+		if err := identityService.EnsureGroupLink(ctx, providerGroup.ID, dsmGroup.ID); err != nil {
+			return result, err
+		}
+		action := "update_provider_group"
+		if dsmGroup.ProvisionStatus == "pending" {
+			action = "ensure_dsm_group"
+		}
+		result.Items = append(result.Items, PlanItem{
+			Action:          action,
+			ProviderSlug:    group.ProviderSlug,
+			Subject:         group.Subject,
+			DisplayName:     group.Name,
+			DSMGroupname:    dsmGroup.DSMGroupname,
+			ProvisionStatus: dsmGroup.ProvisionStatus,
+		})
+	}
+	groupMap, err := identityService.ProviderGroupsToDSMGroups(ctx, directory.Slug())
+	if err != nil {
+		return result, err
+	}
+	accountMap, err := identityService.ExternalToDSMAccounts(ctx, directory.Slug())
+	if err != nil {
+		return result, err
+	}
+	for _, group := range groups {
+		dsmGroup, ok := groupMap[group.Subject]
+		if !ok {
+			continue
+		}
+		members, err := directory.ListGroupMembers(group.Subject)
+		if err != nil {
+			return result, err
+		}
+		for _, memberSubject := range members {
+			account, ok := accountMap[memberSubject]
+			if !ok {
+				continue
+			}
+			member, err := identityService.EnsureGroupMember(ctx, dsmGroup.ID, account.ID)
+			if err != nil {
+				return result, err
+			}
+			result.Items = append(result.Items, PlanItem{
+				Action:          "ensure_group_member",
+				ProviderSlug:    group.ProviderSlug,
+				Subject:         group.Subject + ":" + memberSubject,
+				DSMUsername:     account.DSMUsername,
+				DSMGroupname:    dsmGroup.DSMGroupname,
+				ProvisionStatus: member.ProvisionStatus,
+			})
+		}
+	}
+	return result, nil
+}
