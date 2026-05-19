@@ -508,6 +508,40 @@ func TestSettingsWithAccessHostPreservesExplicitDSMURLs(t *testing.T) {
 	}
 }
 
+func TestBrowserDSMLoginModeRequiresSameProtocolAsIDP(t *testing.T) {
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		DSMRedirectURL:    "http://192.0.2.10:5000/",
+		HelperDSMLoginAPI: "http://192.0.2.10:5000/webapi/entry.cgi",
+		DSMLoginMode:      "helper",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"helper_dsm_login_mode":"browser"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "DSM 地址协议必须和 IDP 协议一致") {
+		t.Fatalf("unexpected error body: %s", response.Body.String())
+	}
+}
+
 func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")

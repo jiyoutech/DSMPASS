@@ -12,6 +12,9 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 	if _, ok := update["access_scheme"]; !ok {
 		adminScheme = s.configuredAccessScheme()
 	}
+	if err := s.validateBrowserDSMProtocol(update, adminScheme); err != nil {
+		return err
+	}
 	if value, ok := update["access_scheme"]; ok {
 		rawScheme := strings.ToLower(strings.TrimSpace(asRuntimeString(value)))
 		if rawScheme != "http" && rawScheme != "https" {
@@ -120,6 +123,55 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 		}
 	}
 	return nil
+}
+
+func (s *Server) validateBrowserDSMProtocol(update map[string]any, accessScheme string) error {
+	mode := s.cfg.DSMLoginMode
+	if value, ok := update["helper_dsm_login_mode"]; ok {
+		mode = strings.ToLower(strings.TrimSpace(asRuntimeString(value)))
+	}
+	if mode != "browser" {
+		return nil
+	}
+
+	host := s.cfg.AccessHost
+	if value, ok := update["access_host"]; ok {
+		if normalized := normalizeAccessHost(asRuntimeString(value)); normalized != "" {
+			host = normalized
+		}
+	}
+
+	dsmRedirectURL := strings.TrimSpace(s.cfg.DSMRedirectURL)
+	if value, ok := update["dsm_redirect_url"]; ok {
+		dsmRedirectURL = strings.TrimSpace(asRuntimeString(value))
+	} else if _, changedHost := update["access_host"]; changedHost || hasRuntimeUpdate(update, "access_scheme") {
+		dsmRedirectURL = normalizeDSMDefaultPortForScheme(dsmRedirectURL, accessScheme, host, false)
+	}
+	if dsmRedirectURL == "" {
+		dsmRedirectURL = dsmRedirectURLForHostScheme(host, accessScheme)
+	}
+	if scheme := publicBaseURLScheme(dsmRedirectURL); scheme != "" && scheme != accessScheme {
+		return badRequest("浏览器直登模式下，DSM 地址协议必须和 IDP 协议一致")
+	}
+
+	dsmLoginAPI := strings.TrimSpace(s.cfg.HelperDSMLoginAPI)
+	if value, ok := update["helper_dsm_login_api"]; ok {
+		dsmLoginAPI = strings.TrimSpace(asRuntimeString(value))
+	} else if _, changedHost := update["access_host"]; changedHost || hasRuntimeUpdate(update, "access_scheme") {
+		dsmLoginAPI = normalizeDSMDefaultPortForScheme(dsmLoginAPI, accessScheme, host, true)
+	}
+	if dsmLoginAPI == "" {
+		dsmLoginAPI = dsmLoginAPIForHostScheme(host, accessScheme)
+	}
+	if scheme := publicBaseURLScheme(dsmLoginAPI); scheme != "" && scheme != accessScheme {
+		return badRequest("浏览器直登模式下，DSM Auth API 协议必须和 IDP 协议一致")
+	}
+	return nil
+}
+
+func hasRuntimeUpdate(update map[string]any, key string) bool {
+	_, ok := update[key]
+	return ok
 }
 
 func (s *Server) updateAccessHostSettings(ctx context.Context, raw any, update map[string]any, adminScheme string, processed map[string]bool) error {

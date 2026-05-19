@@ -18,7 +18,7 @@ const systemFieldHelp = {
   adminAllowedCIDRs: "开启后，管理后台仅允许本机和内网访问。保存时后端会确认当前访问 IP 仍可访问，避免把自己锁在外面。",
   publicBaseURL: "IDP 对外入口地址，由 IDP 协议、访问 IP / 域名和 IDP 入口端口自动生成，不能手动修改协议。",
   dsmRedirectURL: "需要登录的 NAS 的 DSM 访问地址，由 IDP 协议和访问 IP / 域名自动生成。HTTP 使用 5000，HTTPS 使用 5001。",
-  helperDSMLoginMode: "直接连接：前端浏览器用临时密码调用 DSM Auth API，DSM 看到的是用户真实访问 IP。Helper 连接：由 NAS 上的 helper 后台调用 DSM Auth API。",
+  helperDSMLoginMode: "直接连接：前端浏览器用临时密码调用 DSM Auth API，DSM 看到的是用户真实访问 IP；此模式下 DSM 地址协议必须和 IDP 协议一致。Helper 连接：由 NAS 上的 helper 后台调用 DSM Auth API。",
   helperDSMBrowserLoginTTL: "浏览器直登时临时密码保留的秒数，到期后 helper 自动恢复 shadow。",
   helperDSMLoginAPI: "需要登录的 NAS 的 DSM 登录接口地址，由 DSM 地址自动生成。",
   helperDSMTLSSkipVerify: "控制辅助程序访问需要登录的 NAS 时是否跳过 DSM 证书校验。"
@@ -40,6 +40,31 @@ function derivedSystemURLs(host: string, scheme: "http" | "https", idpPort: numb
     dsm_redirect_url: `${scheme}://${accessHost}:${dsmPort}/`,
     helper_dsm_login_api: `${scheme}://${accessHost}:${dsmPort}/webapi/entry.cgi`
   };
+}
+
+function urlScheme(value: unknown) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol.replace(":", "");
+  } catch {
+    return "";
+  }
+}
+
+function browserDSMProtocolMismatch(values: Partial<SystemSettingsUpdate>) {
+  if (values.helper_dsm_login_mode !== "browser") {
+    return "";
+  }
+  const idpScheme = values.access_scheme || "https";
+  const dsmScheme = urlScheme(values.dsm_redirect_url);
+  if (dsmScheme && dsmScheme !== idpScheme) {
+    return "浏览器直登模式下，DSM 地址协议必须和 IDP 协议一致";
+  }
+  const apiScheme = urlScheme(values.helper_dsm_login_api);
+  if (apiScheme && apiScheme !== idpScheme) {
+    return "浏览器直登模式下，DSM Auth API 协议必须和 IDP 协议一致";
+  }
+  return "";
 }
 
 export function SystemSettingsFields({ section = "all" }: { section?: "all" | "base" | "dsm" } = {}) {
@@ -119,6 +144,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
           </div>
           <Tag color="purple">DSM</Tag>
         </div>
+        <ProtocolConsistencyNotice />
         <div className="form-grid">
           <Form.Item name="dsm_redirect_url" label={<HelpLabel label="DSM 地址" help={systemFieldHelp.dsmRedirectURL} />} rules={[{ required: true }]}>
             <Input readOnly />
@@ -176,6 +202,11 @@ export function SystemSettings() {
   }, [data, form]);
 
   async function save(values: SystemSettingsUpdate) {
+    const protocolError = browserDSMProtocolMismatch(values);
+    if (protocolError) {
+      message.error(protocolError);
+      return;
+    }
     setSaving(true);
     try {
       const payload = { ...values };
@@ -349,6 +380,35 @@ function AdminAccessSwitch() {
       </div>
       <Switch checked={intranetOnly} onChange={toggle} checkedChildren="内网" unCheckedChildren="不限" />
     </div>
+  );
+}
+
+function ProtocolConsistencyNotice() {
+  const form = Form.useFormInstance<SystemSettingsUpdate>();
+  const mode = Form.useWatch("helper_dsm_login_mode", form);
+  const accessScheme = Form.useWatch("access_scheme", form);
+  const dsmRedirectURL = Form.useWatch("dsm_redirect_url", form);
+  const helperDSMLoginAPI = Form.useWatch("helper_dsm_login_api", form);
+  const protocolError = browserDSMProtocolMismatch({
+    helper_dsm_login_mode: mode,
+    access_scheme: accessScheme,
+    dsm_redirect_url: dsmRedirectURL,
+    helper_dsm_login_api: helperDSMLoginAPI
+  });
+
+  if (mode !== "browser") {
+    return null;
+  }
+  if (protocolError) {
+    return <Alert type="error" showIcon className="settings-inline-alert" message={protocolError} />;
+  }
+  return (
+    <Alert
+      type="info"
+      showIcon
+      className="settings-inline-alert"
+      message="浏览器直登模式下，DSM 地址和 DSM Auth API 会由浏览器直接访问，协议必须和 IDP 协议一致。"
+    />
   );
 }
 
