@@ -330,39 +330,3 @@ export DSMPASS_HELPER_HMAC_SECRET="$(openssl rand -hex 32)"
 | `DSMPASS_DSM_REDIRECT_URL` | 登录成功后跳转的 DSM 地址 |
 | `DSMPASS_DSM_LOGIN_API` | DSM Auth API 地址 |
 | `DSMPASS_LOGIN_DIAGNOSTICS` | 登录诊断日志开关，生产保持 `false` |
-
-## 扩展身份源
-
-前端不会硬编码身份源类型。新建身份源时，前端从后端接口获取 provider 类型：
-
-```text
-GET /api/admin/provider-types
-```
-
-新增 provider 时，应在后端 provider registry 中声明能力，再补齐登录、目录读取和配置字段。
-
-## 发布检查
-
-发布前至少确认：
-
-1. `make test` 通过。
-2. `make package-spk` 通过。
-3. 没有提交 `.env`、数据库、日志、TLS 私钥、token、SID、临时密码或 shadow 内容。
-4. 生产环境配置了强随机 `DSMPASS_HELPER_HMAC_SECRET`。
-5. 生产环境关闭 `DSMPASS_LOGIN_DIAGNOSTICS`。
-6. 浏览器访问协议、DSM 跳转地址和 Cookie Secure 设置一致。
-7. 在 DSM 测试机上验证首次安装、升级、卸载保留数据、卸载删除数据、IDP 端口切换和协议切换。
-
-## 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [`docs/spk-feishu-setup.md`](docs/spk-feishu-setup.md) | 从 SPK 安装到飞书配置的完整流程 |
-| [`docs/dsm-spk-package.md`](docs/dsm-spk-package.md) | SPK 打包、安装和升级细节 |
-| [`docs/go-dsm-binary-deployment.md`](docs/go-dsm-binary-deployment.md) | Go 二进制部署方式 |
-| [`docs/testing.md`](docs/testing.md) | 测试脚本和测试建议 |
-| [`docs/provider-development.md`](docs/provider-development.md) | 新身份源扩展说明 |
-
-## 许可证
-
-MIT。见 [`LICENSE`](LICENSE)。
