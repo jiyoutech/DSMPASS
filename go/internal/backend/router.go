@@ -40,7 +40,6 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.POST("/settings/discover", s.discoverSettings)
 		admin.POST("/settings/certificates/:scope", s.uploadCertificate)
 		admin.POST("/idp-route/restart", s.restartIDPRouteHandler)
-		admin.POST("/package/restart", s.restartPackageHandler)
 		admin.GET("/version", s.version)
 		admin.GET("/helper/status", s.helperStatus)
 		admin.POST("/helper/restart", s.restartHelper)
@@ -69,8 +68,6 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.GET("/group-members", s.groupMembers)
 		admin.POST("/group-members/:id/provision", s.provisionGroupMember)
 		admin.GET("/security/check", s.securityCheck)
-		admin.GET("/relay/journals", s.relayJournals)
-		admin.POST("/relay/recover", s.relayRecover)
 
 		sync := router.Group("/api/sync/:provider", adminNetwork, s.adminAuth())
 		sync.POST("/apply", s.syncApply)

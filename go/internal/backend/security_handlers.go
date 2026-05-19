@@ -51,14 +51,6 @@ WHERE enabled = 1 AND login_enabled = 1`)
 	return rows.Err() == nil
 }
 
-func (s *Server) relayJournals(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": []gin.H{}})
-}
-
-func (s *Server) relayRecover(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"success": true, "recovered": 0})
-}
-
 func (s *Server) adminOperationLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": []gin.H{}})
 }

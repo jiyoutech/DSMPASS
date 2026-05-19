@@ -1,4 +1,4 @@
-import { PoweroffOutlined, ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
+import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Tag, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState } from "react";
@@ -149,13 +149,12 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
 export function SystemSettings() {
   const [form] = Form.useForm<SystemSettingsUpdate>();
   const [passwordForm] = Form.useForm<AdminPasswordChange>();
-  const { message, modal } = AntApp.useApp();
+  const { message } = AntApp.useApp();
   const { data, loading, error, reload } = useAsyncData(() => api.systemSettings(), []);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("base");
   const [uploadingCert, setUploadingCert] = useState<"idp" | null>(null);
   const [restartingIDP, setRestartingIDP] = useState(false);
-  const [restartingPackage, setRestartingPackage] = useState(false);
   const [idpCertFiles, setIDPCertFiles] = useState<UploadFile[]>([]);
   const [idpKeyFiles, setIDPKeyFiles] = useState<UploadFile[]>([]);
 
@@ -249,30 +248,6 @@ export function SystemSettings() {
     }
   }
 
-  function confirmPackageRestart() {
-    modal.confirm({
-      title: "重启管理端",
-      content: "会重启 DSM Pass 套件进程，当前管理后台连接会短暂断开。管理端口未变化时，稍后刷新当前页面即可；如果端口已在套件侧修改，请改用新端口访问。",
-      okText: "重启",
-      cancelText: "取消",
-      okButtonProps: { danger: true },
-      onOk: () => restartPackage()
-    });
-  }
-
-  async function restartPackage() {
-    setRestartingPackage(true);
-    try {
-      await api.restartPackage();
-      message.success("已发起管理端重启，页面会短暂断开");
-      window.setTimeout(() => window.location.reload(), 5000);
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : "管理端重启失败");
-    } finally {
-      setRestartingPackage(false);
-    }
-  }
-
   return (
     <Space direction="vertical" size={16} className="page settings-page">
       <PageTitle title="系统设置" extra={<Button icon={<ReloadOutlined />} onClick={() => void reload()}>刷新</Button>} />
@@ -324,7 +299,6 @@ export function SystemSettings() {
               <Flex justify="end" gap={8} wrap>
                 <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate()}>上传认证端证书</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
-                <Button danger icon={<PoweroffOutlined />} loading={restartingPackage} onClick={confirmPackageRestart}>重启管理端</Button>
               </Flex>
             </Card>
           )}
