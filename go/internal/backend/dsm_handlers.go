@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/dsmpass/dsmpass/go/internal/identity"
 )
 
 func (s *Server) dsmAccounts(c *gin.Context) {
@@ -24,8 +26,13 @@ func (s *Server) dsmAccounts(c *gin.Context) {
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT a.id,
        COALESCE((SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1), '') AS provider_slug,
-       a.app_identity_id, a.dsm_username, a.provision_status, a.allow_login
+       a.app_identity_id, a.dsm_username,
+       COALESCE(i.display_name, '') AS display_name,
+       COALESCE(i.primary_email, '') AS primary_email,
+       COALESCE((SELECT GROUP_CONCAT(e.subject, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id), '') AS external_subjects,
+       a.provision_status, a.conflict_reason, a.allow_login
 FROM dsm_accounts a
+JOIN app_identities i ON i.id = a.app_identity_id
 `+where+`
 ORDER BY a.created_at`, args...)
 	writeItems(c, rows, err)
@@ -96,10 +103,67 @@ func (s *Server) dsmAccountRows(ctx context.Context, ids []string) ([]map[string
 	return queryJSON(ctx, s.store, `
 SELECT a.id,
        COALESCE((SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1), '') AS provider_slug,
-       a.app_identity_id, a.dsm_username, a.provision_status, a.allow_login
+       a.app_identity_id, a.dsm_username,
+       COALESCE(i.display_name, '') AS display_name,
+       COALESCE(i.primary_email, '') AS primary_email,
+       COALESCE((SELECT GROUP_CONCAT(e.subject, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id), '') AS external_subjects,
+       a.provision_status, a.conflict_reason, a.allow_login
 FROM dsm_accounts a
+JOIN app_identities i ON i.id = a.app_identity_id
 WHERE a.id IN (`+placeholders(len(ids))+`)
 ORDER BY a.created_at`, anySlice(ids)...)
+}
+
+func (s *Server) setDSMAccountUsername(c *gin.Context) {
+	var payload struct {
+		DSMUsername string `json:"dsm_username"`
+	}
+	if err := c.BindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid json"})
+		return
+	}
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "missing id"})
+		return
+	}
+	username, err := identity.GenerateRequiredSequentialReadableUsername(payload.DSMUsername, "_", 1, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	if username != strings.TrimSpace(payload.DSMUsername) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 用户名包含不支持的字符，请直接填写最终 DSM 用户名"})
+		return
+	}
+	var existingID string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_accounts WHERE dsm_username_norm = ? AND id <> ?`, identity.Normalize(username), id).Scan(&existingID)
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 用户名已被其他身份占用"})
+		return
+	}
+	if err != nil && err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	result, err := s.store.DBTX().ExecContext(c.Request.Context(), `
+UPDATE dsm_accounts
+SET dsm_username = ?, dsm_username_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`, username, identity.Normalize(username), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "account not found"})
+		return
+	}
+	rows, err := s.dsmAccountRows(c.Request.Context(), []string{id})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, rows[0])
 }
 
 func boolToInt(value bool) int {
@@ -138,11 +202,81 @@ func (s *Server) dsmGroups(c *gin.Context) {
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT g.id,
        COALESCE((SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_slug,
-       g.dsm_groupname, g.provision_status, g.conflict_reason
+       g.dsm_groupname, g.provision_status, g.conflict_reason,
+       COALESCE((SELECT pg.name FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_name,
+       COALESCE((SELECT pg.path FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_path
 FROM dsm_groups g
 `+where+`
 ORDER BY g.created_at`, args...)
 	writeItems(c, rows, err)
+}
+
+func (s *Server) setDSMGroupName(c *gin.Context) {
+	var payload struct {
+		DSMGroupname string `json:"dsm_groupname"`
+	}
+	if err := c.BindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid json"})
+		return
+	}
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "missing id"})
+		return
+	}
+	groupname, err := identity.SanitizeGroupName(payload.DSMGroupname)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	if groupname != strings.TrimSpace(payload.DSMGroupname) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名包含不支持的字符，请直接填写最终 DSM 部门组名"})
+		return
+	}
+	var existingID string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE dsm_groupname_norm = ? AND id <> ?`, identity.Normalize(groupname), id).Scan(&existingID)
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 部门组名已被其他部门占用"})
+		return
+	}
+	if err != nil && err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	result, err := s.store.DBTX().ExecContext(c.Request.Context(), `
+UPDATE dsm_groups
+SET dsm_groupname = ?, dsm_groupname_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`, groupname, identity.Normalize(groupname), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "group not found"})
+		return
+	}
+	rows, err := s.dsmGroupRows(c.Request.Context(), []string{id})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, rows[0])
+}
+
+func (s *Server) dsmGroupRows(ctx context.Context, ids []string) ([]map[string]any, error) {
+	ids = compactStringIDs(ids)
+	if len(ids) == 0 {
+		return []map[string]any{}, nil
+	}
+	return queryJSON(ctx, s.store, `
+SELECT g.id,
+       COALESCE((SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_slug,
+       g.dsm_groupname, g.provision_status, g.conflict_reason,
+       COALESCE((SELECT pg.name FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_name,
+       COALESCE((SELECT pg.path FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_path
+FROM dsm_groups g
+WHERE g.id IN (`+placeholders(len(ids))+`)
+ORDER BY g.created_at`, anySlice(ids)...)
 }
 
 func (s *Server) groupMembers(c *gin.Context) {
@@ -207,10 +341,10 @@ func (s *Server) provisionDSMAccount(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
-	var id, username, displayName, email string
+	var id, username, displayName, email, status string
 	err := s.store.DBTX().QueryRowContext(c.Request.Context(), `
-SELECT a.id, a.dsm_username, COALESCE(i.display_name, ''), COALESCE(i.primary_email, '')
-FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id = ?`, c.Param("id")).Scan(&id, &username, &displayName, &email)
+SELECT a.id, a.dsm_username, COALESCE(i.display_name, ''), COALESCE(i.primary_email, ''), a.provision_status
+FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id = ?`, c.Param("id")).Scan(&id, &username, &displayName, &email, &status)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "dsm account not found"})
 		return
@@ -219,11 +353,21 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	if _, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(c.Request.Context(), id)); err != nil {
+	if status == "conflict" {
+		c.JSON(http.StatusConflict, gin.H{"detail": "账号存在冲突，请先由管理员修改 DSM 用户名"})
+		return
+	}
+	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(c.Request.Context(), id))
+	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
-	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	if !created && status != "created" {
+		_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = 'DSM 用户名已存在，请管理员确认绑定或修改用户名', allow_login = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 用户名已存在，请管理员确认绑定或修改用户名"})
+		return
+	}
+	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = 'created', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_username": username, "provision_status": "created"})
 }
 

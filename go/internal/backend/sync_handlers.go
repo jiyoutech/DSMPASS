@@ -106,6 +106,20 @@ func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncSta
 	if err := s.ensureRealDSMProvisioning(ctx); err != nil {
 		return operations, err
 	}
+	var groupConflicts int
+	if err := s.store.DBTX().QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM dsm_groups g
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+WHERE p.provider_slug = ? AND p.active = 1 AND g.provision_status = 'conflict'`, sourceSlug).Scan(&groupConflicts); err != nil {
+		return operations, err
+	}
+	if groupConflicts > 0 {
+		err := errors.New("存在飞书部门名冲突，请先由管理员处理部门组名后再同步用户")
+		s.logSyncOperation(ctx, runID, sourceSlug, "group", sourceSlug, "", "resolve_group_conflicts", "blocked", "conflict", "conflict", err.Error())
+		return operations, err
+	}
 	accountRows, err := s.store.DBTX().QueryContext(ctx, `
 SELECT DISTINCT a.id, a.dsm_username, COALESCE(i.display_name, ''), COALESCE(i.primary_email, ''), a.provision_status
 FROM dsm_accounts a
@@ -123,13 +137,18 @@ ORDER BY a.created_at`, sourceSlug)
 			return operations, err
 		}
 		err := error(nil)
-		_, err = s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, s.initialPasswordForSource(ctx, sourceSlug))
+		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, s.initialPasswordForSource(ctx, sourceSlug))
 		if err != nil {
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, err
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'created', allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+		if !created && status != "created" {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = 'DSM 用户名已存在，请管理员确认绑定或修改用户名', allow_login = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "blocked", status, "conflict", "DSM 用户名已存在，请管理员确认绑定或修改用户名")
+			continue
+		}
+		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'created', conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 		s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, "created", "")
 		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_user", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "created"})
 	}

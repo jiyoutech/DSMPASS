@@ -1,8 +1,14 @@
 package syncsvc
 
 import (
+	"context"
+	"database/sql"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
+	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/provider"
 )
 
@@ -25,5 +31,78 @@ func TestDisambiguateDuplicateGroupNamesUsesPathOnlyForDuplicates(t *testing.T) 
 	}
 	if groups[0].Name != "sup5" {
 		t.Fatalf("input groups should not be mutated")
+	}
+}
+
+func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	directory := fakeDirectory{
+		users: []provider.User{
+			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true},
+			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true},
+		},
+	}
+	if _, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 2)
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "pending", 0)
+}
+
+func TestSyncProviderMarksAllDuplicateGroupsConflict(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	directory := fakeDirectory{
+		groups: []provider.Group{
+			{ProviderSlug: "feishu-main", Subject: "g1", Name: "sup5", Path: "matrix/sup1/sup2/sup5"},
+			{ProviderSlug: "feishu-main", Subject: "g2", Name: "sup5", Path: "matrix/sup1/sup3/sup5"},
+		},
+	}
+	if _, err := NewEngine(config.BackendConfig{}, queries).SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	assertProvisionCount(t, ctx, database, "dsm_groups", "conflict", 2)
+	assertProvisionCount(t, ctx, database, "dsm_groups", "pending", 0)
+}
+
+type fakeDirectory struct {
+	users  []provider.User
+	groups []provider.Group
+}
+
+func (f fakeDirectory) Slug() string { return "feishu-main" }
+
+func (f fakeDirectory) ListUsers() ([]provider.User, error) { return f.users, nil }
+
+func (f fakeDirectory) ListGroups() ([]provider.Group, error) { return f.groups, nil }
+
+func (f fakeDirectory) ListGroupMembers(groupSubject string) ([]string, error) { return nil, nil }
+
+func openSyncTestDB(t *testing.T, ctx context.Context) (*sql.DB, *db.Queries) {
+	t.Helper()
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PrepareSchema(ctx, database); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	return database, db.New(database)
+}
+
+func assertProvisionCount(t *testing.T, ctx context.Context, database *sql.DB, table, status string, want int) {
+	t.Helper()
+	var got int
+	if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE provision_status = ?", status).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("%s status %s got %d want %d", table, status, got, want)
 	}
 }

@@ -20,7 +20,11 @@ export interface DSMAccount {
   provider_slug: string;
   app_identity_id: string;
   dsm_username: string;
+  display_name?: string;
+  primary_email?: string;
+  external_subjects?: string;
   provision_status: ProvisionStatus;
+  conflict_reason: string | null;
   allow_login: boolean;
 }
 
@@ -30,6 +34,8 @@ export interface DSMGroup {
   dsm_groupname: string;
   provision_status: ProvisionStatus;
   conflict_reason: string | null;
+  provider_group_name?: string;
+  provider_group_path?: string;
 }
 
 export interface GroupMember {

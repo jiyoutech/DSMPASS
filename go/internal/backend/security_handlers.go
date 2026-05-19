@@ -9,15 +9,17 @@ import (
 )
 
 func (s *Server) securityCheck(c *gin.Context) {
-	var pendingAccounts, pendingGroups, conflictGroups int64
+	var pendingAccounts, pendingGroups, conflictAccounts, conflictGroups int64
 	_ = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM dsm_accounts WHERE provision_status = 'pending'`).Scan(&pendingAccounts)
 	_ = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM dsm_groups WHERE provision_status = 'pending'`).Scan(&pendingGroups)
+	_ = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM dsm_accounts WHERE provision_status = 'conflict'`).Scan(&conflictAccounts)
 	_ = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM dsm_groups WHERE provision_status = 'conflict'`).Scan(&conflictGroups)
 	items := []gin.H{
 		check("source_public_base_url_https", s.identitySourcePublicURLsUseHTTPS(c.Request.Context()), "Enabled identity source public URLs should use HTTPS in production.", false),
 		check("cookie_secure", s.cfg.DSMCookieSecure, "DSM cookie must use Secure in production.", false),
 		check("helper_secret_configured", s.cfg.RelayHelperHMACSecret != "", "Configure DSMPASS_HELPER_HMAC_SECRET.", false),
 		check("pending_provisioning", pendingAccounts+pendingGroups == 0, "Provision pending DSM users and groups.", true),
+		check("account_conflicts", conflictAccounts == 0, "Resolve DSM account name conflicts.", false),
 		check("group_conflicts", conflictGroups == 0, "Resolve DSM group name conflicts.", false),
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})

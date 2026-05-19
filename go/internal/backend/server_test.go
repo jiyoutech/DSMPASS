@@ -781,6 +781,101 @@ func TestClearDSMCookieExpiresExistingBrowserSession(t *testing.T) {
 	}
 }
 
+func TestSetDSMAccountUsernameResolvesConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', '张三', 'a@example.com'), ('identity-b', '张三', 'b@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, conflict_reason, allow_login)
+VALUES
+('account-a', 'identity-a', 'zhangsan_conflict_a', 'zhangsan_conflict_a', 1, 'conflict', '飞书用户姓名重名', 0),
+('account-b', 'identity-b', 'zhangsan', 'zhangsan', 1, 'conflict', '飞书用户姓名重名', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	duplicate := httptest.NewRecorder()
+	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"zhangsan"}`))
+	duplicateRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(duplicate, duplicateRequest)
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate username got %d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"zhangsan_a"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resolve username got %d body=%s", response.Code, response.Body.String())
+	}
+	var managed, allowLogin int
+	var status, conflictReason string
+	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, ''), allow_login FROM dsm_accounts WHERE id = 'account-a'`).Scan(&managed, &status, &conflictReason, &allowLogin); err != nil {
+		t.Fatal(err)
+	}
+	if managed != 0 || status != "pending" || conflictReason != "" || allowLogin != 1 {
+		t.Fatalf("account conflict not resolved: managed=%d status=%s reason=%q allow_login=%d", managed, status, conflictReason, allowLogin)
+	}
+}
+
+func TestSetDSMGroupNameResolvesConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, path)
+VALUES ('provider-group-a', 'feishu-main', 'dep-a', 'dep-a', 'sup5', 'matrix/sup1/sup2/sup5')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status, conflict_reason)
+VALUES
+('group-a', 'matrix_sup1_sup2_sup5', 'matrix_sup1_sup2_sup5', 1, 'conflict', '飞书部门名重名'),
+('group-b', 'sup5', 'sup5', 1, 'conflict', '飞书部门名重名')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO group_links (id, provider_group_id, dsm_group_id) VALUES ('link-a', 'provider-group-a', 'group-a')`); err != nil {
+		t.Fatal(err)
+	}
+	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	duplicate := httptest.NewRecorder()
+	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
+	duplicateRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(duplicate, duplicateRequest)
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate group name got %d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5_a"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resolve group got %d body=%s", response.Code, response.Body.String())
+	}
+	var managed int
+	var status, conflictReason string
+	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-a'`).Scan(&managed, &status, &conflictReason); err != nil {
+		t.Fatal(err)
+	}
+	if managed != 0 || status != "pending" || conflictReason != "" {
+		t.Fatalf("group conflict not resolved: managed=%d status=%s reason=%q", managed, status, conflictReason)
+	}
+}
+
 func assertStatus(t *testing.T, handler http.Handler, method, path string, want int) {
 	t.Helper()
 	response := httptest.NewRecorder()

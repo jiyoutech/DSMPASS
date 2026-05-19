@@ -122,11 +122,33 @@ func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity)
 	if err != nil {
 		return db.DSMAccount{}, err
 	}
+	status := "pending"
+	allowLogin := 1
+	conflictReason := sql.NullString{}
+	if existing, existingErr := s.getDSMAccountByNorm(ctx, Normalize(username)); existingErr == nil && existing.AppIdentityID != identity.ID {
+		status = "conflict"
+		allowLogin = 0
+		conflictReason = sql.NullString{String: fmt.Sprintf("飞书用户姓名生成的 DSM 用户名 %q 已被其他身份占用，请管理员根据飞书信息手动指定 DSM 用户名", username), Valid: true}
+		username = conflictUsername(username, identity.ID)
+	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+		return db.DSMAccount{}, existingErr
+	}
 	id := uuid.NewString()
 	_, err = s.q.DBTX().ExecContext(ctx, `
-INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login, created_at, updated_at)
-VALUES (?, ?, ?, ?, 1, 'pending', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, id, identity.ID, username, Normalize(username))
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, conflict_reason, allow_login, created_at, updated_at)
+VALUES (?, ?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+`, id, identity.ID, username, Normalize(username), status, conflictReason, allowLogin)
+	if err != nil {
+		return db.DSMAccount{}, err
+	}
+	return s.getDSMAccount(ctx, id)
+}
+
+func (s *Service) MarkDSMAccountConflict(ctx context.Context, id, reason string) (db.DSMAccount, error) {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = ?, allow_login = 0, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND managed = 1
+`, reason, id)
 	if err != nil {
 		return db.DSMAccount{}, err
 	}
@@ -274,6 +296,16 @@ VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	return s.getDSMGroup(ctx, id)
 }
 
+func (s *Service) MarkDSMGroupConflict(ctx context.Context, id, reason string) (db.DSMGroup, error) {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+`, reason, id)
+	if err != nil {
+		return db.DSMGroup{}, err
+	}
+	return s.getDSMGroup(ctx, id)
+}
+
 func (s *Service) EnsureGroupLink(ctx context.Context, providerGroupID, dsmGroupID string) error {
 	_, err := s.q.DBTX().ExecContext(ctx, `
 INSERT OR IGNORE INTO group_links (id, provider_group_id, dsm_group_id, link_mode, created_at, updated_at)
@@ -310,7 +342,7 @@ ON CONFLICT(dsm_group_id, dsm_account_id) DO UPDATE SET active = 1, updated_at =
 
 func (s *Service) ExternalToDSMAccounts(ctx context.Context, providerSlug string) (map[string]db.DSMAccount, error) {
 	rows, err := s.q.DBTX().QueryContext(ctx, `
-SELECT e.subject, a.id, a.app_identity_id, a.dsm_username, a.dsm_username_norm, a.managed, a.provision_status, a.allow_login, a.created_at, a.updated_at
+SELECT e.subject, a.id, a.app_identity_id, a.dsm_username, a.dsm_username_norm, a.managed, a.provision_status, a.conflict_reason, a.allow_login, a.created_at, a.updated_at
 FROM external_accounts e
 JOIN dsm_accounts a ON a.app_identity_id = e.app_identity_id
 WHERE e.provider_slug = ?
@@ -323,7 +355,7 @@ WHERE e.provider_slug = ?
 	for rows.Next() {
 		var subject string
 		var account db.DSMAccount
-		if err := rows.Scan(&subject, &account.ID, &account.AppIdentityID, &account.DSMUsername, &account.DSMUsernameNorm, &account.Managed, &account.ProvisionStatus, &account.AllowLogin, &account.CreatedAt, &account.UpdatedAt); err != nil {
+		if err := rows.Scan(&subject, &account.ID, &account.AppIdentityID, &account.DSMUsername, &account.DSMUsernameNorm, &account.Managed, &account.ProvisionStatus, &account.ConflictReason, &account.AllowLogin, &account.CreatedAt, &account.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result[subject] = account
@@ -360,27 +392,35 @@ func (s *Service) allocateUsername(ctx context.Context, identity db.AppIdentity)
 	if identity.DisplayName.Valid {
 		displayName = identity.DisplayName.String
 	}
-	maxSequence := 10000
-	if s.cfg.UsernameReadableSuffixSize > 0 {
-		maxSequence = 1
-		for i := 0; i < s.cfg.UsernameReadableSuffixSize; i++ {
-			maxSequence *= 10
-		}
+	username, err := GenerateRequiredSequentialReadableUsername(displayName, s.cfg.UsernameReadableDelimiter, 1, 32)
+	if err != nil {
+		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认飞书返回真实姓名并且姓名包含 DSM 支持的字符", displayName)
 	}
-	for sequence := 1; sequence <= maxSequence; sequence++ {
-		username, err := GenerateRequiredSequentialReadableUsername(displayName, s.cfg.UsernameReadableDelimiter, sequence, 32)
-		if err != nil {
-			return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认飞书返回真实姓名并且姓名包含 DSM 支持的字符", displayName)
-		}
-		_, err = s.getDSMAccountByNorm(ctx, Normalize(username))
-		if errors.Is(err, sql.ErrNoRows) {
-			return username, nil
-		}
-		if err != nil {
-			return "", err
-		}
+	return username, nil
+}
+
+func conflictUsername(username, identityID string) string {
+	suffixSource := strings.ReplaceAll(identityID, "-", "")
+	if len(suffixSource) > 8 {
+		suffixSource = suffixSource[:8]
 	}
-	return "", fmt.Errorf("failed to allocate DSM username")
+	if suffixSource == "" {
+		suffixSource = "manual"
+	}
+	suffix := "_conflict_" + suffixSource
+	runes := []rune(strings.Trim(username, "._-"))
+	baseLimit := 32 - len([]rune(suffix))
+	if baseLimit < 1 {
+		baseLimit = 1
+	}
+	if len(runes) > baseLimit {
+		runes = runes[:baseLimit]
+	}
+	base := strings.Trim(string(runes), "._-")
+	if base == "" {
+		base = "user"
+	}
+	return base + suffix
 }
 
 func (s *Service) getExternalBySubject(ctx context.Context, providerSlug, subjectNorm string) (db.ExternalAccount, error) {
@@ -401,23 +441,23 @@ func (s *Service) getIdentity(ctx context.Context, id string) (db.AppIdentity, e
 }
 
 func (s *Service) getDSMAccount(ctx context.Context, id string) (db.DSMAccount, error) {
-	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login, created_at, updated_at FROM dsm_accounts WHERE id = ?`, id)
+	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, conflict_reason, allow_login, created_at, updated_at FROM dsm_accounts WHERE id = ?`, id)
 	var item db.DSMAccount
-	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.ConflictReason, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
 }
 
 func (s *Service) getDSMAccountByIdentity(ctx context.Context, identityID string) (db.DSMAccount, error) {
-	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login, created_at, updated_at FROM dsm_accounts WHERE app_identity_id = ?`, identityID)
+	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, conflict_reason, allow_login, created_at, updated_at FROM dsm_accounts WHERE app_identity_id = ?`, identityID)
 	var item db.DSMAccount
-	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.ConflictReason, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
 }
 
 func (s *Service) getDSMAccountByNorm(ctx context.Context, norm string) (db.DSMAccount, error) {
-	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login, created_at, updated_at FROM dsm_accounts WHERE dsm_username_norm = ?`, norm)
+	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, conflict_reason, allow_login, created_at, updated_at FROM dsm_accounts WHERE dsm_username_norm = ?`, norm)
 	var item db.DSMAccount
-	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.AppIdentityID, &item.DSMUsername, &item.DSMUsernameNorm, &item.Managed, &item.ProvisionStatus, &item.ConflictReason, &item.AllowLogin, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
 }
 

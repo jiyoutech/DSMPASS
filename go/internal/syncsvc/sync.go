@@ -41,6 +41,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	duplicateUserNames := duplicateUserNameCounts(users, e.cfg)
 	for _, user := range users {
 		verified := true
 		external, err := identityService.UpsertProfile(ctx, identity.ExternalProfile{
@@ -63,6 +64,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err != nil {
 			return result, err
 		}
+		if duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
+			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, "飞书用户姓名重名，请管理员根据飞书用户信息手动指定 DSM 用户名")
+			if err != nil {
+				return result, err
+			}
+		}
 		action := "update_external_account"
 		if account.ProvisionStatus == "pending" {
 			action = "ensure_dsm_user"
@@ -80,6 +87,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	duplicateGroupSubjects := duplicateGroupSubjects(groups)
 	groups = disambiguateDuplicateGroupNames(groups)
 	for _, group := range groups {
 		providerGroup, err := identityService.EnsureProviderGroup(ctx, group.ProviderSlug, group.Subject, group.ParentSubject, group.Name, group.Path)
@@ -89,6 +97,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		dsmGroup, err := identityService.EnsureDSMGroup(ctx, providerGroup)
 		if err != nil {
 			return result, err
+		}
+		if duplicateGroupSubjects[group.Subject] && dsmGroup.Managed == 1 {
+			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, "飞书部门名重名，请管理员根据飞书部门路径手动指定 DSM 部门组名")
+			if err != nil {
+				return result, err
+			}
 		}
 		if err := identityService.EnsureGroupLink(ctx, providerGroup.ID, dsmGroup.ID); err != nil {
 			return result, err
@@ -166,19 +180,55 @@ func usersDepartmentMemberships(users []provider.User) map[string][]string {
 	return result
 }
 
-func disambiguateDuplicateGroupNames(groups []provider.Group) []provider.Group {
+func duplicateUserNameCounts(users []provider.User, cfg config.BackendConfig) map[string]int {
+	counts := map[string]int{}
+	for _, user := range users {
+		key := userNameKey(user.DisplayName, cfg)
+		if key == "" {
+			continue
+		}
+		counts[key]++
+	}
+	return counts
+}
+
+func userNameKey(displayName string, cfg config.BackendConfig) string {
+	username, err := identity.GenerateRequiredSequentialReadableUsername(displayName, cfg.UsernameReadableDelimiter, 1, 32)
+	if err != nil {
+		return ""
+	}
+	return identity.Normalize(username)
+}
+
+func duplicateGroupNameCounts(groups []provider.Group) map[string]int {
 	nameCounts := map[string]int{}
 	for _, group := range groups {
-		name := strings.ToLower(strings.TrimSpace(group.Name))
+		name := groupNameKey(group.Name)
 		if name == "" {
 			continue
 		}
 		nameCounts[name]++
 	}
+	return nameCounts
+}
+
+func duplicateGroupSubjects(groups []provider.Group) map[string]bool {
+	nameCounts := duplicateGroupNameCounts(groups)
+	result := map[string]bool{}
+	for _, group := range groups {
+		if nameCounts[groupNameKey(group.Name)] > 1 {
+			result[group.Subject] = true
+		}
+	}
+	return result
+}
+
+func disambiguateDuplicateGroupNames(groups []provider.Group) []provider.Group {
+	nameCounts := duplicateGroupNameCounts(groups)
 	result := make([]provider.Group, len(groups))
 	copy(result, groups)
 	for index, group := range result {
-		name := strings.ToLower(strings.TrimSpace(group.Name))
+		name := groupNameKey(group.Name)
 		if nameCounts[name] <= 1 {
 			continue
 		}
@@ -189,4 +239,12 @@ func disambiguateDuplicateGroupNames(groups []provider.Group) []provider.Group {
 		result[index].Name = path
 	}
 	return result
+}
+
+func groupNameKey(name string) string {
+	groupName, err := identity.SanitizeGroupName(name)
+	if err != nil {
+		return ""
+	}
+	return identity.Normalize(groupName)
 }

@@ -59,11 +59,15 @@ export const api = {
   listDSMGroups: (provider?: string) => request<{ items: DSMGroup[] }>(`/api/admin/dsm-groups${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   listGroupMembers: (provider?: string) => request<{ items: GroupMember[] }>(`/api/admin/group-members${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   provisionAccount: (id: string) => request<DSMAccount>(`/api/admin/dsm-accounts/${id}/provision`, { method: "POST" }),
+  setDSMAccountUsername: (id: string, dsm_username: string) =>
+    request<DSMAccount>(`/api/admin/dsm-accounts/${id}/username`, { method: "PUT", body: JSON.stringify({ dsm_username }) }),
   setDSMAccountLogin: (id: string, allow_login: boolean) =>
     request<DSMAccount>(`/api/admin/dsm-accounts/${id}/login`, { method: "PUT", body: JSON.stringify({ allow_login }) }),
   setDSMAccountsLogin: (ids: string[], allow_login: boolean) =>
     request<{ items: DSMAccount[] }>("/api/admin/dsm-accounts/login", { method: "PUT", body: JSON.stringify({ ids, allow_login }) }),
   provisionGroup: (id: string) => request<DSMGroup>(`/api/admin/dsm-groups/${id}/provision`, { method: "POST" }),
+  setDSMGroupName: (id: string, dsm_groupname: string) =>
+    request<DSMGroup>(`/api/admin/dsm-groups/${id}/name`, { method: "PUT", body: JSON.stringify({ dsm_groupname }) }),
   provisionMember: (id: string) =>
     request<{ id: string; provision_status: string }>(`/api/admin/group-members/${id}/provision`, { method: "POST" }),
   listProviders: () => request<{ items: ProviderItem[] }>("/api/admin/providers"),

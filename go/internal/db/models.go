@@ -52,15 +52,16 @@ type AppIdentity struct {
 }
 
 type DSMAccount struct {
-	ID              string `json:"id"`
-	AppIdentityID   string `json:"app_identity_id"`
-	DSMUsername     string `json:"dsm_username"`
-	DSMUsernameNorm string `json:"dsm_username_norm"`
-	Managed         int64  `json:"managed"`
-	ProvisionStatus string `json:"provision_status"`
-	AllowLogin      int64  `json:"allow_login"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ID              string         `json:"id"`
+	AppIdentityID   string         `json:"app_identity_id"`
+	DSMUsername     string         `json:"dsm_username"`
+	DSMUsernameNorm string         `json:"dsm_username_norm"`
+	Managed         int64          `json:"managed"`
+	ProvisionStatus string         `json:"provision_status"`
+	ConflictReason  sql.NullString `json:"conflict_reason"`
+	AllowLogin      int64          `json:"allow_login"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
 }
 
 type ProviderGroup struct {

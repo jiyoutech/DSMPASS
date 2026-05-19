@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     dsm_username_norm TEXT NOT NULL UNIQUE,
     managed INTEGER NOT NULL DEFAULT 1,
     provision_status TEXT NOT NULL DEFAULT 'pending',
+    conflict_reason TEXT,
     allow_login INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -169,5 +170,6 @@ CREATE TABLE IF NOT EXISTS login_audit_logs (
 	}
 	_, _ = database.ExecContext(ctx, `ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1`)
 	_, _ = database.ExecContext(ctx, `ALTER TABLE login_audit_logs ADD COLUMN ip_address TEXT`)
+	_, _ = database.ExecContext(ctx, `ALTER TABLE dsm_accounts ADD COLUMN conflict_reason TEXT`)
 	return nil
 }

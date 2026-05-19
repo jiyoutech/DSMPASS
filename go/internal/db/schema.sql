@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     dsm_username_norm TEXT NOT NULL UNIQUE,
     managed INTEGER NOT NULL DEFAULT 1,
     provision_status TEXT NOT NULL DEFAULT 'pending',
+    conflict_reason TEXT,
     allow_login INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

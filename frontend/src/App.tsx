@@ -879,7 +879,7 @@ function SourceDetail({
         return { ...account, groups: records.map((member) => member.dsm_groupname), member_records: records };
       })
       .filter((account) => userStatusFilter === "all" || String(account.provision_status) === userStatusFilter || (userStatusFilter === "disabled_login" && !account.allow_login))
-      .filter((account) => includesQuery([account.dsm_username, account.app_identity_id, account.provision_status, ...account.groups], userQuery));
+      .filter((account) => includesQuery([account.dsm_username, account.display_name, account.primary_email, account.external_subjects, account.conflict_reason, account.app_identity_id, account.provision_status, ...account.groups], userQuery));
   }, [accounts.data?.items, groupsByUser, userQuery, userStatusFilter]);
   const groupRows = useMemo(() => {
     return (groups.data?.items ?? [])
@@ -888,7 +888,7 @@ function SourceDetail({
         return { ...group, members: records.map((member) => member.dsm_username), member_records: records };
       })
       .filter((group) => groupStatusFilter === "all" || String(group.provision_status) === groupStatusFilter)
-      .filter((group) => includesQuery([group.dsm_groupname, group.provision_status, group.conflict_reason, ...group.members], groupQuery));
+      .filter((group) => includesQuery([group.dsm_groupname, group.provider_group_name, group.provider_group_path, group.provision_status, group.conflict_reason, ...group.members], groupQuery));
   }, [groups.data?.items, membersByGroup, groupQuery, groupStatusFilter]);
   const filteredSyncLogs = useMemo(() => {
     return (syncLogs.data?.items ?? [])
@@ -914,6 +914,7 @@ function SourceDetail({
       users: accountItems.length,
       disabledLogin: accountItems.filter((item) => !item.allow_login).length,
       pendingUsers: accountItems.filter((item) => item.provision_status === "pending").length,
+      accountConflicts: accountItems.filter((item) => item.provision_status === "conflict").length,
       groups: groupItems.length,
       pendingGroups: groupItems.filter((item) => item.provision_status === "pending").length,
       conflicts: groupItems.filter((item) => item.provision_status === "conflict").length,
@@ -1000,6 +1001,28 @@ function SourceDetail({
     });
   };
 
+  const editAccountUsername = (record: DSMAccount) => {
+    let nextUsername = record.dsm_username;
+    modal.confirm({
+      title: `修改 ${record.display_name || record.dsm_username} 的 DSM 用户名`,
+      okText: "保存",
+      cancelText: "取消",
+      content: (
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <Typography.Text type="secondary">飞书身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
+          {record.primary_email && <Typography.Text type="secondary">邮箱：{record.primary_email}</Typography.Text>}
+          {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
+          <Input defaultValue={record.dsm_username} onChange={(event) => { nextUsername = event.target.value; }} />
+        </Space>
+      ),
+      onOk: async () => {
+        await api.setDSMAccountUsername(record.id, nextUsername);
+        message.success("已更新 DSM 用户名");
+        await accounts.reloadWithResult({ silent: true });
+      }
+    });
+  };
+
   const provisionGroup = (record: DSMGroup) => {
     modal.confirm({
       title: `开通 ${record.dsm_groupname}`,
@@ -1007,6 +1030,27 @@ function SourceDetail({
       cancelText: "取消",
       onOk: async () => {
         await api.provisionGroup(record.id);
+        await groups.reloadWithResult({ silent: true });
+      }
+    });
+  };
+
+  const editGroupName = (record: DSMGroup) => {
+    let nextGroupname = record.dsm_groupname;
+    modal.confirm({
+      title: "修改 DSM 部门组名",
+      okText: "保存",
+      cancelText: "取消",
+      content: (
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <Typography.Text type="secondary">飞书部门：{record.provider_group_path || record.provider_group_name || record.dsm_groupname}</Typography.Text>
+          {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
+          <Input defaultValue={record.dsm_groupname} onChange={(event) => { nextGroupname = event.target.value; }} />
+        </Space>
+      ),
+      onOk: async () => {
+        await api.setDSMGroupName(record.id, nextGroupname);
+        message.success("已更新 DSM 部门组名");
         await groups.reloadWithResult({ silent: true });
       }
     });
@@ -1130,6 +1174,7 @@ function SourceDetail({
                     items={[
                       { label: "用户", value: sourceStats.users },
                       { label: "待开通", value: sourceStats.pendingUsers, tone: sourceStats.pendingUsers ? "warning" : "default" },
+                      { label: "冲突", value: sourceStats.accountConflicts, tone: sourceStats.accountConflicts ? "danger" : "default" },
                       { label: "禁止登录", value: sourceStats.disabledLogin, tone: sourceStats.disabledLogin ? "danger" : "default" },
                       { label: "当前结果", value: accountRows.length }
                     ]}
@@ -1188,7 +1233,8 @@ function SourceDetail({
                       rowExpandable: (record) => record.member_records.length > 0
                     }}
                     columns={[
-                      { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.app_identity_id} /> },
+                      { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.conflict_reason || record.app_identity_id} /> },
+                      { title: "飞书信息", width: 220, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={record.primary_email || record.external_subjects || undefined} /> },
                       { title: "部门数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="部门" /> },
                       { title: "所属部门", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
                       { title: "登录", dataIndex: "allow_login", width: 100, render: (value) => value ? <Tag color="success">允许</Tag> : <Tag color="error">禁止</Tag> },
@@ -1198,6 +1244,7 @@ function SourceDetail({
                         width: 220,
                         render: (_, record: DSMAccount) => (
                           <Space>
+                            {record.provision_status === "conflict" && <Button size="small" onClick={() => editAccountUsername(record)}>修改用户名</Button>}
                             {record.provision_status === "pending" && <Button size="small" onClick={() => provisionAccount(record)}>开通</Button>}
                             {record.allow_login ? (
                               <Button size="small" danger loading={accountLoginAction === accountLoginActionKey([record.id], false)} onClick={() => void setAccountLogin([record.id], false)}>禁止登录</Button>
@@ -1275,10 +1322,16 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "部门", dataIndex: "dsm_groupname", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_groupname} secondary={record.conflict_reason ?? undefined} /> },
+                      { title: "飞书部门", width: 240, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                       { title: "成员数", dataIndex: "members", width: 110, render: (value: string[]) => <RelationCount value={value.length} label="成员" /> },
                       { title: "成员预览", dataIndex: "members", render: (value: string[]) => <EntityList values={value} limit={5} /> },
                       { title: "状态", dataIndex: "provision_status", width: 120, render: statusTag },
-                      { title: "操作", width: 100, render: (_, record: DSMGroup) => record.provision_status === "pending" ? <Button size="small" onClick={() => provisionGroup(record)}>开通</Button> : "-" }
+                      { title: "操作", width: 180, render: (_, record: DSMGroup) => (
+                        <Space>
+                          {record.provision_status === "conflict" && <Button size="small" onClick={() => editGroupName(record)}>修改组名</Button>}
+                          {record.provision_status === "pending" && <Button size="small" onClick={() => provisionGroup(record)}>开通</Button>}
+                        </Space>
+                      ) }
                     ]}
                   />
                 }
