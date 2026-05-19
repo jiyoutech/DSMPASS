@@ -1,97 +1,38 @@
 # DSM Pass
 
-DSM Pass 是一个面向 Synology DSM 的企业身份登录网关。它把外部身份源登录、目录同步和 DSM 本地账号体系连接起来，让用户可以通过企业身份源进入 DSM。
+DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把飞书 OAuth 登录、通讯录同步和 DSM 本地账号体系连接起来，让用户可以使用企业身份进入 DSM。
 
-当前主实现是 **Go 后端 + Go DSM Helper + React 管理后台**。Python 旧实现没有迁移到这个开源化目录里，避免主线混乱。
+当前主线实现为 **Go 后端 + Go DSM Helper + React 管理后台**。
 
-> 项目目前处于 **pre-1.0 / alpha** 阶段。核心流程已经可用，但 DSM 登录中继、临时密码、Cookie 写入和 helper 权限边界都属于高风险系统集成能力。生产使用前请先在测试 NAS 上验证安装、升级、卸载、端口映射和恢复流程。
+> 项目仍处于 **pre-1.0 / alpha** 阶段。核心流程已经可用，但 DSM 登录中继、临时密码、Cookie 写入和 Helper 提权都属于高风险系统集成能力。生产使用前，请先在测试 NAS 上完整验证安装、升级、卸载、端口映射、登录和恢复流程。
 
-## 当前状态
+## 功能概览
 
-项目处于 pre-1.0 阶段，已经具备核心流程，但发布生产版本前仍建议完整审计安全配置、部署权限和日志策略。
+| 能力 | 状态 |
+| --- | --- |
+| 飞书 OAuth 登录 DSM | 已支持 |
+| 飞书通讯录用户、部门、成员同步 | 已支持 |
+| DSM 用户、部门组和成员关系自动开通 | 已支持 |
+| 用户级禁止登录 | 已支持 |
+| 身份源级登录/同步开关 | 已支持 |
+| 身份源级定时同步 | 已支持 |
+| 登录审计和同步日志 | 已支持 |
+| DSM SPK 安装包 | 已支持 x86_64 / aarch64 |
+| 管理后台 HTTPS | 默认启用，自签证书自动生成 |
+| IDP 入口协议和端口 | 后台可配置，支持热重启 |
 
-当前支持：
+## 快速安装
 
-- 飞书 OAuth 登录
-- 飞书通讯录用户、部门、成员同步
-- DSM 用户、部门映射、成员关系开通
-- 用户级禁止飞书登录
-- 身份源级登录/同步独立开关
-- 身份源级定时同步
-- 登录审计和同步日志
-- DSM 登录 Cookie 中继
-- 首次启动后台账号初始化
-- HTTPS 默认启动，自签证书自动生成
-- DSM SPK 安装包，支持 x86_64 和 aarch64
-- 管理后台端口在 SPK 安装时配置
-- IDP 入口协议和端口可在后台配置
-- IDP 路由独立热重启，管理后台不跟随重启
+### 1. 下载 SPK
 
-## 目录结构
+从 [GitHub Releases](https://github.com/Zhoany/DSMPASS/releases) 下载与 NAS 架构匹配的 SPK：
 
-```text
-go/          Go 后端、DSM Helper、数据库、DSM 打包脚本
-frontend/    React + Ant Design 管理后台
-docs/        架构、部署和 provider 扩展文档
-```
+| NAS 架构 | 文件 |
+| --- | --- |
+| Intel / AMD | `DSMPASS-<version>-linux-amd64.spk` |
+| ARMv8 / aarch64 | `DSMPASS-<version>-linux-arm64.spk` |
 
-## 架构边界
-
-后端不直接执行 DSM 特权操作。DSM 本地账号、群组、临时密码中继等高权限动作都由 Helper 执行。
-
-```text
-Browser
-  -> Go 后端
-    -> Unix Socket + HMAC
-      -> DSM Helper
-        -> synouser / synogroup / DSM Auth API / /etc/shadow
-```
-
-Helper 使用：
-
-- Unix Socket 本地通信
-- HMAC 请求签名
-- 时间戳防重放
-- 用户级锁和 shadow 全局锁
-- 临时密码中继 journal
-- 启动恢复未完成的 shadow 操作
-
-## 安全默认值
-
-开源化目录已经调整为更适合生产的默认值：
-
-- 后台认证默认开启
-- HTTPS 默认开启
-- 登录诊断日志默认关闭
-- `DSMPASS_HELPER_HMAC_SECRET` 必须显式配置，否则服务拒绝启动
-- 诊断日志会脱敏密码、token、SID、cookie、签名和 shadow 行
-
-生产环境不要开启明文排障日志。即使日志已经脱敏，也应当视为敏感运行数据。
-
-## 快速开始
-
-安装前端依赖并构建：
-
-```bash
-cd frontend
-npm ci
-npm run build
-```
-
-运行 Go 测试：
-
-```bash
-cd ../go
-GOCACHE="$PWD/.gocache" go test ./...
-```
-
-或者在项目根目录运行：
-
-```bash
-make test
-```
-
-## DSM SPK 打包
+也可以本地打包：
 
 ```bash
 DSMPASS_VERSION=0.8.7 make package-spk
@@ -105,42 +46,33 @@ go/dist/dsm/DSMPASS-0.8.7-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
-`linux-amd64` 用于 Intel/AMD Synology 机型，`linux-arm64` 用于 ARMv8/aarch64 机型。
+### 2. 安装到 DSM
 
-也可以从 GitHub Release 下载与 NAS 架构匹配的 SPK：
-
-```text
-DSMPASS-<version>-linux-amd64.spk
-DSMPASS-<version>-linux-arm64.spk
-```
-
-安装 SPK 时可以在向导里配置管理后台端口。端口必须在 `1025-65535` 范围内且未被占用。管理后台默认 HTTPS；IDP 入口协议和端口在管理后台系统配置里单独设置。
-
-## SPK 安装步骤
-
-1. 在 DSM 打开「套件中心」。
-2. 进入「设置」，允许手动安装第三方套件。
-3. 点击「手动安装」，上传与 NAS 架构匹配的 `.spk`。
-4. 安装向导里填写管理后台端口，例如 `25000`。
+1. 打开 DSM「套件中心」。
+2. 在「设置」中允许手动安装第三方套件。
+3. 点击「手动安装」，上传对应架构的 `.spk` 文件。
+4. 在安装向导中填写管理后台端口，例如 `25000`。
 5. 完成安装并启动套件。
-6. 浏览器打开管理后台：
+6. 用浏览器访问管理后台：
 
 ```text
 https://<NAS-IP-or-domain>:25000/
 ```
 
-首次访问会使用自签 HTTPS 证书，浏览器可能提示证书不受信任。测试环境可以继续访问；生产环境建议配置可信证书或放在可信反向代理后面。
+管理后台默认使用 HTTPS 和自签证书。测试环境可以在浏览器中继续访问；生产环境建议配置可信证书或放在可信反向代理后面。
 
-## 网页初始化配置
+### 3. 初始化后台
 
-首次进入管理后台后按页面流程配置：
+首次进入管理后台后，按页面流程完成：
 
-1. 初始化后台管理员账号和密码。
-2. 在系统配置里填写访问 IP/域名，例如 `nas.example.com` 或 NAS IP。
-3. 选择 IDP 协议，生产建议 `HTTPS`。
-4. 设置 IDP 入口端口，例如 `26000`。
-5. 确认 DSM 地址和 DSM Auth API 自动识别正确。
-6. 保存配置后进入身份源管理。
+| 步骤 | 配置 |
+| --- | --- |
+| 后台账号 | 初始化管理员账号和密码 |
+| 访问主机 | 填写用户能访问的 NAS IP 或域名，例如 `nas.example.com` |
+| IDP 协议 | 生产建议 `HTTPS` |
+| IDP 入口端口 | 建议 `26000`，必须未被占用 |
+| DSM 地址 | 确认自动识别结果正确 |
+| DSM Auth API | 确认自动识别结果正确 |
 
 推荐地址规划：
 
@@ -150,20 +82,29 @@ https://nas.example.com:26000/idp/<source>/launch    用户飞书登录入口
 https://nas.example.com:5001/                        DSM HTTPS
 ```
 
-## 飞书配置流程
+## 飞书配置
 
-1. 在飞书开放平台创建企业自建应用。
-2. 复制应用的 `App ID` 和 `App Secret`。
-3. 在 DSM Pass 新建「飞书」身份源，填入 `App ID`、`App Secret`、DSM 初始密码，并开启登录和同步。
-4. 保存后进入身份源详情页，复制页面显示的 `Launch` 和 `Callback` 地址。
-5. 回到飞书开放平台，把 `Launch` 填到网页应用或桌面端主页，把 `Callback` 填到 OAuth 回调地址。
-6. 在飞书「权限管理」里开通通讯录读取权限。
-7. 设置「通讯录权限范围」，确保包含需要同步到 DSM 的部门和用户。
-8. 设置「应用可用范围 / 用户范围」，确保允许使用 DSM Pass 登录入口的用户都在范围内。
-9. 创建版本并发布应用，等待管理员审核通过。
-10. 回到 DSM Pass 点击「同步」，检查用户、部门和成员关系。
+### 1. 创建应用
 
-通讯录同步至少需要读取用户、部门、用户所属部门和部门成员的权限。建议按下面配置：
+1. 在飞书开放平台创建「企业自建应用」。
+2. 在「凭证与基础信息」中获取 `App ID` 和 `App Secret`。
+3. 在 DSM Pass 新建「飞书」身份源，填入 `App ID`、`App Secret` 和 DSM 初始密码。
+4. 保存后进入身份源详情页，记录页面显示的 `Launch` 和 `Callback` 地址。
+
+### 2. 填写地址
+
+回到飞书开放平台：
+
+| 飞书配置项 | 填写内容 |
+| --- | --- |
+| 网页应用 / 桌面端主页 | DSM Pass 身份源详情页的 `Launch` 地址 |
+| OAuth 重定向 URL / 回调地址 | DSM Pass 身份源详情页的 `Callback` 地址 |
+
+如果后续修改 DSM Pass 的 IDP 协议、访问域名或 IDP 端口，需要同步更新飞书里的主页地址和回调地址，并重新发布应用。
+
+### 3. 开通权限
+
+DSM Pass 同步飞书通讯录时需要读取用户、部门、用户所属部门和部门成员关系。建议按下面配置：
 
 | 类型 | 权限 | 用途 |
 | --- | --- | --- |
@@ -176,6 +117,10 @@ https://nas.example.com:5001/                        DSM HTTPS
 | 按需 | `contact:user.email:readonly` | 需要同步邮箱字段时开启 |
 | 按需 | `contact:user.phone:readonly` | 需要同步手机号字段时开启 |
 
+`contact:user.department:readonly` 很关键。缺少它时，多部门用户可能无法和飞书权限保持一致。邮箱和手机号权限只影响字段是否返回，不影响基础登录和部门同步。
+
+### 4. 设置范围并发布
+
 飞书里有两个范围要分别设置：
 
 | 范围 | 作用 | 配置建议 |
@@ -183,18 +128,41 @@ https://nas.example.com:5001/                        DSM HTTPS
 | 通讯录权限范围 | 决定应用 API 能读取哪些部门和用户 | 覆盖需要同步到 DSM 的部门和用户 |
 | 应用可用范围 / 用户范围 | 决定哪些用户能看到和使用飞书应用 | 覆盖需要通过 DSM Pass 登录 DSM 的用户 |
 
-`contact:user.department:readonly` 用于读取用户所属部门，缺少时多部门用户可能无法和飞书权限保持一致。`contact:user.email:readonly` 和 `contact:user.phone:readonly` 只影响邮箱、手机号字段是否返回，不影响基础登录和部门同步。
+完成权限和范围配置后，创建版本并发布应用。部分通讯录权限需要企业管理员审核，审核通过后才会生效。
 
-部门组名规则：
+### 5. 同步验证
 
-- 飞书部门名不重名时，DSM 部门组名使用原部门名，例如 `marketing`。
-- 飞书部门名重名时，DSM 部门组名使用完整部门路径并把路径分隔符转成 `_`，例如 `matrix/sup1/sup2/sup5` 会生成 `matrix_sup1_sup2_sup5`。
+回到 DSM Pass 身份源详情页，点击「同步」。同步完成后检查：
+
+| 页面 | 检查内容 |
+| --- | --- |
+| 用户 | 飞书用户是否映射为 DSM 用户 |
+| 部门 | 飞书部门是否映射为 DSM 部门组 |
+| 成员 | 部门成员关系是否已经生成 |
 
 正常情况下，点击「同步」会自动通过 Helper 创建或更新 DSM 用户、DSM 部门组和成员关系。页面里的「开通」按钮只用于异常后的单条补偿，例如 Helper 未提权、上次同步中断或 DSM 同名对象冲突。
 
-完整安装、升级和排障步骤见 [`docs/spk-feishu-setup.md`](docs/spk-feishu-setup.md) 和 [`docs/dsm-spk-package.md`](docs/dsm-spk-package.md)。
+## 部门组命名
 
-### Helper 权限初始化
+DSM 本地群组不支持飞书那种同名部门层级。DSM Pass 的处理规则是：
+
+| 飞书部门情况 | DSM 部门组名 |
+| --- | --- |
+| 部门名不重名 | 使用原部门名，例如 `marketing` |
+| 部门名重名 | 使用完整部门路径并把路径分隔符转成 `_` |
+
+示例：
+
+```text
+matrix/sup1/sup2/sup5 -> matrix_sup1_sup2_sup5
+matrix/sup1/sup3/sup5 -> matrix_sup1_sup3_sup5
+```
+
+这样可以让 DSM 里的部门组权限尽量贴近飞书组织架构。
+
+## Helper 权限初始化
+
+DSM Pass 后端不直接以 root 运行。创建 DSM 用户、部门组、成员关系和登录中继等高权限操作由 Helper 执行。
 
 如果后台提示：
 
@@ -203,14 +171,12 @@ Helper 无法执行 DSM 用户和群组命令
 dial unix .../helper.sock: connect: no such file or directory
 ```
 
-通常表示 Helper 没有成功启动，或没有拿到执行 DSM 用户、群组命令的权限。DSM Pass 的后端不直接以 root 运行；真正需要改 DSM 用户和群组时，由 Helper 通过本机 sudo 规则提权执行。
+按下面步骤处理：
 
-处理步骤：
-
-1. 打开 DSM 的 SSH 服务。
-2. 用 DSM 管理员账号 SSH 登录 NAS。
+1. 在 DSM 控制面板中开启 SSH 服务。
+2. 使用 DSM 管理员账号 SSH 登录 NAS。
 3. 切换到 root。
-4. 执行 Helper sudo 规则安装脚本。
+4. 执行 DSMPASS 自带的 Helper sudo 规则安装脚本。
 5. 回到管理后台点击「重启并检查 Helper」。
 6. 检查 `helper.sock` 是否已经创建。
 
@@ -230,9 +196,78 @@ srw-rw---- 1 DSMPASS DSMPASS 0 ... /var/packages/DSMPASS/var/run/helper.sock
 
 用户和用户组可能因 DSM 环境略有不同，重点看文件存在、第一列以 `s` 开头。如果显示 `No such file or directory`，说明 Helper 还没有成功启动，需要先在管理后台点击「重启并检查 Helper」并查看日志。
 
-如果 `setup-helper-sudo.sh` 成功，会写入 `/etc/sudoers.d/DSMPASS-helper`，允许 DSMPASS 套件用户免密码执行 Helper 和 Helper 管理脚本。完成后重点确认提权脚本执行成功，并在管理后台点击「重启并检查 Helper」。
+脚本成功后会写入 `/etc/sudoers.d/DSMPASS-helper`，允许 DSMPASS 套件用户免密码执行 Helper 和 Helper 管理脚本。
 
-## DSM 二进制部署
+## 架构
+
+```text
+Browser
+  -> Go 后端
+    -> Unix Socket + HMAC
+      -> DSM Helper
+        -> synouser / synogroup / DSM Auth API / /etc/shadow
+```
+
+Helper 边界：
+
+| 机制 | 作用 |
+| --- | --- |
+| Unix Socket | 仅本机通信 |
+| HMAC 请求签名 | 防止未授权调用 Helper |
+| 时间戳校验 | 降低重放风险 |
+| 用户级锁和 shadow 全局锁 | 避免并发修改 DSM 账号状态 |
+| 临时密码 journal | 登录中继异常时可恢复 |
+
+## 安全默认值
+
+| 项目 | 默认策略 |
+| --- | --- |
+| 后台认证 | 默认开启 |
+| HTTPS | 默认开启 |
+| 登录诊断日志 | 默认关闭 |
+| Helper HMAC 密钥 | 必须显式配置，否则拒绝启动 |
+| 日志脱敏 | 脱敏密码、token、SID、cookie、签名和 shadow 行 |
+
+生产环境保持 `DSMPASS_LOGIN_DIAGNOSTICS=false`。即使日志已经脱敏，也应当视为敏感运行数据。
+
+## 开发和测试
+
+目录结构：
+
+```text
+go/          Go 后端、DSM Helper、数据库、DSM 打包脚本
+frontend/    React + Ant Design 管理后台
+docs/        架构、部署和 provider 扩展文档
+```
+
+安装前端依赖并构建：
+
+```bash
+cd frontend
+npm ci
+npm run build
+```
+
+运行测试：
+
+```bash
+make test
+```
+
+只运行 Go 测试：
+
+```bash
+cd go
+GOCACHE="$PWD/.gocache" go test ./...
+```
+
+只检查公开文档：
+
+```bash
+scripts/test.sh docs
+```
+
+## 二进制部署
 
 如果不使用 SPK，可以构建 DSM tar 包：
 
@@ -247,9 +282,7 @@ go/dist/dsm/dsmpass-linux-amd64.tar.gz
 go/dist/dsm/dsmpass-linux-arm64.tar.gz
 ```
 
-## DSM 启动
-
-解压后设置必要环境变量：
+解压后至少需要配置：
 
 ```bash
 export DSMPASS_ACCESS_HOST=nas.example.com
@@ -257,47 +290,19 @@ export DSMPASS_HELPER_HMAC_SECRET="$(openssl rand -hex 32)"
 ./start-dsmpass.sh
 ```
 
-访问后台：
+## 关键环境变量
 
-```text
-https://nas.example.com:25000/
-```
+| 变量 | 用途 |
+| --- | --- |
+| `DSMPASS_ACCESS_HOST` | 用户访问后台和 IDP 的 IP 或域名 |
+| `DSMPASS_HELPER_HMAC_SECRET` | 后端与 Helper 共用的强随机密钥 |
+| `DSMPASS_GO_LISTEN` | 管理后台监听地址，默认 `0.0.0.0:25000` |
+| `DSMPASS_TLS_ENABLED` | 管理后台是否启用 HTTPS，SPK 默认启用 |
+| `DSMPASS_DSM_REDIRECT_URL` | 登录成功后跳转的 DSM 地址 |
+| `DSMPASS_DSM_LOGIN_API` | DSM Auth API 地址 |
+| `DSMPASS_LOGIN_DIAGNOSTICS` | 登录诊断日志开关，生产保持 `false` |
 
-首次打开会进入后台账号初始化和系统配置流程。
-
-## 管理后台和 IDP 入口
-
-管理后台和 IDP 入口是两个独立的对外面：
-
-- 管理后台：用于配置身份源、同步规则和审计，端口在 SPK 安装向导或环境变量 `DSMPASS_GO_LISTEN` 中配置。
-- IDP 入口：用户访问 `/idp/<source>/launch` 和 OAuth callback 的入口，协议和端口在后台系统配置中配置。
-
-推荐生产部署方式是管理后台只在内网开放，IDP 入口按需要映射到公网或反向代理。修改 IDP 协议或 IDP 端口后，服务只热重启 IDP listener，不重启管理后台。
-
-DSM 默认端口按 IDP/DSM 协议自动派生：
-
-- HTTP -> DSM `5000`
-- HTTPS -> DSM `5001`
-
-## 关键配置
-
-复制环境变量样例：
-
-```bash
-cp .env.example .env
-```
-
-重点变量：
-
-- `DSMPASS_ACCESS_HOST`：用户访问后台/IDP 的 IP 或域名
-- `DSMPASS_HELPER_HMAC_SECRET`：后端与 Helper 共用的强随机密钥
-- `DSMPASS_GO_LISTEN`：管理后台监听地址，默认 `0.0.0.0:25000`
-- `DSMPASS_TLS_ENABLED`：管理后台是否启用 HTTPS，SPK 默认启用
-- `DSMPASS_DSM_REDIRECT_URL`：登录成功后跳转的 DSM 地址
-- `DSMPASS_DSM_LOGIN_API`：DSM Auth API 地址
-- `DSMPASS_LOGIN_DIAGNOSTICS`：诊断日志开关，生产保持 `false`
-
-## 身份源扩展
+## 扩展身份源
 
 前端不会硬编码身份源类型。新建身份源时，前端从后端接口获取 provider 类型：
 
@@ -305,20 +310,30 @@ cp .env.example .env
 GET /api/admin/provider-types
 ```
 
-新增 provider 时，应当在后端 provider registry 中声明能力，再补齐登录、目录读取和配置字段。
+新增 provider 时，应在后端 provider registry 中声明能力，再补齐登录、目录读取和配置字段。
 
 ## 发布检查
 
 发布前至少确认：
 
-1. `make test` 通过
-2. `make package-spk` 通过
-3. 没有提交 `.env`、数据库、日志、TLS 私钥、token、SID、临时密码或 shadow 内容
-4. 生产环境配置了强随机 `DSMPASS_HELPER_HMAC_SECRET`
-5. 生产环境关闭 `DSMPASS_LOGIN_DIAGNOSTICS`
-6. 浏览器访问协议、DSM 跳转地址和 Cookie Secure 设置一致
-7. 在 DSM 测试机上验证首次安装、升级、卸载保留数据、卸载删除数据、IDP 端口切换和协议切换
+1. `make test` 通过。
+2. `make package-spk` 通过。
+3. 没有提交 `.env`、数据库、日志、TLS 私钥、token、SID、临时密码或 shadow 内容。
+4. 生产环境配置了强随机 `DSMPASS_HELPER_HMAC_SECRET`。
+5. 生产环境关闭 `DSMPASS_LOGIN_DIAGNOSTICS`。
+6. 浏览器访问协议、DSM 跳转地址和 Cookie Secure 设置一致。
+7. 在 DSM 测试机上验证首次安装、升级、卸载保留数据、卸载删除数据、IDP 端口切换和协议切换。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/spk-feishu-setup.md`](docs/spk-feishu-setup.md) | 从 SPK 安装到飞书配置的完整流程 |
+| [`docs/dsm-spk-package.md`](docs/dsm-spk-package.md) | SPK 打包、安装和升级细节 |
+| [`docs/go-dsm-binary-deployment.md`](docs/go-dsm-binary-deployment.md) | Go 二进制部署方式 |
+| [`docs/testing.md`](docs/testing.md) | 测试脚本和测试建议 |
+| [`docs/provider-development.md`](docs/provider-development.md) | 新身份源扩展说明 |
 
 ## 许可证
 
-MIT。见 `LICENSE`。
+MIT。见 [`LICENSE`](LICENSE)。
