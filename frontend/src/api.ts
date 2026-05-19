@@ -95,6 +95,7 @@ export const api = {
     return request<{ success: boolean; scope: string; restart_required: boolean }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
   },
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
+  restartPackage: () => request<{ success: boolean }>("/api/admin/package/restart", { method: "POST" }),
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),
   loginAuditLogs: (provider?: string) => request<{ items: LoginAuditLog[] }>(`/api/admin/audit/logins${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),

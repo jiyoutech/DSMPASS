@@ -65,10 +65,20 @@ func parseCIDRList(raw string) ([]*net.IPNet, error) {
 	parts := strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
 	})
-	ranges := make([]*net.IPNet, 0, len(parts))
+	ranges := make([]*net.IPNet, 0, len(parts)+4)
 	for _, part := range parts {
 		value := strings.TrimSpace(part)
 		if value == "" {
+			continue
+		}
+		if expanded, ok := cidrAlias(value); ok {
+			for _, item := range expanded {
+				_, cidr, err := net.ParseCIDR(item)
+				if err != nil {
+					return nil, err
+				}
+				ranges = append(ranges, cidr)
+			}
 			continue
 		}
 		if !strings.Contains(value, "/") {
@@ -92,4 +102,17 @@ func parseCIDRList(raw string) ([]*net.IPNet, error) {
 		return nil, net.InvalidAddrError("empty cidr list")
 	}
 	return ranges, nil
+}
+
+func cidrAlias(value string) ([]string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "all", "any":
+		return []string{"0.0.0.0/0", "::/0"}, true
+	case "private", "lan", "local", "intranet", "内网":
+		return []string{"127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fe80::/10"}, true
+	case "loopback", "localhost", "本机":
+		return []string{"127.0.0.1/32", "::1/128"}, true
+	default:
+		return nil, false
+	}
 }

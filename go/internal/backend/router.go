@@ -40,6 +40,7 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.POST("/settings/discover", s.discoverSettings)
 		admin.POST("/settings/certificates/:scope", s.uploadCertificate)
 		admin.POST("/idp-route/restart", s.restartIDPRouteHandler)
+		admin.POST("/package/restart", s.restartPackageHandler)
 		admin.GET("/version", s.version)
 		admin.GET("/helper/status", s.helperStatus)
 		admin.POST("/helper/restart", s.restartHelper)

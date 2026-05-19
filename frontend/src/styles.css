@@ -308,6 +308,85 @@ body {
   width: 100%;
 }
 
+.settings-page {
+  max-width: 1180px;
+}
+
+.settings-card > .ant-card-body {
+  padding: 18px;
+}
+
+.settings-stack {
+  width: 100%;
+}
+
+.settings-section {
+  padding: 16px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.settings-section-head h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.settings-section-head p,
+.certificate-upload p {
+  margin: 0;
+  color: rgba(0, 0, 0, 0.56);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-firewall-grid,
+.certificate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.firewall-panel {
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fbfbfb;
+}
+
+.firewall-panel-restricted {
+  border-left: 3px solid #52c41a;
+}
+
+.firewall-panel-public {
+  border-left: 3px solid #1677ff;
+}
+
+.firewall-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.firewall-cidr-item {
+  margin-bottom: 0 !important;
+}
+
+.settings-inline-alert {
+  margin-bottom: 14px;
+}
+
 .certificate-upload {
   display: grid;
   gap: 10px;

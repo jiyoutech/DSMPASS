@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -142,6 +143,34 @@ func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	}
 }
 
+func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	rejected := httptest.NewRecorder()
+	rejectedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"admin_allowed_cidrs":"10.0.0.0/8"}`))
+	rejectedRequest.Header.Set("Content-Type", "application/json")
+	rejectedRequest.RemoteAddr = "203.0.113.10:12345"
+	router.ServeHTTP(rejected, rejectedRequest)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", rejected.Code, rejected.Body.String())
+	}
+
+	accepted := httptest.NewRecorder()
+	acceptedRequest := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"admin_allowed_cidrs":"10.0.0.0/8"}`))
+	acceptedRequest.Header.Set("Content-Type", "application/json")
+	acceptedRequest.RemoteAddr = "10.1.2.3:12345"
+	router.ServeHTTP(accepted, acceptedRequest)
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("expected ok, got %d body=%s", accepted.Code, accepted.Body.String())
+	}
+}
+
 func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
@@ -201,6 +230,46 @@ func TestRestartHelperEndpointUsesHelperControlScript(t *testing.T) {
 	if string(called) != "restart" {
 		t.Fatalf("helper-control called with %q", string(called))
 	}
+}
+
+func TestRestartPackageEndpointSchedulesControlScript(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "called")
+	script := filepath.Join(dir, "start-stop-status")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' \"$1\" > '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := packageControlScripts
+	packageControlScripts = []string{script}
+	t.Cleanup(func() {
+		packageControlScripts = original
+	})
+
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/package/restart", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	for range 30 {
+		called, err := os.ReadFile(marker)
+		if err == nil {
+			if string(called) != "restart" {
+				t.Fatalf("package control called with %q", string(called))
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("package control script was not called")
 }
 
 func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {

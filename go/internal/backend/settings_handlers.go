@@ -35,7 +35,7 @@ func (s *Server) putSettings(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	if err := s.updateSettings(c.Request.Context(), update, requestScheme(c)); err != nil {
+	if err := s.updateSettings(c.Request.Context(), update, requestScheme(c), requestRemoteIP(c.Request)); err != nil {
 		writeError(c, err)
 		return
 	}

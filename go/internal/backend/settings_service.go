@@ -2,10 +2,11 @@ package backend
 
 import (
 	"context"
+	"net"
 	"strings"
 )
 
-func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ string) error {
+func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ string, clientIP net.IP) error {
 	processed := map[string]bool{}
 	adminScheme := normalizedAccessScheme(asRuntimeString(update["access_scheme"]), s.cfg.TLSEnabled)
 	if _, ok := update["access_scheme"]; !ok {
@@ -103,6 +104,9 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 			value = strings.TrimSpace(asRuntimeString(value))
 			if err := validateCIDRList(value.(string), "admin_allowed_cidrs"); err != nil {
 				return err
+			}
+			if clientIP != nil && !allowedByCIDRs(clientIP, value.(string)) {
+				return badRequest("admin_allowed_cidrs must include current client IP")
 			}
 		}
 		if key == "idp_allowed_cidrs" {

@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.14 make package-spk
+DSMPASS_VERSION=0.8.15 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.14-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.14-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.15-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.15-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -91,6 +91,7 @@ https://<NAS-IP-or-domain>:25000/
 - `IDP 入口端口`：建议 `26000`，必须大于 `1024` 且未被占用。
 - `管理端口允许网段`：默认仅允许本机和内网访问；如果需要外网管理，必须明确加入对应公网网段。
 - `认证端口允许网段`：默认允许所有网络访问；只给内网登录时可改成内网网段。
+- 点击「仅内网访问」可以快速填入本机、IPv4 内网和 IPv6 内网网段。保存管理端网段时，系统会确认当前访问 IP 仍在允许范围内，避免误操作后无法进入后台。
 - `IDP 地址`：自动生成，例如 `https://nas.example.com:26000`。
 - `DSM 地址`：自动生成，HTTPS 对应 `https://nas.example.com:5001/`。
 - `DSM Auth API`：自动生成，HTTPS 对应 `https://nas.example.com:5001/webapi/entry.cgi`。
@@ -99,6 +100,8 @@ https://<NAS-IP-or-domain>:25000/
 - `跳过 DSM TLS 校验`：DSM 使用自签证书时可以先打开；生产环境使用可信证书后建议关闭。
 
 点击「检测」可以让后台尝试识别 DSM 地址。确认无误后点击「保存并进入」。
+
+管理端证书上传后需要在「系统设置」里点击「重启管理端」才会生效。重启会让当前后台连接短暂断开；管理端口没有变化时刷新当前页面即可，如果端口已在套件侧调整，需要改用新端口访问。
 
 ## 5. 创建飞书自建应用
 
