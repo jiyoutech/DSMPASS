@@ -88,11 +88,11 @@ export const api = {
   systemSettings: () => request<SystemSettings>("/api/admin/settings"),
   updateSystemSettings: (payload: SystemSettingsUpdate) =>
     request<SystemSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) }),
-  uploadCertificate: (scope: "admin" | "idp", cert: File, key: File) => {
+  uploadCertificate: (scope: "idp", cert: File, key: File) => {
     const body = new FormData();
     body.append("cert", cert);
     body.append("key", key);
-    return request<{ success: boolean; scope: string; restart_required: boolean }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
+    return request<{ success: boolean; scope: string; restart_required: boolean; certificate_domains: string[]; applied_access_host: string }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
   },
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
   restartPackage: () => request<{ success: boolean }>("/api/admin/package/restart", { method: "POST" }),

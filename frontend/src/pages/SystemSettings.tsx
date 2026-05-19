@@ -153,11 +153,9 @@ export function SystemSettings() {
   const { data, loading, error, reload } = useAsyncData(() => api.systemSettings(), []);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("base");
-  const [uploadingCert, setUploadingCert] = useState<"admin" | "idp" | null>(null);
+  const [uploadingCert, setUploadingCert] = useState<"idp" | null>(null);
   const [restartingIDP, setRestartingIDP] = useState(false);
   const [restartingPackage, setRestartingPackage] = useState(false);
-  const [adminCertFiles, setAdminCertFiles] = useState<UploadFile[]>([]);
-  const [adminKeyFiles, setAdminKeyFiles] = useState<UploadFile[]>([]);
   const [idpCertFiles, setIDPCertFiles] = useState<UploadFile[]>([]);
   const [idpKeyFiles, setIDPKeyFiles] = useState<UploadFile[]>([]);
 
@@ -212,28 +210,26 @@ export function SystemSettings() {
     }
   }
 
-  async function uploadCertificate(scope: "admin" | "idp") {
-    const cert = selectedFile(scope === "admin" ? adminCertFiles : idpCertFiles);
-    const key = selectedFile(scope === "admin" ? adminKeyFiles : idpKeyFiles);
+  async function uploadCertificate() {
+    const cert = selectedFile(idpCertFiles);
+    const key = selectedFile(idpKeyFiles);
     if (!cert || !key) {
       message.error("请同时选择证书 PEM 和私钥 PEM");
       return;
     }
-    setUploadingCert(scope);
+    setUploadingCert("idp");
     try {
-      const result = await api.uploadCertificate(scope, cert, key);
-      if (scope === "admin" || result.restart_required) {
-        message.success("管理端证书已上传，点击重启管理端后生效");
+      const result = await api.uploadCertificate("idp", cert, key);
+      if (result.applied_access_host) {
+        message.success(`认证端证书已上传，已自动将认证入口域名更新为 ${result.applied_access_host}，重启认证路由后证书生效`);
+        await reload();
+      } else if (result.certificate_domains?.length) {
+        message.success("认证端证书已上传，但证书域名是通配符或不适合作为入口域名；请手动设置认证入口域名后重启认证路由");
       } else {
         message.success("认证端证书已上传，可重启认证路由生效");
       }
-      if (scope === "admin") {
-        setAdminCertFiles([]);
-        setAdminKeyFiles([]);
-      } else {
-        setIDPCertFiles([]);
-        setIDPKeyFiles([]);
-      }
+      setIDPCertFiles([]);
+      setIDPKeyFiles([]);
     } catch (err) {
       message.error(err instanceof Error ? err.message : "证书上传失败");
     } finally {
@@ -312,21 +308,12 @@ export function SystemSettings() {
                 type="info"
                 showIcon
                 className="settings-inline-alert"
-                message="上传证书不会自动修改访问域名；请在基础配置中填写与证书匹配的域名。管理端证书需要重启管理端生效，认证端证书可单独重启认证路由生效。"
+                message="管理端使用 DSMPASS 自签证书。上传认证端证书后，系统会读取证书里的 DNS 域名并自动更新认证入口域名；重启认证路由后证书生效。"
               />
               <div className="certificate-grid">
                 <CertificateUploadFields
-                  title="管理端口证书"
-                  description="用于管理后台 HTTPS。用证书域名访问管理端口时，浏览器才会认为证书匹配。"
-                  certFiles={adminCertFiles}
-                  keyFiles={adminKeyFiles}
-                  onCertFiles={setAdminCertFiles}
-                  onKeyFiles={setAdminKeyFiles}
-                  disabled={loading || saving}
-                />
-                <CertificateUploadFields
                   title="认证端口证书"
-                  description="用于 /idp 登录入口，可与管理端证书不同。IDP 地址必须使用证书覆盖的域名。"
+                  description="用于 /idp 登录入口。优先读取非通配符 DNS SAN，并自动同步到 IDP 地址。"
                   certFiles={idpCertFiles}
                   keyFiles={idpKeyFiles}
                   onCertFiles={setIDPCertFiles}
@@ -335,8 +322,7 @@ export function SystemSettings() {
                 />
               </div>
               <Flex justify="end" gap={8} wrap>
-                <Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>
-                <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>
+                <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate()}>上传认证端证书</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
                 <Button danger icon={<PoweroffOutlined />} loading={restartingPackage} onClick={confirmPackageRestart}>重启管理端</Button>
               </Flex>

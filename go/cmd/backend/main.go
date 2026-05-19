@@ -205,7 +205,9 @@ func ensureCertificate(certFile, keyFile, accessHost string) error {
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName: "DSM Pass",
+			CommonName:         "DSMPASS",
+			Organization:       []string{"DSMPASS"},
+			OrganizationalUnit: []string{"DSM PASS"},
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),

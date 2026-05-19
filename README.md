@@ -37,14 +37,14 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把飞书 OAuth
 也可以本地打包：
 
 ```bash
-DSMPASS_VERSION=0.8.17 make package-spk
+DSMPASS_VERSION=0.8.18 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.17-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.17-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.18-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.18-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -61,7 +61,7 @@ go/dist/dsm/SHA256SUMS
 https://<NAS-IP-or-domain>:25000/
 ```
 
-管理后台默认使用 HTTPS 和自签证书。测试环境可以在浏览器中继续访问；生产环境建议配置可信证书或放在可信反向代理后面。上传证书不会自动修改访问域名，证书域名应和下面填写的访问主机一致。
+管理后台默认使用 HTTPS 和 DSMPASS 自签证书。测试环境可以在浏览器中继续访问；生产环境建议把管理后台限制在内网。认证端可以上传自己的证书，上传后系统会读取证书里的 DNS 域名并自动同步到 IDP 地址。
 
 ### 3. 初始化后台
 
@@ -331,7 +331,7 @@ export DSMPASS_HELPER_HMAC_SECRET="$(openssl rand -hex 32)"
 | `DSMPASS_HELPER_HMAC_SECRET` | 后端与 Helper 共用的强随机密钥 |
 | `DSMPASS_GO_LISTEN` | 管理后台监听地址，默认 `0.0.0.0:25000` |
 | `DSMPASS_TLS_ENABLED` | 管理后台是否启用 HTTPS，SPK 默认启用 |
-| `DSMPASS_TLS_CERT_FILE` / `DSMPASS_TLS_KEY_FILE` | 管理端口证书和私钥路径 |
+| `DSMPASS_TLS_CERT_FILE` / `DSMPASS_TLS_KEY_FILE` | 管理端口 DSMPASS 自签证书和私钥路径 |
 | `DSMPASS_IDP_TLS_CERT_FILE` / `DSMPASS_IDP_TLS_KEY_FILE` | 认证端口证书和私钥路径 |
 | `DSMPASS_ADMIN_ALLOWED_CIDRS` | 管理后台来源限制；网页开关会在 `all` 和 `private` 之间切换 |
 | `DSMPASS_DSM_REDIRECT_URL` | 登录成功后跳转的 DSM 地址 |
