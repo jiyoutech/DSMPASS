@@ -7,7 +7,7 @@
 在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.19 make package-spk
+DSMPASS_VERSION=0.8.20 make package-spk
 ```
 
 产物输出到：

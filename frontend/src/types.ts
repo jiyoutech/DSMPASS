@@ -246,6 +246,18 @@ export interface SystemSettingsDiscovery {
   dsm_detected: boolean;
 }
 
+export interface CertificateInfo {
+  common_name: string;
+  subject: string;
+  issuer: string;
+  not_before: string;
+  not_after: string;
+  dns_names: string[];
+  label: string;
+  is_self_signed: boolean;
+  is_test_certificate: boolean;
+}
+
 export type SystemSettingsUpdate = Partial<
   Omit<SystemSettings, "helper_hmac_secret_configured"> & {
     relay_helper_hmac_secret: string;

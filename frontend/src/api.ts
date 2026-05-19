@@ -2,6 +2,7 @@ import type {
   AdminAuthStatus,
   AdminLoginRequest,
   AdminPasswordChange,
+  CertificateInfo,
   DSMAccount,
   DSMGroup,
   GroupMember,
@@ -92,7 +93,7 @@ export const api = {
     const body = new FormData();
     body.append("cert", cert);
     body.append("key", key);
-    return request<{ success: boolean; scope: string; restart_required: boolean; certificate_domains: string[]; applied_access_host: string }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
+    return request<{ success: boolean; scope: string; restart_required: boolean; certificate_domains: string[]; certificate_info: CertificateInfo; applied_access_host: string }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
   },
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>

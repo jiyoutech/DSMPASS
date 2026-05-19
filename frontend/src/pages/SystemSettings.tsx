@@ -219,13 +219,16 @@ export function SystemSettings() {
     setUploadingCert("idp");
     try {
       const result = await api.uploadCertificate("idp", cert, key);
+      const certificateLabel = result.certificate_info?.label || "证书";
+      const certificateName = result.certificate_info?.common_name || result.certificate_domains?.[0] || "";
+      const certificateSuffix = certificateName ? `，识别为${certificateLabel}：${certificateName}` : `，识别为${certificateLabel}`;
       if (result.applied_access_host) {
-        message.success(`认证端证书已上传，已自动将认证入口域名更新为 ${result.applied_access_host}，重启认证路由后证书生效`);
+        message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，重启认证路由后证书生效`);
         await reload();
       } else if (result.certificate_domains?.length) {
-        message.success("认证端证书已上传，但证书域名是通配符或不适合作为入口域名；请手动设置认证入口域名后重启认证路由");
+        message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名并重启认证路由`);
       } else {
-        message.success("认证端证书已上传，可重启认证路由生效");
+        message.success(`认证端证书已上传${certificateSuffix}，可重启认证路由生效`);
       }
       setIDPCertFiles([]);
       setIDPKeyFiles([]);

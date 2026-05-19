@@ -10,9 +10,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+type certificateInfo struct {
+	CommonName        string   `json:"common_name"`
+	Subject           string   `json:"subject"`
+	Issuer            string   `json:"issuer"`
+	NotBefore         string   `json:"not_before"`
+	NotAfter          string   `json:"not_after"`
+	DNSNames          []string `json:"dns_names"`
+	Label             string   `json:"label"`
+	IsSelfSigned      bool     `json:"is_self_signed"`
+	IsTestCertificate bool     `json:"is_test_certificate"`
+}
 
 func (s *Server) uploadCertificate(c *gin.Context) {
 	scope := c.Param("scope")
@@ -46,6 +59,7 @@ func (s *Server) uploadCertificate(c *gin.Context) {
 		writeError(c, badRequest("certificate and private key do not match"))
 		return
 	}
+	info := certificateInformation(pair)
 	domains := certificateDomains(pair)
 	appliedAccessHost := ""
 	if err := writeCertificatePair(certFile, keyFile, certData, keyData); err != nil {
@@ -66,6 +80,7 @@ func (s *Server) uploadCertificate(c *gin.Context) {
 		"scope":               scope,
 		"restart_required":    restartRequired,
 		"certificate_domains": domains,
+		"certificate_info":    info,
 		"applied_access_host": appliedAccessHost,
 	})
 }
@@ -93,6 +108,58 @@ func certificateDomains(pair tls.Certificate) []string {
 		addCertificateDomain(&domains, seen, cert.Subject.CommonName)
 	}
 	return domains
+}
+
+func certificateInformation(pair tls.Certificate) certificateInfo {
+	if len(pair.Certificate) == 0 {
+		return certificateInfo{Label: "未知证书"}
+	}
+	cert, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return certificateInfo{Label: "未知证书"}
+	}
+	isSelfSigned := cert.Subject.String() == cert.Issuer.String() && cert.CheckSignatureFrom(cert) == nil
+	isTestCertificate := certificateLooksLikeTest(cert, isSelfSigned)
+	label := "正式证书"
+	if isTestCertificate {
+		label = "测试证书"
+	} else if isSelfSigned {
+		label = "自签证书"
+	}
+	return certificateInfo{
+		CommonName:        cert.Subject.CommonName,
+		Subject:           cert.Subject.String(),
+		Issuer:            cert.Issuer.String(),
+		NotBefore:         cert.NotBefore.Format(time.RFC3339),
+		NotAfter:          cert.NotAfter.Format(time.RFC3339),
+		DNSNames:          append([]string(nil), cert.DNSNames...),
+		Label:             label,
+		IsSelfSigned:      isSelfSigned,
+		IsTestCertificate: isTestCertificate,
+	}
+}
+
+func certificateLooksLikeTest(cert *x509.Certificate, isSelfSigned bool) bool {
+	values := []string{
+		cert.Subject.CommonName,
+		strings.Join(cert.Subject.Organization, " "),
+		strings.Join(cert.Subject.OrganizationalUnit, " "),
+		cert.Issuer.CommonName,
+	}
+	values = append(values, cert.DNSNames...)
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if strings.Contains(normalized, "测试") || strings.Contains(normalized, "test") {
+			return true
+		}
+		if strings.HasSuffix(normalized, ".local") || strings.HasSuffix(normalized, ".invalid") || strings.HasSuffix(normalized, ".example") {
+			return true
+		}
+	}
+	return isSelfSigned && strings.Contains(strings.ToLower(cert.Subject.String()), "dsmpass")
 }
 
 func addCertificateDomain(domains *[]string, seen map[string]bool, value string) {

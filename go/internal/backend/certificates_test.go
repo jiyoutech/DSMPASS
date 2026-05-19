@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -50,8 +51,9 @@ func TestUploadIDPCertificateAppliesCertificateDomain(t *testing.T) {
 	}
 
 	var payload struct {
-		CertificateDomains []string `json:"certificate_domains"`
-		AppliedAccessHost  string   `json:"applied_access_host"`
+		CertificateDomains []string        `json:"certificate_domains"`
+		CertificateInfo    certificateInfo `json:"certificate_info"`
+		AppliedAccessHost  string          `json:"applied_access_host"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
@@ -59,8 +61,23 @@ func TestUploadIDPCertificateAppliesCertificateDomain(t *testing.T) {
 	if payload.AppliedAccessHost != "login.example.com" {
 		t.Fatalf("expected applied certificate domain, got %#v", payload)
 	}
+	if payload.CertificateInfo.CommonName != "login.example.com" || payload.CertificateInfo.Label == "" {
+		t.Fatalf("expected certificate info in response, got %#v", payload.CertificateInfo)
+	}
 	if server.cfg.AccessHost != "login.example.com" || server.cfg.PublicBaseURL != "https://login.example.com:26000" {
 		t.Fatalf("certificate domain was not applied: access_host=%q public_base_url=%q", server.cfg.AccessHost, server.cfg.PublicBaseURL)
+	}
+}
+
+func TestCertificateInformationMarksTestCertificate(t *testing.T) {
+	certPEM, keyPEM := testCertificatePair(t, "dsmpass-test.local")
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := certificateInformation(pair)
+	if !info.IsTestCertificate || info.Label != "测试证书" {
+		t.Fatalf("expected test certificate info, got %#v", info)
 	}
 }
 
