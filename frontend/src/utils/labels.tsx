@@ -34,6 +34,7 @@ const actionLabels: Record<string, string> = {
   sync_dsm_group_member: "同步成员关系",
   disable_missing_dsm_user: "禁用已删除用户",
   create_or_update: "创建或更新",
+  link_existing_dsm_user: "关联已有 DSM 用户",
   disable_missing: "禁用已删除",
   ensure_dsm_user: "准备 DSM 用户",
   ensure_dsm_group: "准备 DSM 部门",
@@ -49,7 +50,13 @@ export function labelOf(value: unknown) {
 
 export function statusTag(status: ProvisionStatus) {
   const color =
-    status === "created" ? "success" : status === "pending" ? "processing" : status === "conflict" ? "error" : "default";
+    status === "created" || status === "linked_existing"
+      ? "success"
+      : status === "pending"
+        ? "processing"
+        : status === "conflict"
+          ? "error"
+          : "default";
   return <Tag color={color}>{labelOf(status)}</Tag>;
 }
 

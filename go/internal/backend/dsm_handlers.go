@@ -366,13 +366,12 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
-	if !created && status != "created" {
-		_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = 'DSM 用户名已存在，请管理员确认绑定或修改用户名', allow_login = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
-		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 用户名已存在，请管理员确认绑定或修改用户名"})
-		return
+	nextStatus := "created"
+	if !created {
+		nextStatus = "linked_existing"
 	}
-	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = 'created', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
-	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_username": username, "provision_status": "created"})
+	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
+	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_username": username, "provision_status": nextStatus})
 }
 
 func (s *Server) provisionDSMGroup(c *gin.Context) {

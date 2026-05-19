@@ -111,6 +111,34 @@ type PageKey = "providers" | "source-detail" | "settings";
 const pageKeys: PageKey[] = ["providers", "source-detail", "settings"];
 type SourceTabKey = "addresses" | "users" | "groups" | "sync-logs" | "audit-logs";
 const sourceTabKeys: SourceTabKey[] = ["addresses", "users", "groups", "sync-logs", "audit-logs"];
+type EnrichedDSMAccount = DSMAccount & { groups: string[]; member_records: GroupMember[] };
+
+function accountConflictKind(record: DSMAccount) {
+  const reason = record.conflict_reason || "";
+  if (reason.includes("飞书用户姓名重名") || reason.includes("飞书通讯录内用户姓名重名")) {
+    return "feishu_duplicate";
+  }
+  if (reason.includes("DSM 用户名已存在") || reason.includes("DSM 本地已存在同名用户")) {
+    return "dsm_existing";
+  }
+  if (reason.includes("已被其他身份占用") || reason.includes("DSM Pass 内已有身份占用")) {
+    return "dsmpass_existing";
+  }
+  return "other";
+}
+
+function accountConflictLabel(record: DSMAccount) {
+  switch (accountConflictKind(record)) {
+    case "feishu_duplicate":
+      return "飞书内重名";
+    case "dsm_existing":
+      return "DSM 已有同名旧记录";
+    case "dsmpass_existing":
+      return "已被其他身份占用";
+    default:
+      return "其他冲突";
+  }
+}
 
 function BridgeLogo() {
   return (
@@ -886,7 +914,7 @@ function SourceDetail({
       .map((account) => {
         const records = (groupsByUser.get(account.dsm_username) ?? []).slice().sort((a, b) => a.dsm_groupname.localeCompare(b.dsm_groupname));
         return { ...account, groups: records.map((member) => member.dsm_groupname), member_records: records };
-      });
+      }) as EnrichedDSMAccount[];
   }, [accounts.data?.items, groupsByUser]);
   const accountRows = useMemo(() => {
     return enrichedAccountRows
@@ -906,6 +934,24 @@ function SourceDetail({
       .filter((group) => includesQuery([group.dsm_groupname, group.provider_group_name, group.provider_group_path, group.provision_status, group.conflict_reason, ...group.members], groupQuery));
   }, [enrichedGroupRows, groupQuery, groupStatusFilter]);
   const conflictAccounts = useMemo(() => enrichedAccountRows.filter((account) => account.provision_status === "conflict"), [enrichedAccountRows]);
+  const feishuDuplicateAccountGroups = useMemo(() => {
+    const groupsByName = new Map<string, EnrichedDSMAccount[]>();
+    for (const account of conflictAccounts) {
+      if (accountConflictKind(account) !== "feishu_duplicate") {
+        continue;
+      }
+      const name = (account.display_name || account.dsm_username || "未命名用户").trim();
+      const rows = groupsByName.get(name) ?? [];
+      rows.push(account);
+      groupsByName.set(name, rows);
+    }
+    return Array.from(groupsByName.entries())
+      .map(([name, items]) => ({ name, items: items.slice().sort((a, b) => a.dsm_username.localeCompare(b.dsm_username)) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [conflictAccounts]);
+  const nonFeishuDuplicateConflictAccounts = useMemo(() => {
+    return conflictAccounts.filter((account) => accountConflictKind(account) !== "feishu_duplicate");
+  }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichedGroupRows.filter((group) => group.provision_status === "conflict"), [enrichedGroupRows]);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
   const filteredSyncLogs = useMemo(() => {
@@ -1130,6 +1176,29 @@ function SourceDetail({
     }
   }
 
+  const accountConflictColumns: ColumnsType<EnrichedDSMAccount> = [
+    { title: "冲突类型", width: 130, render: (_, record) => (
+      <Tag color={accountConflictKind(record) === "dsm_existing" ? "volcano" : accountConflictKind(record) === "feishu_duplicate" ? "error" : "warning"}>
+        {accountConflictLabel(record)}
+      </Tag>
+    ) },
+    { title: "飞书用户", width: 210, render: (_, record) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
+    { title: "邮箱", width: 210, ellipsis: true, render: (_, record) => record.primary_email || record.external_emails || "-" },
+    { title: "手机号", width: 130, ellipsis: true, render: (_, record) => record.mobile_masked || "-" },
+    { title: "部门", width: 220, render: (_, record) => <EntityList values={record.groups} limit={3} /> },
+    { title: "DSM 用户名", width: 220, render: (_, record) => (
+      <Input
+        value={accountConflictDrafts[record.id] ?? record.dsm_username}
+        onChange={(event) => setAccountConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
+      />
+    ) },
+    { title: "操作", width: 100, render: (_, record) => (
+      <Button size="small" type="primary" loading={savingConflictKey === `account:${record.id}`} onClick={() => void saveAccountConflict(record)}>
+        保存
+      </Button>
+    ) }
+  ];
+
   async function setAccountLogin(ids: string[], allowLogin: boolean) {
     if (ids.length === 0) {
       return;
@@ -1227,36 +1296,47 @@ function SourceDetail({
               />
             </div>
           )}
-          {conflictAccounts.length > 0 && (
+          {feishuDuplicateAccountGroups.length > 0 && (
             <div className="conflict-section">
               <div className="conflict-section-head">
-                <strong>用户冲突</strong>
-                <Tag color="error">{conflictAccounts.length}</Tag>
+                <strong>飞书内重名用户</strong>
+                <Tag color="error">{feishuDuplicateAccountGroups.reduce((total, group) => total + group.items.length, 0)}</Tag>
+              </div>
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                {feishuDuplicateAccountGroups.map((group) => (
+                  <div className="conflict-user-group" key={group.name}>
+                    <div className="conflict-user-group-head">
+                      <strong>飞书姓名：{group.name}</strong>
+                      <Tag color="error">{group.items.length} 个同名用户</Tag>
+                    </div>
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      dataSource={group.items}
+                      pagination={false}
+                      rowClassName="conflict-row"
+                      scroll={{ x: 1180 }}
+                      columns={accountConflictColumns}
+                    />
+                  </div>
+                ))}
+              </Space>
+            </div>
+          )}
+          {nonFeishuDuplicateConflictAccounts.length > 0 && (
+            <div className="conflict-section">
+              <div className="conflict-section-head">
+                <strong>其他用户命名冲突</strong>
+                <Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag>
               </div>
               <Table
                 size="small"
                 rowKey="id"
-                dataSource={conflictAccounts}
+                dataSource={nonFeishuDuplicateConflictAccounts}
                 pagination={{ pageSize: 6, hideOnSinglePage: true }}
                 rowClassName="conflict-row"
-                scroll={{ x: 1100 }}
-                columns={[
-                  { title: "飞书用户", width: 210, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
-                  { title: "邮箱", width: 210, ellipsis: true, render: (_, record: DSMAccount) => record.primary_email || record.external_emails || "-" },
-                  { title: "手机号", width: 130, ellipsis: true, render: (_, record: DSMAccount) => record.mobile_masked || "-" },
-                  { title: "部门", width: 220, render: (_, record: DSMAccount) => <EntityList values={(record as DSMAccount & { groups?: string[] }).groups ?? []} limit={3} /> },
-                  { title: "DSM 用户名", width: 220, render: (_, record: DSMAccount) => (
-                    <Input
-                      value={accountConflictDrafts[record.id] ?? record.dsm_username}
-                      onChange={(event) => setAccountConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
-                    />
-                  ) },
-                  { title: "操作", width: 100, render: (_, record: DSMAccount) => (
-                    <Button size="small" type="primary" loading={savingConflictKey === `account:${record.id}`} onClick={() => void saveAccountConflict(record)}>
-                      保存
-                    </Button>
-                  ) }
-                ]}
+                scroll={{ x: 1180 }}
+                columns={accountConflictColumns}
               />
             </div>
           )}

@@ -49,6 +49,14 @@ func (testHelper) ProvisionUser(ctx context.Context, requestID, username, displa
 	return true, nil
 }
 
+type existingUserHelper struct {
+	testHelper
+}
+
+func (existingUserHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	return false, nil
+}
+
 func (testHelper) DisableUser(ctx context.Context, requestID, username string) (bool, error) {
 	return true, nil
 }
@@ -835,6 +843,40 @@ VALUES ('external-a', 'feishu-main', 'user-a', 'user-a', 'user', 'identity-a', '
 	}
 	if managed != 0 || status != "pending" || conflictReason != "" || allowLogin != 1 {
 		t.Fatalf("account conflict not resolved: managed=%d status=%s reason=%q allow_login=%d", managed, status, conflictReason, allowLogin)
+	}
+}
+
+func TestProvisionDSMAccountLinksExistingDSMUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'amktest', 'a@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login)
+VALUES ('account-a', 'identity-a', 'amktest', 'amktest', 1, 'pending', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	router := NewWithDB(config.BackendConfig{}, existingUserHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/dsm-accounts/account-a/provision", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("provision existing user got %d body=%s", response.Code, response.Body.String())
+	}
+	var status, conflictReason string
+	var allowLogin int
+	if err := database.QueryRowContext(ctx, `SELECT provision_status, COALESCE(conflict_reason, ''), allow_login FROM dsm_accounts WHERE id = 'account-a'`).Scan(&status, &conflictReason, &allowLogin); err != nil {
+		t.Fatal(err)
+	}
+	if status != "linked_existing" || conflictReason != "" || allowLogin != 1 {
+		t.Fatalf("existing DSM user should be linked, got status=%s reason=%q allow_login=%d", status, conflictReason, allowLogin)
 	}
 }
 

@@ -440,6 +440,30 @@ body {
   font-weight: 600;
 }
 
+.conflict-user-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+  background: #fff7f6;
+}
+
+.conflict-user-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.conflict-user-group-head strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conflict-row > td {
   background: #fff2f0 !important;
 }

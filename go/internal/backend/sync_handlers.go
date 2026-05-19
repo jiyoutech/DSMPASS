@@ -143,14 +143,15 @@ ORDER BY a.created_at`, sourceSlug)
 			s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, err
 		}
-		if !created && status != "created" {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = 'DSM 用户名已存在，请管理员确认绑定或修改用户名', allow_login = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
-			s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "blocked", status, "conflict", "DSM 用户名已存在，请管理员确认绑定或修改用户名")
-			continue
+		nextStatus := "created"
+		action := "sync_dsm_user"
+		if !created {
+			nextStatus = "linked_existing"
+			action = "link_existing_dsm_user"
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'created', conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
-		s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, "created", "")
-		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_user", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "created"})
+		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
+		s.logSyncOperation(ctx, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, nextStatus, "")
+		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
 	}
 	if err := accountRows.Err(); err != nil {
 		accountRows.Close()

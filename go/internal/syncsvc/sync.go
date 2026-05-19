@@ -60,12 +60,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err != nil {
 			return result, err
 		}
-		account, err := identityService.EnsureDSMAccount(ctx, appIdentity)
+		account, accountCreated, err := identityService.EnsureDSMAccountWithCreated(ctx, appIdentity)
 		if err != nil {
 			return result, err
 		}
-		if duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
-			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, "飞书用户姓名重名，请管理员根据飞书用户信息手动指定 DSM 用户名")
+		if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
+			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, "冲突类型：飞书通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名")
 			if err != nil {
 				return result, err
 			}

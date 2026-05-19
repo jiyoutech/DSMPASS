@@ -52,6 +52,30 @@ func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	assertProvisionCount(t, ctx, database, "dsm_accounts", "pending", 0)
 }
 
+func TestSyncProviderKeepsExistingMappedUserWhenFeishuNameLaterDuplicates(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{
+			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true},
+			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertAccountStatusForSubject(t, ctx, database, "u1", "pending")
+	assertAccountStatusForSubject(t, ctx, database, "u2", "conflict")
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 1)
+}
+
 func TestSyncProviderMarksAllDuplicateGroupsConflict(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
@@ -104,5 +128,21 @@ func assertProvisionCount(t *testing.T, ctx context.Context, database *sql.DB, t
 	}
 	if got != want {
 		t.Fatalf("%s status %s got %d want %d", table, status, got, want)
+	}
+}
+
+func assertAccountStatusForSubject(t *testing.T, ctx context.Context, database *sql.DB, subject, want string) {
+	t.Helper()
+	var got string
+	err := database.QueryRowContext(ctx, `
+SELECT a.provision_status
+FROM external_accounts e
+JOIN dsm_accounts a ON a.app_identity_id = e.app_identity_id
+WHERE e.subject = ?`, subject).Scan(&got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("subject %s status got %s want %s", subject, got, want)
 	}
 }

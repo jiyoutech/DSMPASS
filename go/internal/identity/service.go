@@ -111,16 +111,21 @@ UPDATE external_accounts SET app_identity_id = ?, updated_at = CURRENT_TIMESTAMP
 }
 
 func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity) (db.DSMAccount, error) {
+	account, _, err := s.EnsureDSMAccountWithCreated(ctx, identity)
+	return account, err
+}
+
+func (s *Service) EnsureDSMAccountWithCreated(ctx context.Context, identity db.AppIdentity) (db.DSMAccount, bool, error) {
 	account, err := s.getDSMAccountByIdentity(ctx, identity.ID)
 	if err == nil {
-		return account, nil
+		return account, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return db.DSMAccount{}, err
+		return db.DSMAccount{}, false, err
 	}
 	username, err := s.allocateUsername(ctx, identity)
 	if err != nil {
-		return db.DSMAccount{}, err
+		return db.DSMAccount{}, false, err
 	}
 	status := "pending"
 	allowLogin := 1
@@ -128,10 +133,10 @@ func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity)
 	if existing, existingErr := s.getDSMAccountByNorm(ctx, Normalize(username)); existingErr == nil && existing.AppIdentityID != identity.ID {
 		status = "conflict"
 		allowLogin = 0
-		conflictReason = sql.NullString{String: fmt.Sprintf("飞书用户姓名生成的 DSM 用户名 %q 已被其他身份占用，请管理员根据飞书信息手动指定 DSM 用户名", username), Valid: true}
+		conflictReason = sql.NullString{String: fmt.Sprintf("冲突类型：DSM Pass 内已有身份占用 DSM 用户名 %q。请根据飞书信息手动指定最终 DSM 用户名", username), Valid: true}
 		username = conflictUsername(username, identity.ID)
 	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
-		return db.DSMAccount{}, existingErr
+		return db.DSMAccount{}, false, existingErr
 	}
 	id := uuid.NewString()
 	_, err = s.q.DBTX().ExecContext(ctx, `
@@ -139,16 +144,17 @@ INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, 
 VALUES (?, ?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 `, id, identity.ID, username, Normalize(username), status, conflictReason, allowLogin)
 	if err != nil {
-		return db.DSMAccount{}, err
+		return db.DSMAccount{}, false, err
 	}
-	return s.getDSMAccount(ctx, id)
+	account, err = s.getDSMAccount(ctx, id)
+	return account, true, err
 }
 
 func (s *Service) MarkDSMAccountConflict(ctx context.Context, id, reason string) (db.DSMAccount, error) {
 	_, err := s.q.DBTX().ExecContext(ctx, `
 UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = ?, allow_login = 0, updated_at = CURRENT_TIMESTAMP
-WHERE id = ? AND managed = 1
-`, reason, id)
+WHERE id = ? AND managed = 1 AND (provision_status <> 'conflict' OR conflict_reason IS NULL OR conflict_reason <> ? OR allow_login <> 0)
+`, reason, id, reason)
 	if err != nil {
 		return db.DSMAccount{}, err
 	}
@@ -186,7 +192,7 @@ func (s *Service) ResolveAuthorizedLogin(ctx context.Context, providerSlug, subj
 	if account.AllowLogin == 0 {
 		return external, appIdentity, account, errors.New("login not allowed")
 	}
-	if account.ProvisionStatus != "created" {
+	if account.ProvisionStatus != "created" && account.ProvisionStatus != "linked_existing" {
 		return external, appIdentity, account, errors.New("DSM account not provisioned")
 	}
 	return external, appIdentity, account, nil
@@ -298,8 +304,9 @@ VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 
 func (s *Service) MarkDSMGroupConflict(ctx context.Context, id, reason string) (db.DSMGroup, error) {
 	_, err := s.q.DBTX().ExecContext(ctx, `
-UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-`, reason, id)
+UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND (provision_status <> 'conflict' OR conflict_reason IS NULL OR conflict_reason <> ?)
+`, reason, id, reason)
 	if err != nil {
 		return db.DSMGroup{}, err
 	}
