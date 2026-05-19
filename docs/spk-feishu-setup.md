@@ -154,14 +154,25 @@ DSM Pass 使用的默认飞书接口是：
 4. 配置应用通讯录权限范围，确保包含需要同步的部门和用户。
 5. 创建版本并发布应用，按企业要求完成管理员审核。
 
-DSM Pass 同步用户和部门时至少需要读取用户、部门和部门成员的能力。根据飞书权限页面展示，重点检查这些 scope 或等价权限：
+DSM Pass 同步用户和部门时至少需要读取用户、部门、用户所属部门和部门成员的能力。根据飞书权限页面展示，重点检查这些 scope 或等价权限：
 
 ```text
+必需:
+contact:contact.base:readonly
 contact:user.base:readonly
+contact:user.department:readonly
 contact:department.base:readonly
 contact:department.organize:readonly
-contact:contact.base:readonly
+
+建议:
+contact:user.employee_id:readonly
+
+按需:
+contact:user.email:readonly
+contact:user.phone:readonly
 ```
+
+`contact:user.department:readonly` 用于读取用户所属部门，缺少时多部门用户可能无法和飞书权限保持一致。`contact:user.email:readonly` 和 `contact:user.phone:readonly` 只影响邮箱、手机号字段是否返回，不影响基础登录和部门同步。
 
 飞书权限页面和 scope 名称可能会随开放平台调整。如果同步时报「飞书接口权限不足」或提示缺少某个 `contact:*` scope，按错误信息补开权限、扩大通讯录数据范围，然后重新发布应用。
 

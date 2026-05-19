@@ -161,14 +161,25 @@ https://nas.example.com:5001/                        DSM HTTPS
 7. 创建版本并发布应用，等待管理员审核通过。
 8. 回到 DSM Pass 点击「同步」，检查用户、部门和成员关系。
 
-通讯录同步至少需要读取用户、部门和部门成员的权限。常见 scope 包括：
+通讯录同步至少需要读取用户、部门、用户所属部门和部门成员的权限。建议按下面配置：
 
 ```text
+必需:
+contact:contact.base:readonly
 contact:user.base:readonly
+contact:user.department:readonly
 contact:department.base:readonly
 contact:department.organize:readonly
-contact:contact.base:readonly
+
+建议:
+contact:user.employee_id:readonly
+
+按需:
+contact:user.email:readonly
+contact:user.phone:readonly
 ```
+
+`contact:user.department:readonly` 用于读取用户所属部门，缺少时多部门用户可能无法和飞书权限保持一致。`contact:user.email:readonly` 和 `contact:user.phone:readonly` 只影响邮箱、手机号字段是否返回，不影响基础登录和部门同步。
 
 部门组名规则：
 
