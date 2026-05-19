@@ -152,25 +152,28 @@ DSM Pass 使用的默认飞书接口是：
 2. 在 OAuth 重定向 URL / 回调地址配置里填入 DSM Pass 的 `Callback` 地址。
 3. 在「权限管理」里开通通讯录读取相关权限。
 4. 配置应用通讯录权限范围，确保包含需要同步的部门和用户。
-5. 创建版本并发布应用，按企业要求完成管理员审核。
+5. 配置应用可用范围 / 用户范围，确保允许使用 DSM Pass 登录入口的用户都在范围内。
+6. 创建版本并发布应用，按企业要求完成管理员审核。
 
 DSM Pass 同步用户和部门时至少需要读取用户、部门、用户所属部门和部门成员的能力。根据飞书权限页面展示，重点检查这些 scope 或等价权限：
 
-```text
-必需:
-contact:contact.base:readonly
-contact:user.base:readonly
-contact:user.department:readonly
-contact:department.base:readonly
-contact:department.organize:readonly
+| 类型 | 权限 | 用途 |
+| --- | --- | --- |
+| 必需 | `contact:contact.base:readonly` | 读取通讯录基础数据 |
+| 必需 | `contact:user.base:readonly` | 读取用户姓名等基础信息 |
+| 必需 | `contact:user.department:readonly` | 读取用户所属部门，保证多部门用户同步准确 |
+| 必需 | `contact:department.base:readonly` | 读取部门名称等基础信息 |
+| 必需 | `contact:department.organize:readonly` | 读取部门上下级组织架构 |
+| 建议 | `contact:user.employee_id:readonly` | 读取用户 ID 相关字段，便于后续扩展和排查 |
+| 按需 | `contact:user.email:readonly` | 需要同步邮箱字段时开启 |
+| 按需 | `contact:user.phone:readonly` | 需要同步手机号字段时开启 |
 
-建议:
-contact:user.employee_id:readonly
+飞书里有两个范围要分别设置：
 
-按需:
-contact:user.email:readonly
-contact:user.phone:readonly
-```
+| 范围 | 作用 | 配置建议 |
+| --- | --- | --- |
+| 通讯录权限范围 | 决定应用 API 能读取哪些部门和用户 | 覆盖需要同步到 DSM 的部门和用户 |
+| 应用可用范围 / 用户范围 | 决定哪些用户能看到和使用飞书应用 | 覆盖需要通过 DSM Pass 登录 DSM 的用户 |
 
 `contact:user.department:readonly` 用于读取用户所属部门，缺少时多部门用户可能无法和飞书权限保持一致。`contact:user.email:readonly` 和 `contact:user.phone:readonly` 只影响邮箱、手机号字段是否返回，不影响基础登录和部门同步。
 
