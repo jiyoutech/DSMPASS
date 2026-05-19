@@ -94,22 +94,90 @@ make test
 ## DSM SPK 打包
 
 ```bash
-DSMPASS_VERSION=0.8.6 make package-spk
+DSMPASS_VERSION=0.8.7 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.6-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.6-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.7-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.7-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
 `linux-amd64` 用于 Intel/AMD Synology 机型，`linux-arm64` 用于 ARMv8/aarch64 机型。
 
+也可以从 GitHub Release 下载与 NAS 架构匹配的 SPK：
+
+```text
+DSMPASS-<version>-linux-amd64.spk
+DSMPASS-<version>-linux-arm64.spk
+```
+
 安装 SPK 时可以在向导里配置管理后台端口。端口必须在 `1025-65535` 范围内且未被占用。管理后台默认 HTTPS；IDP 入口协议和端口在管理后台系统配置里单独设置。
 
-从安装 SPK 到配置飞书登录和通讯录同步的完整步骤见 [`docs/spk-feishu-setup.md`](docs/spk-feishu-setup.md)。更多安装、升级和排障细节见 [`docs/dsm-spk-package.md`](docs/dsm-spk-package.md)。
+## SPK 安装步骤
+
+1. 在 DSM 打开「套件中心」。
+2. 进入「设置」，允许手动安装第三方套件。
+3. 点击「手动安装」，上传与 NAS 架构匹配的 `.spk`。
+4. 安装向导里填写管理后台端口，例如 `25000`。
+5. 完成安装并启动套件。
+6. 浏览器打开管理后台：
+
+```text
+https://<NAS-IP-or-domain>:25000/
+```
+
+首次访问会使用自签 HTTPS 证书，浏览器可能提示证书不受信任。测试环境可以继续访问；生产环境建议配置可信证书或放在可信反向代理后面。
+
+## 网页初始化配置
+
+首次进入管理后台后按页面流程配置：
+
+1. 初始化后台管理员账号和密码。
+2. 在系统配置里填写访问 IP/域名，例如 `nas.example.com` 或 NAS IP。
+3. 选择 IDP 协议，生产建议 `HTTPS`。
+4. 设置 IDP 入口端口，例如 `26000`。
+5. 确认 DSM 地址和 DSM Auth API 自动识别正确。
+6. 保存配置后进入身份源管理。
+
+推荐地址规划：
+
+```text
+https://nas.example.com:25000/                       DSM Pass 管理后台
+https://nas.example.com:26000/idp/<source>/launch    用户飞书登录入口
+https://nas.example.com:5001/                        DSM HTTPS
+```
+
+## 飞书配置流程
+
+1. 在飞书开放平台创建企业自建应用。
+2. 复制应用的 `App ID` 和 `App Secret`。
+3. 在 DSM Pass 新建「飞书」身份源，填入 `App ID`、`App Secret`、DSM 初始密码，并开启登录和同步。
+4. 保存后进入身份源详情页，复制页面显示的 `Launch` 和 `Callback` 地址。
+5. 回到飞书开放平台，把 `Launch` 填到网页应用或桌面端主页，把 `Callback` 填到 OAuth 回调地址。
+6. 在飞书「权限管理」里开通通讯录读取权限，并确认应用通讯录权限范围包含需要同步的部门和用户。
+7. 创建版本并发布应用，等待管理员审核通过。
+8. 回到 DSM Pass 点击「同步」，检查用户、部门和成员关系。
+
+通讯录同步至少需要读取用户、部门和部门成员的权限。常见 scope 包括：
+
+```text
+contact:user.base:readonly
+contact:department.base:readonly
+contact:department.organize:readonly
+contact:contact.base:readonly
+```
+
+部门组名规则：
+
+- 飞书部门名不重名时，DSM 部门组名使用原部门名，例如 `marketing`。
+- 飞书部门名重名时，DSM 部门组名使用完整部门路径并把路径分隔符转成 `_`，例如 `matrix/sup1/sup2/sup5` 会生成 `matrix_sup1_sup2_sup5`。
+
+正常情况下，点击「同步」会自动通过 Helper 创建或更新 DSM 用户、DSM 部门组和成员关系。页面里的「开通」按钮只用于异常后的单条补偿，例如 Helper 未提权、上次同步中断或 DSM 同名对象冲突。
+
+完整安装、升级和排障步骤见 [`docs/spk-feishu-setup.md`](docs/spk-feishu-setup.md) 和 [`docs/dsm-spk-package.md`](docs/dsm-spk-package.md)。
 
 ### Helper 权限初始化
 
