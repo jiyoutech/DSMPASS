@@ -307,6 +307,8 @@ function Onboarding({
         access_host: settings.access_host,
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
+        admin_allowed_cidrs: settings.admin_allowed_cidrs,
+        idp_allowed_cidrs: settings.idp_allowed_cidrs,
         public_base_url: withPreferredPort(settings.public_base_url, idpPort),
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
@@ -350,6 +352,8 @@ function Onboarding({
           initialValues={{
             access_scheme: "https",
             idp_port: defaultIDPPort,
+            admin_allowed_cidrs: "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10",
+            idp_allowed_cidrs: "0.0.0.0/0,::/0",
             helper_dsm_login_mode: "browser",
             helper_dsm_browser_login_ttl_seconds: 30,
             helper_dsm_tls_skip_verify: true
@@ -1484,8 +1488,7 @@ function SourceDetail({
                       { label: "用户", value: sourceStats.users },
                       { label: "待开通", value: sourceStats.pendingUsers, tone: sourceStats.pendingUsers ? "warning" : "default" },
                       { label: "冲突", value: sourceStats.accountConflicts, tone: sourceStats.accountConflicts ? "danger" : "default" },
-                      { label: "禁止登录", value: sourceStats.disabledLogin, tone: sourceStats.disabledLogin ? "danger" : "default" },
-                      { label: "当前结果", value: accountRows.length }
+                      { label: "禁止登录", value: sourceStats.disabledLogin, tone: sourceStats.disabledLogin ? "danger" : "default" }
                     ]}
                   />
                 }
@@ -1663,7 +1666,6 @@ function SourceDetail({
                     items={[
                       { label: "同步日志", value: syncLogs.data?.items.length ?? 0 },
                       { label: "同步失败", value: sourceStats.syncFailed, tone: sourceStats.syncFailed ? "danger" : "default" },
-                      { label: "当前结果", value: filteredSyncLogs.length },
                       { label: "成员关系", value: sourceStats.members }
                     ]}
                   />
@@ -1727,7 +1729,6 @@ function SourceDetail({
                     items={[
                       { label: "登录审计", value: auditLogs.data?.items.length ?? 0 },
                       { label: "登录失败", value: sourceStats.loginFailed, tone: sourceStats.loginFailed ? "danger" : "default" },
-                      { label: "当前结果", value: filteredAuditLogs.length },
                       { label: "用户", value: sourceStats.users }
                     ]}
                   />

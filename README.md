@@ -35,14 +35,14 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把飞书 OAuth
 也可以本地打包：
 
 ```bash
-DSMPASS_VERSION=0.8.13 make package-spk
+DSMPASS_VERSION=0.8.14 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.13-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.13-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.14-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.14-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -327,6 +327,10 @@ export DSMPASS_HELPER_HMAC_SECRET="$(openssl rand -hex 32)"
 | `DSMPASS_HELPER_HMAC_SECRET` | 后端与 Helper 共用的强随机密钥 |
 | `DSMPASS_GO_LISTEN` | 管理后台监听地址，默认 `0.0.0.0:25000` |
 | `DSMPASS_TLS_ENABLED` | 管理后台是否启用 HTTPS，SPK 默认启用 |
+| `DSMPASS_TLS_CERT_FILE` / `DSMPASS_TLS_KEY_FILE` | 管理端口证书和私钥路径 |
+| `DSMPASS_IDP_TLS_CERT_FILE` / `DSMPASS_IDP_TLS_KEY_FILE` | 认证端口证书和私钥路径 |
+| `DSMPASS_ADMIN_ALLOWED_CIDRS` | 管理端口允许访问的来源网段，默认仅本机和内网 |
+| `DSMPASS_IDP_ALLOWED_CIDRS` | 认证端口允许访问的来源网段，默认允许所有网络 |
 | `DSMPASS_DSM_REDIRECT_URL` | 登录成功后跳转的 DSM 地址 |
 | `DSMPASS_DSM_LOGIN_API` | DSM Auth API 地址 |
 | `DSMPASS_LOGIN_DIAGNOSTICS` | 登录诊断日志开关，生产保持 `false` |

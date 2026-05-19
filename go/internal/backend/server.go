@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -111,4 +112,18 @@ func (s *Server) restartIDPRouteOnly(reason string) {
 			notice("failed to restart idp route: " + err.Error())
 		}
 	}()
+}
+
+func (s *Server) restartIDPRouteNow(reason string) error {
+	s.idpRouteMu.Lock()
+	restart := s.restartIDPRoute
+	notice := s.restartIDPNotice
+	s.idpRouteMu.Unlock()
+	if restart == nil {
+		return fmt.Errorf("idp route restarter is not configured")
+	}
+	if notice != nil {
+		notice("restarting idp route: " + reason)
+	}
+	return restart()
 }

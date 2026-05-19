@@ -48,6 +48,8 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		"access_scheme":                        s.configuredAccessScheme(),
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
 		"idp_port":                             firstPositiveInt(parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)), 25000),
+		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
+		"idp_allowed_cidrs":                    s.cfg.IDPAllowedCIDRs,
 		"public_base_url":                      s.cfg.PublicBaseURL,
 		"dsm_redirect_url":                     s.cfg.DSMRedirectURL,
 		"dsm_cookie_name":                      s.cfg.DSMCookieName,
@@ -133,6 +135,10 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 			s.cfg.IDPListen = replaceListenPort(s.cfg.IDPListen, s.cfg.Listen, port)
 			s.cfg.PublicBaseURL = replaceBaseURLPort(s.cfg.PublicBaseURL, port)
 		}
+	case "admin_allowed_cidrs":
+		s.cfg.AdminAllowedCIDRs = asString()
+	case "idp_allowed_cidrs":
+		s.cfg.IDPAllowedCIDRs = asString()
 	case "dsm_redirect_url":
 		s.cfg.DSMRedirectURL = normalizeDSMBaseURL(asString())
 	case "helper_dsm_login_api":

@@ -6,6 +6,8 @@ import (
 )
 
 const defaultAccessHost = "127.0.0.1"
+const defaultAdminAllowedCIDRs = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+const defaultIDPAllowedCIDRs = "0.0.0.0/0,::/0"
 
 type BackendConfig struct {
 	Listen                     string
@@ -15,6 +17,10 @@ type BackendConfig struct {
 	TLSEnabled                 bool
 	TLSCertFile                string
 	TLSKeyFile                 string
+	IDPTLSCertFile             string
+	IDPTLSKeyFile              string
+	AdminAllowedCIDRs          string
+	IDPAllowedCIDRs            string
 	AdminAuthEnabled           bool
 	AdminUsername              string
 	AdminPassword              string
@@ -99,6 +105,10 @@ func LoadBackend() BackendConfig {
 		TLSEnabled:                 tlsEnabled,
 		TLSCertFile:                env("DSMPASS_TLS_CERT_FILE", dataDir+"/tls/server.crt"),
 		TLSKeyFile:                 env("DSMPASS_TLS_KEY_FILE", dataDir+"/tls/server.key"),
+		IDPTLSCertFile:             env("DSMPASS_IDP_TLS_CERT_FILE", dataDir+"/tls/idp.crt"),
+		IDPTLSKeyFile:              env("DSMPASS_IDP_TLS_KEY_FILE", dataDir+"/tls/idp.key"),
+		AdminAllowedCIDRs:          env("DSMPASS_ADMIN_ALLOWED_CIDRS", defaultAdminAllowedCIDRs),
+		IDPAllowedCIDRs:            env("DSMPASS_IDP_ALLOWED_CIDRS", defaultIDPAllowedCIDRs),
 		AdminAuthEnabled:           envBool("DSMPASS_ADMIN_AUTH_ENABLED", true),
 		AdminUsername:              env("DSMPASS_ADMIN_USERNAME", "admin"),
 		AdminPassword:              env("DSMPASS_ADMIN_PASSWORD", ""),

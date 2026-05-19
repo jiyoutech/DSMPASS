@@ -27,16 +27,19 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 	router.GET("/readyz", s.health)
 
 	if includeAdmin {
-		router.GET("/api/admin/auth/status", s.adminAuthStatus)
-		router.POST("/api/admin/auth/login", s.adminLogin)
-		router.POST("/api/admin/auth/logout", s.adminLogout)
-		router.POST("/api/admin/auth/setup", s.adminSetup)
+		adminNetwork := s.adminAccessControl()
+		router.GET("/api/admin/auth/status", adminNetwork, s.adminAuthStatus)
+		router.POST("/api/admin/auth/login", adminNetwork, s.adminLogin)
+		router.POST("/api/admin/auth/logout", adminNetwork, s.adminLogout)
+		router.POST("/api/admin/auth/setup", adminNetwork, s.adminSetup)
 
-		admin := router.Group("/api/admin", s.adminAuth())
+		admin := router.Group("/api/admin", adminNetwork, s.adminAuth())
 		admin.PUT("/auth/password", s.adminChangePassword)
 		admin.GET("/settings", s.getSettings)
 		admin.PUT("/settings", s.putSettings)
 		admin.POST("/settings/discover", s.discoverSettings)
+		admin.POST("/settings/certificates/:scope", s.uploadCertificate)
+		admin.POST("/idp-route/restart", s.restartIDPRouteHandler)
 		admin.GET("/version", s.version)
 		admin.GET("/helper/status", s.helperStatus)
 		admin.POST("/helper/restart", s.restartHelper)
@@ -68,19 +71,19 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.GET("/relay/journals", s.relayJournals)
 		admin.POST("/relay/recover", s.relayRecover)
 
-		sync := router.Group("/api/sync/:provider", s.adminAuth())
+		sync := router.Group("/api/sync/:provider", adminNetwork, s.adminAuth())
 		sync.POST("/apply", s.syncApply)
 	}
 
 	if includeIDP {
-		idp := router.Group("/idp/:provider")
+		idp := router.Group("/idp/:provider", s.idpAccessControl())
 		idp.GET("/launch", s.launch)
 		idp.GET("/callback", s.callback)
 		idp.POST("/browser-login/complete", s.completeBrowserLogin)
 	}
 
 	if includeAdmin {
-		router.NoRoute(s.frontend)
+		router.NoRoute(s.adminAccessControl(), s.frontend)
 	}
 	return router
 }

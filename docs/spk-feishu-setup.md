@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.13 make package-spk
+DSMPASS_VERSION=0.8.14 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.13-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.13-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.14-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.14-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -89,6 +89,8 @@ https://<NAS-IP-or-domain>:25000/
 - `IDP 协议`：用户访问 IDP 入口使用的协议。生产建议 `HTTPS`。
 - `访问 IP / 域名`：用户和飞书回调能访问到的 NAS 域名或 IP，不包含协议和路径，例如 `nas.example.com`。
 - `IDP 入口端口`：建议 `26000`，必须大于 `1024` 且未被占用。
+- `管理端口允许网段`：默认仅允许本机和内网访问；如果需要外网管理，必须明确加入对应公网网段。
+- `认证端口允许网段`：默认允许所有网络访问；只给内网登录时可改成内网网段。
 - `IDP 地址`：自动生成，例如 `https://nas.example.com:26000`。
 - `DSM 地址`：自动生成，HTTPS 对应 `https://nas.example.com:5001/`。
 - `DSM Auth API`：自动生成，HTTPS 对应 `https://nas.example.com:5001/webapi/entry.cgi`。

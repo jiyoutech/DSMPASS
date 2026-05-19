@@ -66,12 +66,19 @@ func main() {
 			log.Printf("admin username: %s", cfg.AdminUsername)
 		}
 	}
-	if cfg.TLSEnabled || server.IDPTLSEnabled() {
+	if cfg.TLSEnabled {
 		if err := ensureCertificate(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.AccessHost); err != nil {
 			_ = listener.Close()
 			log.Fatal(err)
 		}
-		log.Printf("tls cert=%s key=%s", cfg.TLSCertFile, cfg.TLSKeyFile)
+		log.Printf("admin tls cert=%s key=%s", cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+	if server.IDPTLSEnabled() {
+		if err := ensureCertificate(cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile, cfg.AccessHost); err != nil {
+			_ = listener.Close()
+			log.Fatal(err)
+		}
+		log.Printf("idp tls cert=%s key=%s", cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile)
 	}
 	if cfg.TLSEnabled {
 		log.Printf("admin tls enabled")
@@ -83,15 +90,15 @@ func main() {
 	} else {
 		log.Printf("idp tls disabled")
 	}
-	serve(server, listener, actualListen, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile)
+	serve(server, listener, actualListen, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile)
 }
 
-func serve(server *backend.Server, adminListener net.Listener, adminListen string, tlsEnabled bool, certFile, keyFile string) {
+func serve(server *backend.Server, adminListener net.Listener, adminListen string, tlsEnabled bool, certFile, keyFile, idpCertFile, idpKeyFile string) {
 	idpRoutes := &idpRouteService{
 		server:      server,
 		adminListen: adminListen,
-		certFile:    certFile,
-		keyFile:     keyFile,
+		certFile:    idpCertFile,
+		keyFile:     idpKeyFile,
 	}
 	server.SetIDPRouteRestarter(idpRoutes.Restart, func(message string) {
 		log.Printf("%s", message)

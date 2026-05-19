@@ -22,13 +22,14 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
+    ...init,
+    headers
   });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
@@ -87,6 +88,13 @@ export const api = {
   systemSettings: () => request<SystemSettings>("/api/admin/settings"),
   updateSystemSettings: (payload: SystemSettingsUpdate) =>
     request<SystemSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) }),
+  uploadCertificate: (scope: "admin" | "idp", cert: File, key: File) => {
+    const body = new FormData();
+    body.append("cert", cert);
+    body.append("key", key);
+    return request<{ success: boolean; scope: string; restart_required: boolean }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
+  },
+  restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),
   loginAuditLogs: (provider?: string) => request<{ items: LoginAuditLog[] }>(`/api/admin/audit/logins${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),

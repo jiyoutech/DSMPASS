@@ -215,6 +215,8 @@ export interface SystemSettings {
   access_scheme: "http" | "https";
   admin_port: number;
   idp_port: number;
+  admin_allowed_cidrs: string;
+  idp_allowed_cidrs: string;
   public_base_url: string;
   dsm_redirect_url: string;
   dsm_cookie_name: string;
@@ -236,6 +238,8 @@ export interface SystemSettingsDiscovery {
   access_scheme: "http" | "https";
   admin_port: number;
   idp_port: number;
+  admin_allowed_cidrs?: string;
+  idp_allowed_cidrs?: string;
   public_base_url: string;
   dsm_redirect_url: string;
   helper_dsm_login_api: string;

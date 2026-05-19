@@ -308,6 +308,24 @@ body {
   width: 100%;
 }
 
+.certificate-upload {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.certificate-upload .ant-upload-wrapper,
+.certificate-upload .ant-btn {
+  width: 100%;
+}
+
+.certificate-upload .ant-upload {
+  display: block;
+}
+
 .launch-copy-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

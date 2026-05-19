@@ -92,6 +92,12 @@ load_env() {
   export DSMPASS_GO_LISTEN="${DSMPASS_GO_LISTEN:-0.0.0.0:25000}"
   export DSMPASS_ACCESS_HOST="${DSMPASS_ACCESS_HOST:-}"
   export DSMPASS_TLS_ENABLED="${DSMPASS_TLS_ENABLED:-1}"
+  export DSMPASS_TLS_CERT_FILE="${DSMPASS_TLS_CERT_FILE:-$PKGVAR/data/tls/server.crt}"
+  export DSMPASS_TLS_KEY_FILE="${DSMPASS_TLS_KEY_FILE:-$PKGVAR/data/tls/server.key}"
+  export DSMPASS_IDP_TLS_CERT_FILE="${DSMPASS_IDP_TLS_CERT_FILE:-$PKGVAR/data/tls/idp.crt}"
+  export DSMPASS_IDP_TLS_KEY_FILE="${DSMPASS_IDP_TLS_KEY_FILE:-$PKGVAR/data/tls/idp.key}"
+  export DSMPASS_ADMIN_ALLOWED_CIDRS="${DSMPASS_ADMIN_ALLOWED_CIDRS:-}"
+  export DSMPASS_IDP_ALLOWED_CIDRS="${DSMPASS_IDP_ALLOWED_CIDRS:-}"
   export DSMPASS_DSM_REDIRECT_URL="${DSMPASS_DSM_REDIRECT_URL:-}"
   export DSMPASS_DSM_LOGIN_API="${DSMPASS_DSM_LOGIN_API:-}"
 }
@@ -210,11 +216,35 @@ if [ ! -f "$ENVFILE" ]; then
 DSMPASS_HELPER_HMAC_SECRET=$secret
 DSMPASS_GO_LISTEN=0.0.0.0:$management_port
 DSMPASS_TLS_ENABLED=1
+DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt
+DSMPASS_TLS_KEY_FILE=$PKGVAR/data/tls/server.key
+DSMPASS_IDP_TLS_CERT_FILE=$PKGVAR/data/tls/idp.crt
+DSMPASS_IDP_TLS_KEY_FILE=$PKGVAR/data/tls/idp.key
+DSMPASS_ADMIN_ALLOWED_CIDRS=127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10
+DSMPASS_IDP_ALLOWED_CIDRS=0.0.0.0/0,::/0
 EOF_ENV
   chmod 600 "$ENVFILE"
 else
   if ! grep -q '^DSMPASS_TLS_ENABLED=' "$ENVFILE"; then
     printf '%s\n' 'DSMPASS_TLS_ENABLED=1' >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_TLS_CERT_FILE=' "$ENVFILE"; then
+    printf '%s\n' "DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt" >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_TLS_KEY_FILE=' "$ENVFILE"; then
+    printf '%s\n' "DSMPASS_TLS_KEY_FILE=$PKGVAR/data/tls/server.key" >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_IDP_TLS_CERT_FILE=' "$ENVFILE"; then
+    printf '%s\n' "DSMPASS_IDP_TLS_CERT_FILE=$PKGVAR/data/tls/idp.crt" >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_IDP_TLS_KEY_FILE=' "$ENVFILE"; then
+    printf '%s\n' "DSMPASS_IDP_TLS_KEY_FILE=$PKGVAR/data/tls/idp.key" >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_ADMIN_ALLOWED_CIDRS=' "$ENVFILE"; then
+    printf '%s\n' 'DSMPASS_ADMIN_ALLOWED_CIDRS=127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10' >> "$ENVFILE"
+  fi
+  if ! grep -q '^DSMPASS_IDP_ALLOWED_CIDRS=' "$ENVFILE"; then
+    printf '%s\n' 'DSMPASS_IDP_ALLOWED_CIDRS=0.0.0.0/0,::/0' >> "$ENVFILE"
   fi
 fi
 

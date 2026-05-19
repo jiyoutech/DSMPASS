@@ -99,6 +99,18 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 			}
 			value = port
 		}
+		if key == "admin_allowed_cidrs" {
+			value = strings.TrimSpace(asRuntimeString(value))
+			if err := validateCIDRList(value.(string), "admin_allowed_cidrs"); err != nil {
+				return err
+			}
+		}
+		if key == "idp_allowed_cidrs" {
+			value = strings.TrimSpace(asRuntimeString(value))
+			if err := validateCIDRList(value.(string), "idp_allowed_cidrs"); err != nil {
+				return err
+			}
+		}
 		if err := s.persistRuntimeSetting(ctx, key, value); err != nil {
 			return err
 		}

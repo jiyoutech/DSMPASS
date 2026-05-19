@@ -110,6 +110,38 @@ func TestServerServesFrontendAndAPI(t *testing.T) {
 	}
 }
 
+func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
+	cfg := config.BackendConfig{
+		RelayMode:         "socket",
+		DSMRedirectURL:    "https://nas.example.com/",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		AdminAllowedCIDRs: "10.0.0.0/8",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/auth/status", nil)
+	request.RemoteAddr = "203.0.113.10:12345"
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden, got %d body=%s", response.Code, response.Body.String())
+	}
+
+	allowed := httptest.NewRecorder()
+	allowedRequest := httptest.NewRequest("GET", "/api/admin/auth/status", nil)
+	allowedRequest.RemoteAddr = "10.1.2.3:12345"
+	router.ServeHTTP(allowed, allowedRequest)
+	if allowed.Code == http.StatusForbidden {
+		t.Fatalf("expected allowed network, got %d body=%s", allowed.Code, allowed.Body.String())
+	}
+}
+
 func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")

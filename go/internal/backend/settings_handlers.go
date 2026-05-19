@@ -170,7 +170,7 @@ func isDSMAuthAPIInfo(body []byte) bool {
 
 func runtimeSettingAllowed(key string) bool {
 	switch key {
-	case "access_host", "access_scheme", "idp_port", "public_base_url", "dsm_redirect_url", "dsm_cookie_name", "dsm_cookie_secure", "dsm_cookie_httponly", "dsm_cookie_samesite", "relay_helper_hmac_secret", "helper_dsm_login_mode", "helper_dsm_browser_login_ttl_seconds", "helper_dsm_login_api", "helper_dsm_session", "helper_dsm_format", "helper_dsm_otp_code", "helper_dsm_enable_device_token", "helper_dsm_device_name", "helper_dsm_device_id", "helper_dsm_tls_skip_verify", "helper_dsm_timeout_seconds", "setup_completed":
+	case "access_host", "access_scheme", "idp_port", "admin_allowed_cidrs", "idp_allowed_cidrs", "public_base_url", "dsm_redirect_url", "dsm_cookie_name", "dsm_cookie_secure", "dsm_cookie_httponly", "dsm_cookie_samesite", "relay_helper_hmac_secret", "helper_dsm_login_mode", "helper_dsm_browser_login_ttl_seconds", "helper_dsm_login_api", "helper_dsm_session", "helper_dsm_format", "helper_dsm_otp_code", "helper_dsm_enable_device_token", "helper_dsm_device_name", "helper_dsm_device_id", "helper_dsm_tls_skip_verify", "helper_dsm_timeout_seconds", "setup_completed":
 		return true
 	default:
 		return false
