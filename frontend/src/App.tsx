@@ -954,6 +954,8 @@ function SourceDetail({
   }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichedGroupRows.filter((group) => group.provision_status === "conflict"), [enrichedGroupRows]);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
+  const currentFeishuDuplicateGroup = feishuDuplicateAccountGroups[0];
+  const conflictStepCount = (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
   const filteredSyncLogs = useMemo(() => {
     return (syncLogs.data?.items ?? [])
       .filter((record) => syncStatusFilter === "all" || record.status === syncStatusFilter)
@@ -1075,6 +1077,12 @@ function SourceDetail({
     });
   };
 
+  async function provisionAccountAfterRename(id: string) {
+    const result = await api.provisionAccount(id);
+    await accounts.reloadWithResult({ silent: true });
+    return result;
+  }
+
   const editAccountUsername = (record: DSMAccount) => {
     let nextUsername = record.dsm_username;
     modal.confirm({
@@ -1091,8 +1099,8 @@ function SourceDetail({
       ),
       onOk: async () => {
         await api.setDSMAccountUsername(record.id, nextUsername);
-        message.success("已更新 DSM 用户名");
-        await accounts.reloadWithResult({ silent: true });
+        const result = await provisionAccountAfterRename(record.id);
+        message.success(result.provision_status === "linked_existing" ? "已保存并关联已有 DSM 用户" : "已保存并开通 DSM 用户");
       }
     });
   };
@@ -1109,6 +1117,12 @@ function SourceDetail({
     });
   };
 
+  async function provisionGroupAfterRename(id: string) {
+    const result = await api.provisionGroup(id);
+    await groups.reloadWithResult({ silent: true });
+    return result;
+  }
+
   const editGroupName = (record: DSMGroup) => {
     let nextGroupname = record.dsm_groupname;
     modal.confirm({
@@ -1124,53 +1138,97 @@ function SourceDetail({
       ),
       onOk: async () => {
         await api.setDSMGroupName(record.id, nextGroupname);
-        message.success("已更新 DSM 部门组名");
-        await groups.reloadWithResult({ silent: true });
+        const result = await provisionGroupAfterRename(record.id);
+        message.success(result.provision_status === "created" ? "已保存并开通 DSM 部门组" : "已保存，空部门会在成员同步时创建");
       }
     });
   };
 
-  async function saveAccountConflict(record: DSMAccount) {
-    const nextUsername = (accountConflictDrafts[record.id] ?? record.dsm_username).trim();
-    if (!nextUsername) {
-      message.error("DSM 用户名不能为空");
+  function validateUniqueDrafts<T extends { id: string }>(items: T[], valueOf: (item: T) => string, emptyMessage: string, duplicateMessage: string) {
+    const seen = new Set<string>();
+    for (const item of items) {
+      const value = valueOf(item).trim();
+      if (!value) {
+        message.error(emptyMessage);
+        return false;
+      }
+      const norm = value.toLowerCase();
+      if (seen.has(norm)) {
+        message.error(duplicateMessage);
+        return false;
+      }
+      seen.add(norm);
+    }
+    return true;
+  }
+
+  async function saveAccountConflictBatch(records: EnrichedDSMAccount[], batchKey: string) {
+    if (!validateUniqueDrafts(
+      records,
+      (record) => accountConflictDrafts[record.id] ?? record.dsm_username,
+      "DSM 用户名不能为空",
+      "同一批用户里不能使用相同 DSM 用户名"
+    )) {
       return;
     }
-    setSavingConflictKey(`account:${record.id}`);
+    setSavingConflictKey(batchKey);
     try {
-      await api.setDSMAccountUsername(record.id, nextUsername);
+      let linkedExisting = 0;
+      for (const record of records) {
+        const nextUsername = (accountConflictDrafts[record.id] ?? record.dsm_username).trim();
+        await api.setDSMAccountUsername(record.id, nextUsername);
+        const result = await provisionAccountAfterRename(record.id);
+        if (result.provision_status === "linked_existing") {
+          linkedExisting += 1;
+        }
+      }
       setAccountConflictDrafts((drafts) => {
         const next = { ...drafts };
-        delete next[record.id];
+        for (const record of records) {
+          delete next[record.id];
+        }
         return next;
       });
-      await accounts.reloadWithResult({ silent: true });
-      message.success("已保存 DSM 用户名");
+      message.success(linkedExisting > 0 ? `已保存 ${records.length} 个用户，其中 ${linkedExisting} 个关联已有 DSM 用户` : `已保存并开通 ${records.length} 个 DSM 用户`);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : "保存失败");
+      await accounts.reloadWithResult({ silent: true });
+      message.error(err instanceof Error ? err.message : "保存或开通失败，请继续修改或检查 Helper 权限");
     } finally {
       setSavingConflictKey(null);
     }
   }
 
-  async function saveGroupConflict(record: DSMGroup) {
-    const nextGroupname = (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim();
-    if (!nextGroupname) {
-      message.error("DSM 部门组名不能为空");
+  async function saveGroupConflictBatch(records: DSMGroup[], batchKey: string) {
+    if (!validateUniqueDrafts(
+      records,
+      (record) => groupConflictDrafts[record.id] ?? record.dsm_groupname,
+      "DSM 部门组名不能为空",
+      "同一批部门里不能使用相同 DSM 部门组名"
+    )) {
       return;
     }
-    setSavingConflictKey(`group:${record.id}`);
+    setSavingConflictKey(batchKey);
     try {
-      await api.setDSMGroupName(record.id, nextGroupname);
+      let pendingEmptyGroups = 0;
+      for (const record of records) {
+        const nextGroupname = (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim();
+        await api.setDSMGroupName(record.id, nextGroupname);
+        const result = await provisionGroupAfterRename(record.id);
+        if (result.provision_status !== "created") {
+          pendingEmptyGroups += 1;
+        }
+      }
       setGroupConflictDrafts((drafts) => {
         const next = { ...drafts };
-        delete next[record.id];
+        for (const record of records) {
+          delete next[record.id];
+        }
         return next;
       });
-      await groups.reloadWithResult({ silent: true });
-      message.success("已保存 DSM 部门组名");
+      message.success(pendingEmptyGroups > 0 ? `已保存 ${records.length} 个部门，其中 ${pendingEmptyGroups} 个空部门会在成员同步时创建` : `已保存并开通 ${records.length} 个 DSM 部门组`);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : "保存失败");
+      await groups.reloadWithResult({ silent: true });
+      message.error(err instanceof Error ? err.message : "保存或开通失败，请继续修改或检查 Helper 权限");
     } finally {
       setSavingConflictKey(null);
     }
@@ -1192,11 +1250,6 @@ function SourceDetail({
         onChange={(event) => setAccountConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
       />
     ) },
-    { title: "操作", width: 100, render: (_, record) => (
-      <Button size="small" type="primary" loading={savingConflictKey === `account:${record.id}`} onClick={() => void saveAccountConflict(record)}>
-        保存
-      </Button>
-    ) }
   ];
 
   async function setAccountLogin(ids: string[], allowLogin: boolean) {
@@ -1264,14 +1317,22 @@ function SourceDetail({
             type="error"
             showIcon
             message={`还有 ${conflictGroups.length} 个部门冲突、${conflictAccounts.length} 个用户冲突未处理`}
-            description="请先处理部门冲突，再处理用户冲突；保存后对应项会回到待开通状态。"
+            description="请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"
           />
           {conflictGroups.length > 0 && (
-            <div className="conflict-section">
-              <div className="conflict-section-head">
-                <strong>部门冲突</strong>
-                <Tag color="error">{conflictGroups.length}</Tag>
-              </div>
+            <Card
+              className="conflict-step-card"
+              title={<Space><span>第 1 / {conflictStepCount} 组：部门冲突</span><Tag color="error">{conflictGroups.length}</Tag></Space>}
+              extra={(
+                <Button
+                  type="primary"
+                  loading={savingConflictKey === "groups:all"}
+                  onClick={() => void saveGroupConflictBatch(conflictGroups, "groups:all")}
+                >
+                  保存并开通本组
+                </Button>
+              )}
+            >
               <Table
                 size="small"
                 rowKey="id"
@@ -1287,49 +1348,60 @@ function SourceDetail({
                       onChange={(event) => setGroupConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
                     />
                   ) },
-                  { title: "冲突原因", dataIndex: "conflict_reason", ellipsis: true, render: (value) => value || "-" },
-                  { title: "操作", width: 100, render: (_, record: DSMGroup) => (
-                    <Button size="small" type="primary" loading={savingConflictKey === `group:${record.id}`} onClick={() => void saveGroupConflict(record)}>
-                      保存
-                    </Button>
-                  ) }
+                  { title: "冲突原因", dataIndex: "conflict_reason", ellipsis: true, render: (value) => value || "-" }
                 ]}
               />
-            </div>
+            </Card>
           )}
-          {feishuDuplicateAccountGroups.length > 0 && (
-            <div className="conflict-section">
-              <div className="conflict-section-head">
-                <strong>飞书内重名用户</strong>
-                <Tag color="error">{feishuDuplicateAccountGroups.reduce((total, group) => total + group.items.length, 0)}</Tag>
+          {conflictGroups.length === 0 && currentFeishuDuplicateGroup && (
+            <Card
+              className="conflict-step-card"
+              title={(
+                <Space>
+                  <span>第 1 / {conflictStepCount} 组：飞书内重名用户</span>
+                  <Tag color="error">{currentFeishuDuplicateGroup.items.length} 个同名用户</Tag>
+                </Space>
+              )}
+              extra={(
+                <Button
+                  type="primary"
+                  loading={savingConflictKey === `accounts:feishu:${currentFeishuDuplicateGroup.name}`}
+                  onClick={() => void saveAccountConflictBatch(currentFeishuDuplicateGroup.items, `accounts:feishu:${currentFeishuDuplicateGroup.name}`)}
+                >
+                  保存并开通本组
+                </Button>
+              )}
+            >
+              <div className="conflict-user-group">
+                <div className="conflict-user-group-head">
+                  <strong>飞书姓名：{currentFeishuDuplicateGroup.name}</strong>
+                </div>
+                <Table
+                  size="small"
+                  rowKey="id"
+                  dataSource={currentFeishuDuplicateGroup.items}
+                  pagination={false}
+                  rowClassName="conflict-row"
+                  scroll={{ x: 1320 }}
+                  columns={accountConflictColumns}
+                />
               </div>
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                {feishuDuplicateAccountGroups.map((group) => (
-                  <div className="conflict-user-group" key={group.name}>
-                    <div className="conflict-user-group-head">
-                      <strong>飞书姓名：{group.name}</strong>
-                      <Tag color="error">{group.items.length} 个同名用户</Tag>
-                    </div>
-                    <Table
-                      size="small"
-                      rowKey="id"
-                      dataSource={group.items}
-                      pagination={false}
-                      rowClassName="conflict-row"
-                      scroll={{ x: 1320 }}
-                      columns={accountConflictColumns}
-                    />
-                  </div>
-                ))}
-              </Space>
-            </div>
+            </Card>
           )}
-          {nonFeishuDuplicateConflictAccounts.length > 0 && (
-            <div className="conflict-section">
-              <div className="conflict-section-head">
-                <strong>其他用户命名冲突</strong>
-                <Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag>
-              </div>
+          {conflictGroups.length === 0 && !currentFeishuDuplicateGroup && nonFeishuDuplicateConflictAccounts.length > 0 && (
+            <Card
+              className="conflict-step-card"
+              title={<Space><span>第 1 / {conflictStepCount} 组：其他用户命名冲突</span><Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag></Space>}
+              extra={(
+                <Button
+                  type="primary"
+                  loading={savingConflictKey === "accounts:other"}
+                  onClick={() => void saveAccountConflictBatch(nonFeishuDuplicateConflictAccounts, "accounts:other")}
+                >
+                  保存并开通本组
+                </Button>
+              )}
+            >
               <Table
                 size="small"
                 rowKey="id"
@@ -1339,7 +1411,7 @@ function SourceDetail({
                 scroll={{ x: 1320 }}
                 columns={accountConflictColumns}
               />
-            </div>
+            </Card>
           )}
         </Space>
       </Modal>

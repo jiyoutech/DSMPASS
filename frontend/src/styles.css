@@ -429,9 +429,19 @@ body {
   gap: 10px;
 }
 
+.conflict-step-card .ant-card-head {
+  align-items: center;
+  min-height: 52px;
+}
+
+.conflict-step-card .ant-card-body {
+  padding: 14px;
+}
+
 .conflict-section-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

@@ -35,14 +35,14 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把飞书 OAuth
 也可以本地打包：
 
 ```bash
-DSMPASS_VERSION=0.8.12 make package-spk
+DSMPASS_VERSION=0.8.13 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.12-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.12-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.13-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.13-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
