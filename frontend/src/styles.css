@@ -418,6 +418,36 @@ body {
   border-left-color: #ff4d4f;
 }
 
+.conflict-modal-body {
+  width: 100%;
+  max-height: 68vh;
+  overflow: auto;
+}
+
+.conflict-section {
+  display: grid;
+  gap: 10px;
+}
+
+.conflict-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conflict-section-head strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.conflict-row > td {
+  background: #fff2f0 !important;
+}
+
+.conflict-row:hover > td {
+  background: #fff1f0 !important;
+}
+
 .identity-cell {
   display: grid;
   gap: 2px;

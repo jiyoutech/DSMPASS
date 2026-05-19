@@ -244,9 +244,13 @@ for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"
   esac
 done
 
+rm -f "\$SUDOERS_FILE" 2>/dev/null || true
+if [ -e "\$SUDOERS_FILE" ]; then
+  echo "WARNING: failed to remove \$SUDOERS_FILE; remove it manually with: sudo rm -f \$SUDOERS_FILE" >&2
+fi
+
 if [ "\$delete_data_selected" = "true" ]; then
   rm -rf "\$PKGVAR" "\$APPDATA_DIR"
-  rm -f "\$SUDOERS_FILE"
 fi
 
 exit 0
@@ -257,14 +261,14 @@ EOF
   "step_title": "Remove DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "Choose whether to keep configuration, synced identities, logs, TLS files, and the helper sudo rule.",
+    "desc": "Choose whether to keep configuration, synced identities, logs, and TLS files. After uninstall, SSH into DSM and confirm /etc/sudoers.d/DSMPASS-helper has been removed.",
     "subitems": [{
       "key": "keep_data",
       "desc": "Keep package data",
       "defaultValue": true
     }, {
       "key": "delete_data",
-      "desc": "Delete package data and helper sudo rule",
+      "desc": "Delete package data",
       "defaultValue": false
     }]
   }]
@@ -306,14 +310,14 @@ EOF
   "step_title": "卸载 DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "请选择是否保留配置、同步身份、日志、TLS 文件和 helper sudo 规则。",
+    "desc": "请选择是否保留配置、同步身份、日志和 TLS 文件。卸载后请通过 SSH 确认 /etc/sudoers.d/DSMPASS-helper 已删除。",
     "subitems": [{
       "key": "keep_data",
       "desc": "保留套件数据",
       "defaultValue": true
     }, {
       "key": "delete_data",
-      "desc": "删除套件数据和 helper sudo 规则",
+      "desc": "删除套件数据",
       "defaultValue": false
     }]
   }]

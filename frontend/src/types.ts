@@ -22,6 +22,8 @@ export interface DSMAccount {
   dsm_username: string;
   display_name?: string;
   primary_email?: string;
+  external_emails?: string;
+  mobile_masked?: string;
   external_subjects?: string;
   provision_status: ProvisionStatus;
   conflict_reason: string | null;

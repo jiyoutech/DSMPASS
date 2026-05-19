@@ -7,7 +7,7 @@
 在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.8 make package-spk
+DSMPASS_VERSION=0.8.9 make package-spk
 ```
 
 产物输出到：
@@ -135,7 +135,22 @@ sudo /var/packages/DSMPASS/scripts/start-stop-status restart
 
 计划重装或手动升级时，选择保留套件数据。
 
-只有在确认要删除本地配置、同步数据、日志、TLS 文件和 Helper 相关本机配置时，才选择删除套件数据。
+只有在确认要删除本地配置、同步数据、日志和 TLS 文件时，才选择删除套件数据。
+
+Helper sudo 规则属于系统级提权配置。无论卸载时是否保留套件数据，卸载脚本都会尝试删除 `/etc/sudoers.d/DSMPASS-helper`。
+
+卸载后建议 SSH 到 DSM 确认：
+
+```bash
+sudo -i
+ls -l /etc/sudoers.d/DSMPASS-helper
+```
+
+如果仍然存在，手动删除：
+
+```bash
+sudo rm -f /etc/sudoers.d/DSMPASS-helper
+```
 
 ## 排障
 

@@ -29,6 +29,8 @@ SELECT a.id,
        a.app_identity_id, a.dsm_username,
        COALESCE(i.display_name, '') AS display_name,
        COALESCE(i.primary_email, '') AS primary_email,
+       COALESCE((SELECT GROUP_CONCAT(e.email, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id AND e.email IS NOT NULL AND e.email <> ''), '') AS external_emails,
+       COALESCE((SELECT GROUP_CONCAT(e.mobile_masked, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id AND e.mobile_masked IS NOT NULL AND e.mobile_masked <> ''), '') AS mobile_masked,
        COALESCE((SELECT GROUP_CONCAT(e.subject, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id), '') AS external_subjects,
        a.provision_status, a.conflict_reason, a.allow_login
 FROM dsm_accounts a
@@ -106,6 +108,8 @@ SELECT a.id,
        a.app_identity_id, a.dsm_username,
        COALESCE(i.display_name, '') AS display_name,
        COALESCE(i.primary_email, '') AS primary_email,
+       COALESCE((SELECT GROUP_CONCAT(e.email, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id AND e.email IS NOT NULL AND e.email <> ''), '') AS external_emails,
+       COALESCE((SELECT GROUP_CONCAT(e.mobile_masked, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id AND e.mobile_masked IS NOT NULL AND e.mobile_masked <> ''), '') AS mobile_masked,
        COALESCE((SELECT GROUP_CONCAT(e.subject, ', ') FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id), '') AS external_subjects,
        a.provision_status, a.conflict_reason, a.allow_login
 FROM dsm_accounts a

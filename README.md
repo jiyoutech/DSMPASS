@@ -35,14 +35,14 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把飞书 OAuth
 也可以本地打包：
 
 ```bash
-DSMPASS_VERSION=0.8.8 make package-spk
+DSMPASS_VERSION=0.8.9 make package-spk
 ```
 
 输出文件：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.8-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.8-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.9-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.9-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
@@ -158,11 +158,11 @@ matrix/sup1/sup2/sup5 -> matrix_sup1_sup2_sup5
 matrix/sup1/sup3/sup5 -> matrix_sup1_sup3_sup5
 ```
 
-同名部门不会自动开通。管理员可以在「部门」页面参考飞书部门路径，把其中任意一个或多个改成最终 DSM 部门组名。冲突部门处理完成前，同步不会继续开通 DSM 用户和成员关系，避免权限落到错误部门。
+同名部门不会自动开通。打开身份源详情时如果还有冲突，页面会弹出冲突处理窗口；管理员可以在同一个窗口里先参考飞书部门路径，把其中任意一个或多个改成最终 DSM 部门组名。冲突部门处理完成前，同步不会继续开通 DSM 用户和成员关系，避免权限落到错误部门。
 
 ## 同名用户处理
 
-飞书用户姓名清洗后如果生成相同 DSM 用户名，相关用户都会进入冲突状态。系统会先生成临时名，管理员可以在「用户」页面参考飞书姓名、邮箱、身份 ID 和所属部门，手动指定最终 DSM 用户名。
+飞书用户姓名清洗后如果生成相同 DSM 用户名，相关用户都会进入冲突状态。系统会先生成临时名，管理员可以在冲突处理窗口里参考飞书姓名、邮箱、手机号、身份 ID 和所属部门，手动指定最终 DSM 用户名。
 
 同名用户不会自动开通。管理员可以保留其中一个原名，也可以两个都改名；保存后该记录会进入「待开通」，后续可重新同步或手动开通。
 
@@ -203,6 +203,19 @@ srw-rw---- 1 DSMPASS DSMPASS 0 ... /var/packages/DSMPASS/var/run/helper.sock
 用户和用户组可能因 DSM 环境略有不同，重点看文件存在、第一列以 `s` 开头。如果显示 `No such file or directory`，说明 Helper 还没有成功启动，需要先在管理后台点击「重启并检查 Helper」并查看日志。
 
 脚本成功后会写入 `/etc/sudoers.d/DSMPASS-helper`，允许 DSMPASS 套件用户免密码执行 Helper 和 Helper 管理脚本。
+
+卸载套件时会尝试删除这条 sudo 规则；保留套件数据只保留配置、数据库、日志和 TLS 文件。卸载后建议通过 SSH 确认：
+
+```bash
+sudo -i
+ls -l /etc/sudoers.d/DSMPASS-helper
+```
+
+如果仍然存在，手动删除：
+
+```bash
+sudo rm -f /etc/sudoers.d/DSMPASS-helper
+```
 
 ## 架构
 

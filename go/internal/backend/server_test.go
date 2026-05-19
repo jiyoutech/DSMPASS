@@ -799,7 +799,19 @@ VALUES
 ('account-b', 'identity-b', 'zhangsan', 'zhangsan', 1, 'conflict', '飞书用户姓名重名', 0)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, display_name, email, email_norm, mobile_masked)
+VALUES ('external-a', 'feishu-main', 'user-a', 'user-a', 'user', 'identity-a', '张三', 'a@example.com', 'a@example.com', '13****63')`); err != nil {
+		t.Fatal(err)
+	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	listResponse := httptest.NewRecorder()
+	listRequest := httptest.NewRequest("GET", "/api/admin/dsm-accounts?provider=feishu-main", nil)
+	router.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"mobile_masked":"13****63"`) || !strings.Contains(listResponse.Body.String(), `"external_emails":"a@example.com"`) {
+		t.Fatalf("list accounts missing Feishu contact fields: status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
 
 	duplicate := httptest.NewRecorder()
 	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"zhangsan"}`))

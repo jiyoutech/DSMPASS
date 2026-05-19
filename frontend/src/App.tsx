@@ -103,6 +103,10 @@ function withPreferredPort(value: string | undefined, port: number) {
   }
 }
 
+function accountContactText(record: DSMAccount) {
+  return [record.primary_email || record.external_emails, record.mobile_masked].filter(Boolean).join(" / ");
+}
+
 type PageKey = "providers" | "source-detail" | "settings";
 const pageKeys: PageKey[] = ["providers", "source-detail", "settings"];
 type SourceTabKey = "addresses" | "users" | "groups" | "sync-logs" | "audit-logs";
@@ -760,6 +764,11 @@ function SourceDetail({
   const [syncStatusFilter, setSyncStatusFilter] = useState("all");
   const [auditResultFilter, setAuditResultFilter] = useState("all");
   const [selectedAccountIDs, setSelectedAccountIDs] = useState<string[]>([]);
+  const [accountConflictDrafts, setAccountConflictDrafts] = useState<Record<string, string>>({});
+  const [groupConflictDrafts, setGroupConflictDrafts] = useState<Record<string, string>>({});
+  const [savingConflictKey, setSavingConflictKey] = useState<string | null>(null);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [conflictPromptSource, setConflictPromptSource] = useState<string | null>(null);
   const accounts = useAsyncData(() => api.listDSMAccounts(source.slug), [source.slug]);
   const groups = useAsyncData(() => api.listDSMGroups(source.slug), [source.slug]);
   const members = useAsyncData(() => api.listGroupMembers(source.slug), [source.slug]);
@@ -872,24 +881,33 @@ function SourceDetail({
     }
     return result;
   }, [memberRows]);
-  const accountRows = useMemo(() => {
+  const enrichedAccountRows = useMemo(() => {
     return (accounts.data?.items ?? [])
       .map((account) => {
         const records = (groupsByUser.get(account.dsm_username) ?? []).slice().sort((a, b) => a.dsm_groupname.localeCompare(b.dsm_groupname));
         return { ...account, groups: records.map((member) => member.dsm_groupname), member_records: records };
-      })
+      });
+  }, [accounts.data?.items, groupsByUser]);
+  const accountRows = useMemo(() => {
+    return enrichedAccountRows
       .filter((account) => userStatusFilter === "all" || String(account.provision_status) === userStatusFilter || (userStatusFilter === "disabled_login" && !account.allow_login))
-      .filter((account) => includesQuery([account.dsm_username, account.display_name, account.primary_email, account.external_subjects, account.conflict_reason, account.app_identity_id, account.provision_status, ...account.groups], userQuery));
-  }, [accounts.data?.items, groupsByUser, userQuery, userStatusFilter]);
-  const groupRows = useMemo(() => {
+      .filter((account) => includesQuery([account.dsm_username, account.display_name, account.primary_email, account.external_emails, account.mobile_masked, account.external_subjects, account.conflict_reason, account.app_identity_id, account.provision_status, ...account.groups], userQuery));
+  }, [enrichedAccountRows, userQuery, userStatusFilter]);
+  const enrichedGroupRows = useMemo(() => {
     return (groups.data?.items ?? [])
       .map((group) => {
         const records = (membersByGroup.get(group.dsm_groupname) ?? []).slice().sort((a, b) => a.dsm_username.localeCompare(b.dsm_username));
         return { ...group, members: records.map((member) => member.dsm_username), member_records: records };
-      })
+      });
+  }, [groups.data?.items, membersByGroup]);
+  const groupRows = useMemo(() => {
+    return enrichedGroupRows
       .filter((group) => groupStatusFilter === "all" || String(group.provision_status) === groupStatusFilter)
       .filter((group) => includesQuery([group.dsm_groupname, group.provider_group_name, group.provider_group_path, group.provision_status, group.conflict_reason, ...group.members], groupQuery));
-  }, [groups.data?.items, membersByGroup, groupQuery, groupStatusFilter]);
+  }, [enrichedGroupRows, groupQuery, groupStatusFilter]);
+  const conflictAccounts = useMemo(() => enrichedAccountRows.filter((account) => account.provision_status === "conflict"), [enrichedAccountRows]);
+  const conflictGroups = useMemo(() => enrichedGroupRows.filter((group) => group.provision_status === "conflict"), [enrichedGroupRows]);
+  const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
   const filteredSyncLogs = useMemo(() => {
     return (syncLogs.data?.items ?? [])
       .filter((record) => syncStatusFilter === "all" || record.status === syncStatusFilter)
@@ -923,6 +941,16 @@ function SourceDetail({
       loginFailed: auditItems.filter((item) => item.result === "failed" || item.result === "fail").length
     };
   }, [accounts.data?.items, auditLogs.data?.items, groups.data?.items, members.data?.items, syncLogs.data?.items]);
+
+  useEffect(() => {
+    if (!accounts.loading && !groups.loading && hasConflicts && conflictPromptSource !== source.slug) {
+      setConflictModalOpen(true);
+      setConflictPromptSource(source.slug);
+    }
+    if (!hasConflicts) {
+      setConflictModalOpen(false);
+    }
+  }, [accounts.loading, conflictPromptSource, groups.loading, hasConflicts, source.slug]);
 
   function apply() {
     modal.confirm({
@@ -1010,7 +1038,7 @@ function SourceDetail({
       content: (
         <Space direction="vertical" style={{ width: "100%" }}>
           <Typography.Text type="secondary">飞书身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
-          {record.primary_email && <Typography.Text type="secondary">邮箱：{record.primary_email}</Typography.Text>}
+          {accountContactText(record) && <Typography.Text type="secondary">邮箱 / 手机号：{accountContactText(record)}</Typography.Text>}
           {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
           <Input defaultValue={record.dsm_username} onChange={(event) => { nextUsername = event.target.value; }} />
         </Space>
@@ -1055,6 +1083,52 @@ function SourceDetail({
       }
     });
   };
+
+  async function saveAccountConflict(record: DSMAccount) {
+    const nextUsername = (accountConflictDrafts[record.id] ?? record.dsm_username).trim();
+    if (!nextUsername) {
+      message.error("DSM 用户名不能为空");
+      return;
+    }
+    setSavingConflictKey(`account:${record.id}`);
+    try {
+      await api.setDSMAccountUsername(record.id, nextUsername);
+      setAccountConflictDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[record.id];
+        return next;
+      });
+      await accounts.reloadWithResult({ silent: true });
+      message.success("已保存 DSM 用户名");
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSavingConflictKey(null);
+    }
+  }
+
+  async function saveGroupConflict(record: DSMGroup) {
+    const nextGroupname = (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim();
+    if (!nextGroupname) {
+      message.error("DSM 部门组名不能为空");
+      return;
+    }
+    setSavingConflictKey(`group:${record.id}`);
+    try {
+      await api.setDSMGroupName(record.id, nextGroupname);
+      setGroupConflictDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[record.id];
+        return next;
+      });
+      await groups.reloadWithResult({ silent: true });
+      message.success("已保存 DSM 部门组名");
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSavingConflictKey(null);
+    }
+  }
 
   async function setAccountLogin(ids: string[], allowLogin: boolean) {
     if (ids.length === 0) {
@@ -1106,6 +1180,88 @@ function SourceDetail({
         }
       />
       {syncError && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      <Modal
+        title={`待处理冲突：${source.display_name}`}
+        open={conflictModalOpen}
+        width={1120}
+        okText="关闭"
+        cancelButtonProps={{ style: { display: "none" } }}
+        onOk={() => setConflictModalOpen(false)}
+        onCancel={() => setConflictModalOpen(false)}
+      >
+        <Space direction="vertical" size={16} className="conflict-modal-body">
+          <Alert
+            type="error"
+            showIcon
+            message={`还有 ${conflictGroups.length} 个部门冲突、${conflictAccounts.length} 个用户冲突未处理`}
+            description="请先处理部门冲突，再处理用户冲突；保存后对应项会回到待开通状态。"
+          />
+          {conflictGroups.length > 0 && (
+            <div className="conflict-section">
+              <div className="conflict-section-head">
+                <strong>部门冲突</strong>
+                <Tag color="error">{conflictGroups.length}</Tag>
+              </div>
+              <Table
+                size="small"
+                rowKey="id"
+                dataSource={conflictGroups}
+                pagination={{ pageSize: 6, hideOnSinglePage: true }}
+                rowClassName="conflict-row"
+                scroll={{ x: 900 }}
+                columns={[
+                  { title: "飞书部门", width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
+                  { title: "当前 DSM 部门组名", width: 260, render: (_, record: DSMGroup) => (
+                    <Input
+                      value={groupConflictDrafts[record.id] ?? record.dsm_groupname}
+                      onChange={(event) => setGroupConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
+                    />
+                  ) },
+                  { title: "冲突原因", dataIndex: "conflict_reason", ellipsis: true, render: (value) => value || "-" },
+                  { title: "操作", width: 100, render: (_, record: DSMGroup) => (
+                    <Button size="small" type="primary" loading={savingConflictKey === `group:${record.id}`} onClick={() => void saveGroupConflict(record)}>
+                      保存
+                    </Button>
+                  ) }
+                ]}
+              />
+            </div>
+          )}
+          {conflictAccounts.length > 0 && (
+            <div className="conflict-section">
+              <div className="conflict-section-head">
+                <strong>用户冲突</strong>
+                <Tag color="error">{conflictAccounts.length}</Tag>
+              </div>
+              <Table
+                size="small"
+                rowKey="id"
+                dataSource={conflictAccounts}
+                pagination={{ pageSize: 6, hideOnSinglePage: true }}
+                rowClassName="conflict-row"
+                scroll={{ x: 1100 }}
+                columns={[
+                  { title: "飞书用户", width: 210, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
+                  { title: "邮箱", width: 210, ellipsis: true, render: (_, record: DSMAccount) => record.primary_email || record.external_emails || "-" },
+                  { title: "手机号", width: 130, ellipsis: true, render: (_, record: DSMAccount) => record.mobile_masked || "-" },
+                  { title: "部门", width: 220, render: (_, record: DSMAccount) => <EntityList values={(record as DSMAccount & { groups?: string[] }).groups ?? []} limit={3} /> },
+                  { title: "DSM 用户名", width: 220, render: (_, record: DSMAccount) => (
+                    <Input
+                      value={accountConflictDrafts[record.id] ?? record.dsm_username}
+                      onChange={(event) => setAccountConflictDrafts((drafts) => ({ ...drafts, [record.id]: event.target.value }))}
+                    />
+                  ) },
+                  { title: "操作", width: 100, render: (_, record: DSMAccount) => (
+                    <Button size="small" type="primary" loading={savingConflictKey === `account:${record.id}`} onClick={() => void saveAccountConflict(record)}>
+                      保存
+                    </Button>
+                  ) }
+                ]}
+              />
+            </div>
+          )}
+        </Space>
+      </Modal>
       <Tabs
         activeKey={activeTab}
         onChange={(key) => {
@@ -1207,6 +1363,7 @@ function SourceDetail({
                     rowKey="id"
                     loading={accounts.loading}
                     dataSource={accountRows}
+                    rowClassName={(record) => record.provision_status === "conflict" ? "conflict-row" : ""}
                     rowSelection={{
                       selectedRowKeys: selectedAccountIDs,
                       onChange: (keys) => setSelectedAccountIDs(keys.map(String))
@@ -1234,7 +1391,7 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.conflict_reason || record.app_identity_id} /> },
-                      { title: "飞书信息", width: 220, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={record.primary_email || record.external_subjects || undefined} /> },
+                      { title: "飞书信息", width: 260, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={accountContactText(record) || record.external_subjects || undefined} /> },
                       { title: "部门数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="部门" /> },
                       { title: "所属部门", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
                       { title: "登录", dataIndex: "allow_login", width: 100, render: (value) => value ? <Tag color="success">允许</Tag> : <Tag color="error">禁止</Tag> },
@@ -1299,6 +1456,7 @@ function SourceDetail({
                     rowKey="id"
                     loading={groups.loading}
                     dataSource={groupRows}
+                    rowClassName={(record) => record.provision_status === "conflict" ? "conflict-row" : ""}
                     expandable={{
                       expandedRowRender: (record) => (
                         <div className="entity-panel">
