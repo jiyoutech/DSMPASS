@@ -22,6 +22,18 @@ DISPLAY_NAME=${DSMPASS_SPK_DISPLAYNAME:-"DSM PASS"}
 MAINTAINER=${DSMPASS_SPK_MAINTAINER:-"dsm-pass"}
 DESCRIPTION=${DSMPASS_SPK_DESCRIPTION:-"Enterprise identity login gateway for Synology DSM."}
 SUPPORT_URL=${DSMPASS_SPK_SUPPORT_URL:-"https://github.com/dsm-pass/dsm-pass"}
+DEFAULT_MANAGEMENT_PORT=${DSMPASS_DEFAULT_MANAGEMENT_PORT:-25000}
+
+case "$DEFAULT_MANAGEMENT_PORT" in
+  ''|*[!0-9]*)
+    echo "DSMPASS_DEFAULT_MANAGEMENT_PORT must be a number" >&2
+    exit 1
+    ;;
+esac
+if [ "$DEFAULT_MANAGEMENT_PORT" -le 1024 ] || [ "$DEFAULT_MANAGEMENT_PORT" -gt 65535 ]; then
+  echo "DSMPASS_DEFAULT_MANAGEMENT_PORT must be between 1025 and 65535" >&2
+  exit 1
+fi
 
 export DSMPASS_VERSION="$VERSION"
 "$GO_DIR/scripts/dsm/package-dsm.sh"
@@ -102,6 +114,39 @@ load_env() {
   export DSMPASS_DSM_LOGIN_API="${DSMPASS_DSM_LOGIN_API:-}"
 }
 
+sync_installed_admin_port() {
+  port=$(printf '%s\n' "${DSMPASS_GO_LISTEN##*:}" | tr -d '[]')
+  case "$port" in
+    ''|*[!0-9]*)
+      return 0
+      ;;
+  esac
+  for info_file in "/var/packages/$PACKAGE_NAME/INFO"; do
+    [ -f "$info_file" ] || continue
+    tmp="$info_file.tmp.$$"
+    if grep -q '^adminport=' "$info_file"; then
+      sed "s|^adminport=.*|adminport=\"$port\"|" "$info_file" > "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+    else
+      cat "$info_file" > "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+      printf 'adminport="%s"\n' "$port" >> "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+    fi
+    cat "$tmp" > "$info_file" || {
+      rm -f "$tmp"
+      continue
+    }
+    rm -f "$tmp"
+  done
+}
+
 validate_listen_port() {
   port=$(printf '%s\n' "${DSMPASS_GO_LISTEN##*:}" | tr -d '[]')
   case "$port" in
@@ -118,14 +163,15 @@ validate_listen_port() {
 
 case "${1:-}" in
   start)
-    if is_running; then
-      exit 0
-    fi
     mkdir -p "$PKGVAR/data" "$PKGVAR/data/tls" "$RUN_DIR/locks"
     chmod 700 "$PKGVAR" "$PKGVAR/data" "$PKGVAR/data/tls" 2>/dev/null || true
     chmod 770 "$RUN_DIR" "$RUN_DIR/locks" 2>/dev/null || true
     load_env
     validate_listen_port
+    sync_installed_admin_port
+    if is_running; then
+      exit 0
+    fi
     if [ -z "${DSMPASS_HELPER_HMAC_SECRET:-}" ]; then
       echo "DSMPASS_HELPER_HMAC_SECRET is missing in $ENVFILE" >&2
       exit 1
@@ -152,6 +198,8 @@ case "${1:-}" in
     "$0" start
     ;;
   status)
+    load_env
+    sync_installed_admin_port
     if is_running; then
       exit 0
     fi
@@ -180,16 +228,63 @@ EOF
 set -eu
 
 PACKAGE_NAME="$PACKAGE_NAME"
+DEFAULT_MANAGEMENT_PORT="$DEFAULT_MANAGEMENT_PORT"
 EOF
   cat >> "$work_dir/scripts/postinst" <<'EOF'
 PKGVAR=${SYNOPKG_PKGVAR:-"/var/packages/$PACKAGE_NAME/var"}
 ENVFILE="$PKGVAR/dsmpass.env"
 INSTALL_LOG="$PKGVAR/dsmpass-install.log"
-management_port=${management_port:-25000}
+management_port_was_provided=false
+if [ "${management_port+x}" = "x" ] && [ -n "${management_port:-}" ]; then
+  management_port_was_provided=true
+fi
+management_port=${management_port:-$DEFAULT_MANAGEMENT_PORT}
 
 log_install_status() {
   mkdir -p "$PKGVAR" 2>/dev/null || true
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$INSTALL_LOG" 2>/dev/null || true
+}
+
+set_env_value() {
+  key=$1
+  value=$2
+  if [ -f "$ENVFILE" ] && grep -q "^$key=" "$ENVFILE"; then
+    tmp="$ENVFILE.tmp.$$"
+    sed "s|^$key=.*|$key=$value|" "$ENVFILE" > "$tmp"
+    cat "$tmp" > "$ENVFILE"
+    rm -f "$tmp"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENVFILE"
+  fi
+}
+
+sync_installed_admin_port() {
+  for info_file in "${SYNOPKG_PKGINFO:-}" "/var/packages/$PACKAGE_NAME/INFO"; do
+    [ -n "$info_file" ] || continue
+    [ -f "$info_file" ] || continue
+    tmp="$info_file.tmp.$$"
+    if grep -q '^adminport=' "$info_file"; then
+      sed "s|^adminport=.*|adminport=\"$management_port\"|" "$info_file" > "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+    else
+      cat "$info_file" > "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+      printf 'adminport="%s"\n' "$management_port" >> "$tmp" || {
+        rm -f "$tmp"
+        continue
+      }
+    fi
+    cat "$tmp" > "$info_file" || {
+      rm -f "$tmp"
+      log_install_status "warning failed_to_update_adminport info=$info_file management_port=$management_port"
+      continue
+    }
+    rm -f "$tmp"
+  done
 }
 
 case "$management_port" in
@@ -225,30 +320,35 @@ DSMPASS_IDP_ALLOWED_CIDRS=all
 EOF_ENV
   chmod 600 "$ENVFILE"
 else
+  if [ "$management_port_was_provided" = "true" ]; then
+    set_env_value DSMPASS_GO_LISTEN "0.0.0.0:$management_port"
+  fi
   if ! grep -q '^DSMPASS_TLS_ENABLED=' "$ENVFILE"; then
-    printf '%s\n' 'DSMPASS_TLS_ENABLED=1' >> "$ENVFILE"
+    set_env_value DSMPASS_TLS_ENABLED 1
   fi
   if ! grep -q '^DSMPASS_TLS_CERT_FILE=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt" >> "$ENVFILE"
+    set_env_value DSMPASS_TLS_CERT_FILE "$PKGVAR/data/tls/server.crt"
   fi
   if ! grep -q '^DSMPASS_TLS_KEY_FILE=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_TLS_KEY_FILE=$PKGVAR/data/tls/server.key" >> "$ENVFILE"
+    set_env_value DSMPASS_TLS_KEY_FILE "$PKGVAR/data/tls/server.key"
   fi
   if ! grep -q '^DSMPASS_IDP_TLS_CERT_FILE=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_IDP_TLS_CERT_FILE=$PKGVAR/data/tls/idp.crt" >> "$ENVFILE"
+    set_env_value DSMPASS_IDP_TLS_CERT_FILE "$PKGVAR/data/tls/idp.crt"
   fi
   if ! grep -q '^DSMPASS_IDP_TLS_KEY_FILE=' "$ENVFILE"; then
-    printf '%s\n' "DSMPASS_IDP_TLS_KEY_FILE=$PKGVAR/data/tls/idp.key" >> "$ENVFILE"
+    set_env_value DSMPASS_IDP_TLS_KEY_FILE "$PKGVAR/data/tls/idp.key"
   fi
   if ! grep -q '^DSMPASS_ADMIN_ALLOWED_CIDRS=' "$ENVFILE"; then
-    printf '%s\n' 'DSMPASS_ADMIN_ALLOWED_CIDRS=all' >> "$ENVFILE"
+    set_env_value DSMPASS_ADMIN_ALLOWED_CIDRS all
   fi
   if ! grep -q '^DSMPASS_IDP_ALLOWED_CIDRS=' "$ENVFILE"; then
-    printf '%s\n' 'DSMPASS_IDP_ALLOWED_CIDRS=all' >> "$ENVFILE"
+    set_env_value DSMPASS_IDP_ALLOWED_CIDRS all
   fi
+  chmod 600 "$ENVFILE"
 fi
 
-log_install_status "install_or_upgrade_success management_port=$management_port"
+sync_installed_admin_port
+log_install_status "install_or_upgrade_success management_port=$management_port provided=$management_port_was_provided"
 
 exit 0
 EOF
@@ -314,11 +414,13 @@ EOF
     "subitems": [{
       "key": "management_port",
       "desc": "Management port",
-      "defaultValue": "25000"
+      "defaultValue": "__DEFAULT_MANAGEMENT_PORT__"
     }]
   }]
 }]
 EOF
+  sed "s|__DEFAULT_MANAGEMENT_PORT__|$DEFAULT_MANAGEMENT_PORT|g" "$work_dir/WIZARD_UIFILES/install_uifile" > "$work_dir/WIZARD_UIFILES/install_uifile.tmp"
+  mv "$work_dir/WIZARD_UIFILES/install_uifile.tmp" "$work_dir/WIZARD_UIFILES/install_uifile"
 
   cat > "$work_dir/WIZARD_UIFILES/install_uifile_chs" <<'EOF'
 [{
@@ -329,11 +431,13 @@ EOF
     "subitems": [{
       "key": "management_port",
       "desc": "管理端口",
-      "defaultValue": "25000"
+      "defaultValue": "__DEFAULT_MANAGEMENT_PORT__"
     }]
   }]
 }]
 EOF
+  sed "s|__DEFAULT_MANAGEMENT_PORT__|$DEFAULT_MANAGEMENT_PORT|g" "$work_dir/WIZARD_UIFILES/install_uifile_chs" > "$work_dir/WIZARD_UIFILES/install_uifile_chs.tmp"
+  mv "$work_dir/WIZARD_UIFILES/install_uifile_chs.tmp" "$work_dir/WIZARD_UIFILES/install_uifile_chs"
 
   cat > "$work_dir/WIZARD_UIFILES/uninstall_uifile_chs" <<'EOF'
 [{
@@ -382,7 +486,7 @@ silent_uninstall="no"
 install_reboot="no"
 support_url="$SUPPORT_URL"
 adminprotocol="https"
-adminport="25000"
+adminport="$DEFAULT_MANAGEMENT_PORT"
 adminurl=""
 checkport="yes"
 precheckstartstop="yes"
