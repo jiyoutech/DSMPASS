@@ -142,15 +142,7 @@ function accountConflictLabel(record: DSMAccount) {
 }
 
 function BridgeLogo() {
-  return (
-    <svg viewBox="0 0 64 64" role="img" aria-label={appName}>
-      <path d="M14 38h36" />
-      <path d="M18 38c5-15 23-15 28 0" />
-      <path d="M22 38v10" />
-      <path d="M32 30v18" />
-      <path d="M42 38v10" />
-    </svg>
-  );
+  return <img src="/favicon.svg" alt={appName} />;
 }
 
 const sourceFieldHelp = {

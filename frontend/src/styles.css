@@ -75,18 +75,13 @@ body {
   height: 36px;
   place-items: center;
   border-radius: 8px;
-  background: #1677ff;
-  color: #fff;
+  overflow: hidden;
 }
 
-.brand-mark svg {
-  width: 26px;
-  height: 26px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.brand-mark img {
+  display: block;
+  width: 36px;
+  height: 36px;
 }
 
 .brand-text {
