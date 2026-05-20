@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -69,14 +70,92 @@ func (testHelper) AddGroupMember(ctx context.Context, requestID, groupname, user
 	return true, nil
 }
 
+func (testHelper) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
+	return true, nil
+}
+
 type recordingHelper struct {
 	testHelper
 	disabled []string
+	removed  []string
 }
 
 func (h *recordingHelper) DisableUser(ctx context.Context, requestID, username string) (bool, error) {
 	h.disabled = append(h.disabled, username)
 	return true, nil
+}
+
+func (h *recordingHelper) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
+	h.removed = append(h.removed, groupname+":"+username)
+	return true, nil
+}
+
+func TestSourceConfigDefaultsEnablePermissionCleanupButNotMissingUserDisable(t *testing.T) {
+	defaults := decodeSourceConfig(`{}`)
+	if boolValue(defaults.DisableMissingUsers, true) || !boolValue(defaults.DeactivateMissingData, false) {
+		t.Fatalf("defaults should keep missing user disable off and permission cleanup on: %#v", defaults)
+	}
+	explicit := decodeSourceConfig(`{"disable_missing_users":false,"deactivate_missing_data":false}`)
+	if boolValue(explicit.DisableMissingUsers, true) || boolValue(explicit.DeactivateMissingData, true) {
+		t.Fatalf("explicit missing cleanup settings should be preserved: %#v", explicit)
+	}
+}
+
+func TestSyncSourceToDSMRemovesStaleGroupMember(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	seedSyncedAccount(t, ctx, database, "feishu-main", "identity-1", "external-1", "u1", "alice", "2999-01-01 00:00:00")
+	seedGroupMember(t, ctx, database, "feishu-main", "group-1", "dsm-group-1", "member-1", "g1", "engineering", "identity-1", 0, "remove_pending")
+
+	operations, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2000-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(helper.removed) != 1 || helper.removed[0] != "engineering:alice" {
+		t.Fatalf("stale member was not removed from DSM, got %#v", helper.removed)
+	}
+	assertLocalMemberStatus(t, ctx, database, "member-1", 0, "removed")
+	found := false
+	for _, operation := range operations {
+		if operation.Action == "remove_dsm_group_member" && operation.DSMGroupname == "engineering" && operation.DSMUsername == "alice" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("remove operation missing from result: %#v", operations)
+	}
+}
+
+func TestSyncSourceToDSMDisableMissingUsersPolicy(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	seedSyncedAccount(t, ctx, database, "feishu-main", "identity-1", "external-1", "u1", "alice", "2000-01-01 00:00:00")
+
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2999-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: false, DeactivateMissingData: false}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper.disabled) != 0 {
+		t.Fatalf("disabled missing user while policy was off: %#v", helper.disabled)
+	}
+
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2999-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: false}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper.disabled) != 1 || helper.disabled[0] != "alice" {
+		t.Fatalf("missing user was not disabled in DSM, got %#v", helper.disabled)
+	}
 }
 
 func TestServerServesFrontendAndAPI(t *testing.T) {
@@ -313,6 +392,9 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	redirectURI := parsed.Query().Get("redirect_uri")
 	if redirectURI != "https://nas.example.com:25000/idp/"+created.Slug+"/callback" {
 		t.Fatalf("launch redirect_uri used untrusted host: %s location=%s", redirectURI, location)
+	}
+	if strings.Contains(body, "evil-forwarded.example.com") {
+		t.Fatalf("launch trusted X-Forwarded-Host: %s", body)
 	}
 	if !strings.Contains(body, `method=logout`) || !strings.Contains(body, `session=webui`) {
 		t.Fatalf("launch should call DSM logout before authorization: %s", body)
@@ -622,6 +704,10 @@ INSERT INTO identity_sources (slug, provider_type, display_name, config_json) VA
 INSERT INTO app_identities (id, display_name) VALUES ('identity-a', 'Alice');
 INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id) VALUES ('external-a', 'source-a', 'alice', 'alice', 'user', 'identity-a');
 INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm) VALUES ('account-a', 'identity-a', 'alice', 'alice');
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name) VALUES ('provider-group-a', 'source-a', 'department-a', 'department-a', 'Engineering');
+INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status) VALUES ('group-a', 'engineering', 'engineering', 'created');
+INSERT INTO group_links (id, provider_group_id, dsm_group_id) VALUES ('link-a', 'provider-group-a', 'group-a');
+INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status) VALUES ('member-a', 'group-a', 'account-a', 'created');
 INSERT INTO sync_runs (id, source_slug, status) VALUES ('sync-a', 'source-a', 'success');
 INSERT INTO sync_operation_logs (id, sync_run_id, source_slug, object_type, object_key, action, status) VALUES ('log-a', 'sync-a', 'source-a', 'user', 'alice', 'sync', 'success');
 INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('audit-a', 'request-a', 'source-a', 'success');
@@ -639,6 +725,9 @@ INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('au
 	if len(helper.disabled) != 1 || helper.disabled[0] != "alice" {
 		t.Fatalf("expected alice disabled, got %#v", helper.disabled)
 	}
+	if len(helper.removed) != 1 || helper.removed[0] != "engineering:alice" {
+		t.Fatalf("expected alice removed from source group, got %#v", helper.removed)
+	}
 	for _, item := range []struct {
 		table string
 		where string
@@ -647,6 +736,10 @@ INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('au
 		{"external_accounts", "provider_slug = 'source-a'"},
 		{"app_identities", "id = 'identity-a'"},
 		{"dsm_accounts", "id = 'account-a'"},
+		{"provider_groups", "id = 'provider-group-a'"},
+		{"dsm_groups", "id = 'group-a'"},
+		{"group_links", "id = 'link-a'"},
+		{"group_members", "id = 'member-a'"},
 		{"sync_runs", "source_slug = 'source-a'"},
 		{"sync_operation_logs", "source_slug = 'source-a'"},
 		{"login_audit_logs", "provider_slug = 'source-a'"},
@@ -658,6 +751,116 @@ INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('au
 		}
 		if count != 0 {
 			t.Fatalf("expected %s cleaned, got %d rows", item.table, count)
+		}
+	}
+}
+
+func TestDirectoryDebugListsHashProviderSubjects(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	_, err = database.ExecContext(ctx, `
+INSERT INTO app_identities (id, display_name) VALUES ('identity-a', 'Alice');
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id) VALUES ('external-a', 'source-a', 'alice-open-id', 'alice-open-id', 'user', 'identity-a');
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, parent_subject, name) VALUES ('provider-group-a', 'source-a', 'department-a', 'department-a', 'root-department', 'Engineering');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/api/admin/external-accounts", "/api/admin/provider-groups"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest("GET", path, nil)
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s got %d body=%s", path, response.Code, response.Body.String())
+		}
+		body := response.Body.String()
+		if strings.Contains(body, "alice-open-id") || strings.Contains(body, "department-a") || strings.Contains(body, "root-department") {
+			t.Fatalf("%s leaked raw provider subject: %s", path, body)
+		}
+	}
+}
+
+func TestDSMAccountsSearchesBeforePagination(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+	seedSyncedAccount(t, ctx, database, "source-a", "identity-a", "external-a", "alice", "alice", "2999-01-01 00:00:00")
+	seedSyncedAccount(t, ctx, database, "source-a", "identity-b", "external-b", "bob", "bob", "2999-01-01 00:00:00")
+	seedGroupMember(t, ctx, database, "source-a", "provider-group-a", "dsm-group-a", "member-a", "department-a", "Engineering", "identity-b", 1, "created")
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/dsm-accounts?provider=source-a&q=Engineering&page=1&limit=1", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Total int `json:"total"`
+		Items []struct {
+			DSMUsername string `json:"dsm_username"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].DSMUsername != "bob" {
+		t.Fatalf("search should filter before pagination, got %#v", body)
+	}
+}
+
+func TestCleanupLogsRemovesExpiredRows(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries)
+	_, err = database.ExecContext(ctx, `
+INSERT INTO sync_runs (id, source_slug, status, started_at) VALUES ('sync-old', 'source-a', 'success', '2000-01-01 00:00:00');
+INSERT INTO sync_runs (id, source_slug, status, started_at) VALUES ('sync-new', 'source-a', 'success', CURRENT_TIMESTAMP);
+INSERT INTO sync_operation_logs (id, sync_run_id, source_slug, object_type, object_key, action, status, created_at)
+VALUES ('sync-log-old', 'sync-old', 'source-a', 'user', 'old', 'sync', 'success', '2000-01-01 00:00:00');
+INSERT INTO sync_operation_logs (id, sync_run_id, source_slug, object_type, object_key, action, status, created_at)
+VALUES ('sync-log-new', 'sync-new', 'source-a', 'user', 'new', 'sync', 'success', CURRENT_TIMESTAMP);
+INSERT INTO login_audit_logs (id, request_id, provider_slug, result, created_at)
+VALUES ('audit-old', 'request-old', 'source-a', 'success', '2000-01-01 00:00:00');
+INSERT INTO login_audit_logs (id, request_id, provider_slug, result, created_at)
+VALUES ('audit-new', 'request-new', 'source-a', 'success', CURRENT_TIMESTAMP);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.cleanupLogs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		table string
+		id    string
+		want  int
+	}{
+		{"sync_operation_logs", "sync-log-old", 0},
+		{"sync_operation_logs", "sync-log-new", 1},
+		{"login_audit_logs", "audit-old", 0},
+		{"login_audit_logs", "audit-new", 1},
+	} {
+		var count int
+		if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+item.table+" WHERE id = ?", item.id).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != item.want {
+			t.Fatalf("%s id=%s got %d want %d", item.table, item.id, count, item.want)
 		}
 	}
 }
@@ -1030,6 +1233,61 @@ VALUES
 	}
 	if managed != 0 || status != "pending" || conflictReason != "" {
 		t.Fatalf("group conflict not resolved: managed=%d status=%s reason=%q", managed, status, conflictReason)
+	}
+}
+
+func seedSyncedAccount(t *testing.T, ctx context.Context, database *sql.DB, providerSlug, identityID, externalID, subject, username, lastSeen string) {
+	t.Helper()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO app_identities (id, display_name, primary_email, status, created_by)
+VALUES (?, ?, ?, 'active', 'system')`, identityID, username, username+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active, last_seen_at)
+VALUES (?, ?, ?, ?, 'directory_subject', ?, 1, ?)`, externalID, providerSlug, subject, subject, identityID, lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login)
+VALUES (?, ?, ?, ?, 1, 'linked_existing', 1)`, "account-"+identityID, identityID, username, username); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedGroupMember(t *testing.T, ctx context.Context, database *sql.DB, providerSlug, providerGroupID, dsmGroupID, memberID, groupSubject, groupname, identityID string, active int, status string) {
+	t.Helper()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, active)
+VALUES (?, ?, ?, ?, ?, 1)`, providerGroupID, providerSlug, groupSubject, groupSubject, groupname); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status)
+VALUES (?, ?, ?, 1, 'created')`, dsmGroupID, groupname, groupname); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO group_links (id, provider_group_id, dsm_group_id)
+VALUES (?, ?, ?)`, "link-"+memberID, providerGroupID, dsmGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO group_members (id, dsm_group_id, dsm_account_id, active, provision_status)
+VALUES (?, ?, ?, ?, ?)`, memberID, dsmGroupID, "account-"+identityID, active, status); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertLocalMemberStatus(t *testing.T, ctx context.Context, database *sql.DB, memberID string, wantActive int, wantStatus string) {
+	t.Helper()
+	var active int
+	var status string
+	if err := database.QueryRowContext(ctx, `SELECT active, provision_status FROM group_members WHERE id = ?`, memberID).Scan(&active, &status); err != nil {
+		t.Fatal(err)
+	}
+	if active != wantActive || status != wantStatus {
+		t.Fatalf("member %s got active=%d status=%s want active=%d status=%s", memberID, active, status, wantActive, wantStatus)
 	}
 }
 

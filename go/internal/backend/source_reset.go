@@ -61,6 +61,11 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		}
 		disabledDSMUsers++
 	}
+	removedDSMGroupMembers, err := s.removeSourceGroupMembersFromDSM(c.Request.Context(), tx, slug, "reset_member_remove_")
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"detail": "清理同步数据前移除 DSM 组成员失败：" + err.Error()})
+		return
+	}
 
 	result, err := deleteIdentitySourceDataWithIDs(c.Request.Context(), tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
 	if err != nil {
@@ -73,8 +78,47 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 	}
 	result["slug"] = slug
 	result["disabled_dsm_users"] = disabledDSMUsers
+	result["removed_dsm_group_members"] = removedDSMGroupMembers
 	result["detail"] = "已禁用 DSM 中对应用户，并清理该身份源的同步映射数据；下次同步遇到同名 DSM 用户会重新启用并复用"
 	c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) removeSourceGroupMembersFromDSM(ctx context.Context, tx db.DBTX, slug, requestPrefix string) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT g.dsm_groupname, a.dsm_username
+FROM group_members m
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN dsm_accounts a ON a.id = m.dsm_account_id
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+WHERE p.provider_slug = ? AND m.active = 1`, slug)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type member struct {
+		groupname string
+		username  string
+	}
+	var members []member
+	for rows.Next() {
+		var item member
+		if err := rows.Scan(&item.groupname, &item.username); err != nil {
+			return 0, err
+		}
+		members = append(members, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var removed int64
+	for _, item := range members {
+		if _, err := s.helper.RemoveGroupMember(ctx, requestPrefix+randomHex(8), item.groupname, item.username); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func sourceOwnedIDs(ctx context.Context, tx db.DBTX, slug string) (exclusiveIdentityIDs []string, providerGroupIDs []string, exclusiveGroupIDs []string, err error) {

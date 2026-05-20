@@ -36,6 +36,16 @@ func TestHelperHealthCheck(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleSocketRefusesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := removeStaleSocket(dir); err == nil {
+		t.Fatal("expected directory removal to be rejected")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("directory should remain: %v", err)
+	}
+}
+
 func TestSynouserAddArgsMatchDSM(t *testing.T) {
 	args := synouserAddArgs("zhangwei_1234", "secret", "张伟", "zhangwei@example.test")
 	want := []string{"--add", "zhangwei_1234", "secret", "张伟", "0", "zhangwei@example.test", ""}

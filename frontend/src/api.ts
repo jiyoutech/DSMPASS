@@ -8,6 +8,7 @@ import type {
   GroupMember,
   HelperStatus,
   LoginAuditLog,
+  PagedResponse,
   ProviderUpsert,
   ProviderItem,
   ProviderTypeItem,
@@ -21,6 +22,28 @@ import type {
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+export interface ListParams {
+  provider?: string;
+  q?: string;
+  status?: string;
+  result?: string;
+  active?: string;
+  page?: number;
+  limit?: number;
+}
+
+function queryString(params: ListParams = {}) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "" || value === "all") {
+      continue;
+    }
+    search.set(key, String(value));
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : "";
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -57,8 +80,8 @@ export const api = {
   adminChangePassword: (payload: AdminPasswordChange) =>
     request<{ success: boolean; username: string }>("/api/admin/auth/password", { method: "PUT", body: JSON.stringify(payload) }),
   syncApply: (provider: string) => request<SyncResult>(`/api/sync/${provider}/apply`, { method: "POST" }),
-  listDSMAccounts: (provider?: string) => request<{ items: DSMAccount[] }>(`/api/admin/dsm-accounts${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
-  listDSMGroups: (provider?: string) => request<{ items: DSMGroup[] }>(`/api/admin/dsm-groups${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
+  listDSMAccounts: (params?: ListParams) => request<PagedResponse<DSMAccount>>(`/api/admin/dsm-accounts${queryString(params)}`),
+  listDSMGroups: (params?: ListParams) => request<PagedResponse<DSMGroup>>(`/api/admin/dsm-groups${queryString(params)}`),
   listGroupMembers: (provider?: string) => request<{ items: GroupMember[] }>(`/api/admin/group-members${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   provisionAccount: (id: string) => request<DSMAccount>(`/api/admin/dsm-accounts/${id}/provision`, { method: "POST" }),
   setDSMAccountUsername: (id: string, dsm_username: string) =>
@@ -82,7 +105,7 @@ export const api = {
     request<{ slug: string; deleted_sources: number; disabled_dsm_users: number; detail: string }>(`/api/admin/providers/${slug}`, { method: "DELETE" }),
   resetProviderSyncData: (slug: string) =>
     request<ResetSyncDataResult>(`/api/admin/providers/${slug}/reset-sync-data`, { method: "POST" }),
-  sourceSyncLogs: (slug: string) => request<{ items: SyncOperationLog[] }>(`/api/admin/providers/${slug}/sync-logs`),
+  sourceSyncLogs: (slug: string, params?: ListParams) => request<PagedResponse<SyncOperationLog>>(`/api/admin/providers/${slug}/sync-logs${queryString(params)}`),
   helperStatus: () => request<HelperStatus>("/api/admin/helper/status"),
   restartHelper: () => request<{ success: boolean }>("/api/admin/helper/restart", { method: "POST" }),
   version: () => request<VersionInfo>("/api/admin/version"),
@@ -98,5 +121,5 @@ export const api = {
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),
-  loginAuditLogs: (provider?: string) => request<{ items: LoginAuditLog[] }>(`/api/admin/audit/logins${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`)
+  loginAuditLogs: (params?: ListParams) => request<PagedResponse<LoginAuditLog>>(`/api/admin/audit/logins${queryString(params)}`)
 };

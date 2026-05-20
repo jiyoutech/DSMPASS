@@ -24,6 +24,8 @@ type Server struct {
 	syncMu           sync.Mutex
 	syncRuns         map[string]bool
 	autoSync         map[string]time.Time
+	logCleanupMu     sync.Mutex
+	lastLogCleanup   time.Time
 	idpRouteMu       sync.Mutex
 	restartIDPRoute  func() error
 	restartIDPNotice func(string)

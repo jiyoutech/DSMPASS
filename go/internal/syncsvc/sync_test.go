@@ -94,6 +94,81 @@ func TestSyncProviderMarksAllDuplicateGroupsConflict(t *testing.T) {
 	assertProvisionCount(t, ctx, database, "dsm_groups", "pending", 0)
 }
 
+func TestSyncProviderMarksMovedGroupMemberForRemoval(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{
+			{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"},
+			{ProviderSlug: "feishu-main", Subject: "g2", Name: "ops"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g2"}}},
+		groups: []provider.Group{
+			{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"},
+			{ProviderSlug: "feishu-main", Subject: "g2", Name: "ops"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", false, "remove_pending")
+	assertMemberState(t, ctx, database, "g2", "u1", true, "pending")
+}
+
+func TestSyncProviderReactivatesRemovedGroupMemberAsPending(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	directory := fakeDirectory{
+		users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+	}
+	if _, err := engine.SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	memberID := memberIDForSubject(t, ctx, database, "g1", "u1")
+	if _, err := database.ExecContext(ctx, `UPDATE group_members SET active = 0, provision_status = 'removed' WHERE id = ?`, memberID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
+}
+
+func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: false})
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true}},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
+}
+
 type fakeDirectory struct {
 	users  []provider.User
 	groups []provider.Group
@@ -145,4 +220,43 @@ WHERE e.subject = ?`, subject).Scan(&got)
 	if got != want {
 		t.Fatalf("subject %s status got %s want %s", subject, got, want)
 	}
+}
+
+func assertMemberState(t *testing.T, ctx context.Context, database *sql.DB, groupSubject, userSubject string, wantActive bool, wantStatus string) {
+	t.Helper()
+	var active int
+	var status string
+	err := database.QueryRowContext(ctx, `
+SELECT m.active, m.provision_status
+FROM group_members m
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+JOIN dsm_accounts a ON a.id = m.dsm_account_id
+JOIN external_accounts e ON e.app_identity_id = a.app_identity_id
+WHERE p.subject = ? AND e.subject = ?`, groupSubject, userSubject).Scan(&active, &status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (active != 0) != wantActive || status != wantStatus {
+		t.Fatalf("member %s:%s got active=%t status=%s want active=%t status=%s", groupSubject, userSubject, active != 0, status, wantActive, wantStatus)
+	}
+}
+
+func memberIDForSubject(t *testing.T, ctx context.Context, database *sql.DB, groupSubject, userSubject string) string {
+	t.Helper()
+	var id string
+	err := database.QueryRowContext(ctx, `
+SELECT m.id
+FROM group_members m
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+JOIN dsm_accounts a ON a.id = m.dsm_account_id
+JOIN external_accounts e ON e.app_identity_id = a.app_identity_id
+WHERE p.subject = ? AND e.subject = ?`, groupSubject, userSubject).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }

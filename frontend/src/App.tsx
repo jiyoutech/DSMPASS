@@ -62,6 +62,7 @@ const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
 const appName = "DSM Pass";
 const defaultIDPPort = 26000;
+const sourceTablePageSize = 50;
 
 function helperStatusOK(status: HelperStatus | null | undefined) {
   const details = status?.details;
@@ -793,17 +794,37 @@ function SourceDetail({
   const [groupStatusFilter, setGroupStatusFilter] = useState("all");
   const [syncStatusFilter, setSyncStatusFilter] = useState("all");
   const [auditResultFilter, setAuditResultFilter] = useState("all");
+  const [accountPage, setAccountPage] = useState(1);
+  const [groupPage, setGroupPage] = useState(1);
+  const [syncLogPage, setSyncLogPage] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
   const [selectedAccountIDs, setSelectedAccountIDs] = useState<string[]>([]);
   const [accountConflictDrafts, setAccountConflictDrafts] = useState<Record<string, string>>({});
   const [groupConflictDrafts, setGroupConflictDrafts] = useState<Record<string, string>>({});
   const [savingConflictKey, setSavingConflictKey] = useState<string | null>(null);
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictPromptSource, setConflictPromptSource] = useState<string | null>(null);
-  const accounts = useAsyncData(() => api.listDSMAccounts(source.slug), [source.slug]);
-  const groups = useAsyncData(() => api.listDSMGroups(source.slug), [source.slug]);
+  const accounts = useAsyncData(() => api.listDSMAccounts({ provider: source.slug, q: userQuery, status: userStatusFilter, page: accountPage, limit: sourceTablePageSize }), [source.slug, userQuery, userStatusFilter, accountPage]);
+  const groups = useAsyncData(() => api.listDSMGroups({ provider: source.slug, q: groupQuery, status: groupStatusFilter, page: groupPage, limit: sourceTablePageSize }), [source.slug, groupQuery, groupStatusFilter, groupPage]);
   const members = useAsyncData(() => api.listGroupMembers(source.slug), [source.slug]);
-  const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug), [source.slug]);
-  const auditLogs = useAsyncData(() => api.loginAuditLogs(source.slug), [source.slug]);
+  const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug, { q: syncLogQuery, status: syncStatusFilter, page: syncLogPage, limit: sourceTablePageSize }), [source.slug, syncLogQuery, syncStatusFilter, syncLogPage]);
+  const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
+
+  useEffect(() => {
+    setAccountPage(1);
+  }, [source.slug, userQuery, userStatusFilter]);
+
+  useEffect(() => {
+    setGroupPage(1);
+  }, [source.slug, groupQuery, groupStatusFilter]);
+
+  useEffect(() => {
+    setSyncLogPage(1);
+  }, [source.slug, syncLogQuery, syncStatusFilter]);
+
+  useEffect(() => {
+    setAuditPage(1);
+  }, [source.slug, auditQuery, auditResultFilter]);
 
   useEffect(() => {
     form.setFieldsValue({
@@ -979,18 +1000,20 @@ function SourceDetail({
     const syncItems = syncLogs.data?.items ?? [];
     const auditItems = auditLogs.data?.items ?? [];
     return {
-      users: accountItems.length,
+      users: accounts.data?.total ?? accountItems.length,
       disabledLogin: accountItems.filter((item) => !item.allow_login).length,
       pendingUsers: accountItems.filter((item) => item.provision_status === "pending").length,
       accountConflicts: accountItems.filter((item) => item.provision_status === "conflict").length,
-      groups: groupItems.length,
+      groups: groups.data?.total ?? groupItems.length,
       pendingGroups: groupItems.filter((item) => item.provision_status === "pending").length,
       conflicts: groupItems.filter((item) => item.provision_status === "conflict").length,
       members: memberItems.length,
+      syncLogs: syncLogs.data?.total ?? syncItems.length,
       syncFailed: syncItems.filter((item) => item.status === "failed" || item.status === "fail").length,
+      loginAudits: auditLogs.data?.total ?? auditItems.length,
       loginFailed: auditItems.filter((item) => item.result === "failed" || item.result === "fail").length
     };
-  }, [accounts.data?.items, auditLogs.data?.items, groups.data?.items, members.data?.items, syncLogs.data?.items]);
+  }, [accounts.data?.items, accounts.data?.total, auditLogs.data?.items, auditLogs.data?.total, groups.data?.items, groups.data?.total, members.data?.items, syncLogs.data?.items, syncLogs.data?.total]);
 
   useEffect(() => {
     if (!accounts.loading && !groups.loading && hasConflicts && conflictPromptSource !== source.slug) {
@@ -1517,6 +1540,13 @@ function SourceDetail({
                     rowKey="id"
                     loading={accounts.loading}
                     dataSource={accountRows}
+                    pagination={{
+                      current: accountPage,
+                      pageSize: sourceTablePageSize,
+                      total: accounts.data?.total ?? 0,
+                      showSizeChanger: false,
+                      onChange: setAccountPage
+                    }}
                     rowClassName={(record) => record.provision_status === "conflict" ? "conflict-row" : ""}
                     rowSelection={{
                       selectedRowKeys: selectedAccountIDs,
@@ -1610,6 +1640,13 @@ function SourceDetail({
                     rowKey="id"
                     loading={groups.loading}
                     dataSource={groupRows}
+                    pagination={{
+                      current: groupPage,
+                      pageSize: sourceTablePageSize,
+                      total: groups.data?.total ?? 0,
+                      showSizeChanger: false,
+                      onChange: setGroupPage
+                    }}
                     rowClassName={(record) => record.provision_status === "conflict" ? "conflict-row" : ""}
                     expandable={{
                       expandedRowRender: (record) => (
@@ -1662,7 +1699,7 @@ function SourceDetail({
                 metrics={
                   <MetricStrip
                     items={[
-                      { label: "同步日志", value: syncLogs.data?.items.length ?? 0 },
+                      { label: "同步日志", value: sourceStats.syncLogs },
                       { label: "同步失败", value: sourceStats.syncFailed, tone: sourceStats.syncFailed ? "danger" : "default" },
                       { label: "成员关系", value: sourceStats.members }
                     ]}
@@ -1707,7 +1744,13 @@ function SourceDetail({
                       { title: "动作", dataIndex: "action", width: 180, render: actionTag },
                       { title: "对象名称", dataIndex: "dsm_name", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_name ?? record.object_key} secondary={record.object_key} /> }
                     ]}
-                    pagination={{ pageSize: 10 }}
+                    pagination={{
+                      current: syncLogPage,
+                      pageSize: sourceTablePageSize,
+                      total: syncLogs.data?.total ?? 0,
+                      showSizeChanger: false,
+                      onChange: setSyncLogPage
+                    }}
                   />
                 }
               />
@@ -1725,7 +1768,7 @@ function SourceDetail({
                 metrics={
                   <MetricStrip
                     items={[
-                      { label: "登录审计", value: auditLogs.data?.items.length ?? 0 },
+                      { label: "登录审计", value: sourceStats.loginAudits },
                       { label: "登录失败", value: sourceStats.loginFailed, tone: sourceStats.loginFailed ? "danger" : "default" },
                       { label: "用户", value: sourceStats.users }
                     ]}
@@ -1765,7 +1808,13 @@ function SourceDetail({
                         </div>
                       )
                     }}
-                    pagination={{ pageSize: 10 }}
+                    pagination={{
+                      current: auditPage,
+                      pageSize: sourceTablePageSize,
+                      total: auditLogs.data?.total ?? 0,
+                      showSizeChanger: false,
+                      onChange: setAuditPage
+                    }}
                   />
                 }
               />

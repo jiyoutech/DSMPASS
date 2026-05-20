@@ -15,6 +15,14 @@ export interface SyncResult {
   items: SyncPlanItem[];
 }
 
+export interface PagedResponse<T> {
+  items: T[];
+  page: number;
+  limit: number;
+  total: number;
+  offset: number;
+}
+
 export interface DSMAccount {
   id: string;
   provider_slug: string;

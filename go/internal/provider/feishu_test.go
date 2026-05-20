@@ -47,6 +47,31 @@ func TestFormatFeishuPermissionError(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseRejectsFeishuErrorWithHTTP200(t *testing.T) {
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{
+			"code": 99991672,
+			"msg": "Access denied.",
+			"error": {
+				"log_id": "log-1",
+				"permission_violations": [
+					{"type": "action_scope_required", "subject": "contact:department.organize:readonly"}
+				]
+			}
+		}`)),
+	}
+	var out map[string]any
+	err := decodeResponse(response, &out)
+	if err == nil {
+		t.Fatal("expected feishu api error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "飞书接口权限不足") || !strings.Contains(message, "contact:department.organize:readonly") {
+		t.Fatalf("unexpected error message: %s", message)
+	}
+}
+
 func TestBuildAuthorizeURLUsesAccountsEndpointAndClientID(t *testing.T) {
 	feishu := NewFeishu(config.BackendConfig{
 		FeishuAuthorizeURL: "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
@@ -188,6 +213,49 @@ func TestListGroupMembersReadsAllPages(t *testing.T) {
 	}
 	if got := strings.Join(members, ","); got != "ou_1,ou_2" {
 		t.Fatalf("members got %q", got)
+	}
+}
+
+func TestListGroupsReadsAllChildDepartmentPages(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 1,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/departments/0/children":
+			if r.URL.Query().Get("page_token") == "" {
+				return map[string]any{"data": map[string]any{
+					"items":      []map[string]any{{"open_department_id": "sup1", "name": "sup1"}},
+					"has_more":   true,
+					"page_token": "next",
+				}}, http.StatusOK
+			}
+			return map[string]any{"data": map[string]any{
+				"items": []map[string]any{{"open_department_id": "sup2", "name": "sup2"}},
+			}}, http.StatusOK
+		case "/departments/sup1/children", "/departments/sup2/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{}}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	groups, err := feishu.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects := make([]string, 0, len(groups))
+	for _, group := range groups {
+		subjects = append(subjects, group.Subject)
+	}
+	if got := strings.Join(subjects, ","); got != "sup1,sup2" {
+		t.Fatalf("groups got %q", got)
 	}
 }
 

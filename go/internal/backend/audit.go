@@ -36,6 +36,7 @@ func (s *Server) logLoginAudit(ctx context.Context, event loginAuditEvent) {
 		IPAddress:         nullStringValue(event.IPAddress),
 		DurationMs:        sql.NullInt64{Int64: event.DurationMs, Valid: true},
 	})
+	s.maybeCleanupLogs(ctx)
 }
 
 func requestClientIP(c *gin.Context) string {

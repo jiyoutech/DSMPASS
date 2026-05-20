@@ -180,6 +180,11 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		}
 		disabledDSMUsers++
 	}
+	removedDSMGroupMembers, err := s.removeSourceGroupMembersFromDSM(c.Request.Context(), tx, slug, "delete_source_member_remove_")
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"detail": "删除身份源前移除 DSM 组成员失败：" + err.Error()})
+		return
+	}
 
 	result, err := deleteIdentitySourceDataWithIDs(c.Request.Context(), tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
 	if err != nil {
@@ -199,6 +204,7 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 	result["slug"] = slug
 	result["deleted_sources"] = deletedSources
 	result["disabled_dsm_users"] = disabledDSMUsers
+	result["removed_dsm_group_members"] = removedDSMGroupMembers
 	result["detail"] = "已禁用 DSM 中对应用户，并删除身份源配置、本地同步映射和日志"
 	c.JSON(http.StatusOK, result)
 }
@@ -214,13 +220,34 @@ LIMIT 50`, c.Param("slug"))
 }
 
 func (s *Server) sourceSyncLogs(c *gin.Context) {
+	paging := parsePagination(c)
+	whereParts := []string{`source_slug = ?`}
+	args := []any{c.Param("slug")}
+	switch status := strings.TrimSpace(c.Query("status")); status {
+	case "", "all":
+	default:
+		whereParts = append(whereParts, `status = ?`)
+		args = append(args, status)
+	}
+	if q := queryText(c); q != "" {
+		pattern := likePattern(q)
+		whereParts = append(whereParts, `(sync_run_id LIKE ? ESCAPE '\' OR object_type LIKE ? ESCAPE '\' OR object_key LIKE ? ESCAPE '\' OR dsm_name LIKE ? ESCAPE '\' OR action LIKE ? ESCAPE '\' OR status LIKE ? ESCAPE '\' OR before_state LIKE ? ESCAPE '\' OR after_state LIKE ? ESCAPE '\' OR error LIKE ? ESCAPE '\')`)
+		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+	}
+	where := "WHERE " + strings.Join(whereParts, " AND ")
+	total, err := queryCount(c.Request.Context(), s.store, `SELECT COUNT(*) FROM sync_operation_logs `+where, args...)
+	if err != nil {
+		writeItems(c, nil, err)
+		return
+	}
+	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT id, sync_run_id, source_slug, object_type, object_key, dsm_name, action, status, before_state, after_state, error, created_at
 FROM sync_operation_logs
-WHERE source_slug = ?
+`+where+`
 ORDER BY created_at DESC
-LIMIT 200`, c.Param("slug"))
-	writeItems(c, rows, err)
+LIMIT ? OFFSET ?`, dataArgs...)
+	writePagedItems(c, rows, total, paging, err)
 }
 
 func (s *Server) getProvider(c *gin.Context, slug string) {

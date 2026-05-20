@@ -17,11 +17,7 @@ func requestPublicBaseURL(c *gin.Context) string {
 }
 
 func requestHost(c *gin.Context) string {
-	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
-	if host == "" {
-		host = c.Request.Host
-	}
-	return host
+	return strings.TrimSpace(c.Request.Host)
 }
 
 func (s *Server) trustedPublicBaseURL() string {

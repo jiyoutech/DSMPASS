@@ -26,12 +26,21 @@ type Result struct {
 }
 
 type Engine struct {
-	cfg config.BackendConfig
-	q   *db.Queries
+	cfg     config.BackendConfig
+	q       *db.Queries
+	options Options
+}
+
+type Options struct {
+	DeactivateMissingData bool
 }
 
 func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
 	return &Engine{cfg: cfg, q: q}
+}
+
+func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Options) *Engine {
+	return &Engine{cfg: cfg, q: q, options: options}
 }
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
@@ -129,6 +138,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		return result, err
 	}
 	membersByGroup := usersDepartmentMemberships(users)
+	currentMemberships := map[string]bool{}
 	for _, group := range groups {
 		dsmGroup, ok := groupMap[group.Subject]
 		if !ok {
@@ -147,6 +157,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			if !ok {
 				continue
 			}
+			currentMemberships[dsmGroup.ID+"\x00"+account.ID] = true
 			member, err := identityService.EnsureGroupMember(ctx, dsmGroup.ID, account.ID)
 			if err != nil {
 				return result, err
@@ -161,7 +172,48 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			})
 		}
 	}
+	if e.options.DeactivateMissingData {
+		if err := deactivateMissingGroupMembers(ctx, e.q, directory.Slug(), currentMemberships); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+func deactivateMissingGroupMembers(ctx context.Context, q *db.Queries, providerSlug string, current map[string]bool) error {
+	rows, err := q.DBTX().QueryContext(ctx, `
+SELECT DISTINCT m.id, m.dsm_group_id, m.dsm_account_id
+FROM group_members m
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+WHERE p.provider_slug = ? AND p.active = 1 AND m.active = 1`, providerSlug)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var staleIDs []string
+	for rows.Next() {
+		var id, groupID, accountID string
+		if err := rows.Scan(&id, &groupID, &accountID); err != nil {
+			return err
+		}
+		if !current[groupID+"\x00"+accountID] {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range staleIDs {
+		if _, err := q.DBTX().ExecContext(ctx, `
+UPDATE group_members
+SET active = 0, provision_status = 'remove_pending', updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND active = 1`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func usersDepartmentMemberships(users []provider.User) map[string][]string {

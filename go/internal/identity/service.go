@@ -325,7 +325,14 @@ func (s *Service) EnsureGroupMember(ctx context.Context, dsmGroupID, dsmAccountI
 	existing, err := s.getGroupMember(ctx, dsmGroupID, dsmAccountID)
 	if err == nil {
 		_, err = s.q.DBTX().ExecContext(ctx, `
-UPDATE group_members SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+UPDATE group_members
+SET active = 1,
+	provision_status = CASE
+		WHEN provision_status IN ('remove_pending', 'remove_failed', 'removed') THEN 'pending'
+		ELSE provision_status
+	END,
+	updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
 `, existing.ID)
 		if err != nil {
 			return db.GroupMember{}, err
@@ -339,7 +346,13 @@ UPDATE group_members SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?
 	_, err = s.q.DBTX().ExecContext(ctx, `
 INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status, created_at, updated_at)
 VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-ON CONFLICT(dsm_group_id, dsm_account_id) DO UPDATE SET active = 1, updated_at = CURRENT_TIMESTAMP
+ON CONFLICT(dsm_group_id, dsm_account_id) DO UPDATE SET
+	active = 1,
+	provision_status = CASE
+		WHEN provision_status IN ('remove_pending', 'remove_failed', 'removed') THEN 'pending'
+		ELSE provision_status
+	END,
+	updated_at = CURRENT_TIMESTAMP
 `, id, dsmGroupID, dsmAccountID)
 	if err != nil {
 		return db.GroupMember{}, err

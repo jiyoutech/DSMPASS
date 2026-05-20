@@ -24,8 +24,8 @@ type identitySourceConfig struct {
 	ContactBaseURL        string `json:"contact_base_url"`
 	DirectoryPageSize     int    `json:"directory_page_size"`
 	SyncIntervalMinutes   int    `json:"sync_interval_minutes"`
-	DisableMissingUsers   bool   `json:"disable_missing_users"`
-	DeactivateMissingData bool   `json:"deactivate_missing_data"`
+	DisableMissingUsers   *bool  `json:"disable_missing_users,omitempty"`
+	DeactivateMissingData *bool  `json:"deactivate_missing_data,omitempty"`
 	InitialPassword       string `json:"initial_password,omitempty"`
 }
 
@@ -167,6 +167,12 @@ func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
 	if strings.TrimSpace(config.InitialPassword) == "" {
 		config.InitialPassword = defaultInitialPassword
 	}
+	if config.DisableMissingUsers == nil {
+		config.DisableMissingUsers = boolPointer(false)
+	}
+	if config.DeactivateMissingData == nil {
+		config.DeactivateMissingData = boolPointer(true)
+	}
 	return config
 }
 
@@ -187,8 +193,8 @@ func publicSourceConfig(config identitySourceConfig) gin.H {
 		"contact_base_url":         config.ContactBaseURL,
 		"directory_page_size":      config.DirectoryPageSize,
 		"sync_interval_minutes":    config.SyncIntervalMinutes,
-		"disable_missing_users":    config.DisableMissingUsers,
-		"deactivate_missing_data":  config.DeactivateMissingData,
+		"disable_missing_users":    boolValue(config.DisableMissingUsers, false),
+		"deactivate_missing_data":  boolValue(config.DeactivateMissingData, true),
 		"initial_password":         config.InitialPassword,
 	}
 }
@@ -225,9 +231,24 @@ func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConf
 	if strings.TrimSpace(update.InitialPassword) != "" {
 		existing.InitialPassword = strings.TrimSpace(update.InitialPassword)
 	}
-	existing.DisableMissingUsers = update.DisableMissingUsers
-	existing.DeactivateMissingData = update.DeactivateMissingData
+	if update.DisableMissingUsers != nil {
+		existing.DisableMissingUsers = update.DisableMissingUsers
+	}
+	if update.DeactivateMissingData != nil {
+		existing.DeactivateMissingData = update.DeactivateMissingData
+	}
 	return withSourceDefaults(existing)
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func boolValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func boolPtrInt(value *bool, fallback bool) int64 {

@@ -25,6 +25,7 @@ type Client interface {
 	DisableUser(ctx context.Context, requestID, username string) (bool, error)
 	ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error)
 	AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
+	RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
 }
 
 type RelayCookie struct {
@@ -222,6 +223,16 @@ func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupna
 func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
 		"action":        "add_group_member",
+		"request_id":    requestID,
+		"dsm_groupname": groupname,
+		"dsm_username":  username,
+	})
+	return boolResponse(response, err)
+}
+
+func (c UnixSocketClient) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
+	response, err := c.send(ctx, map[string]any{
+		"action":        "remove_group_member",
 		"request_id":    requestID,
 		"dsm_groupname": groupname,
 		"dsm_username":  username,

@@ -44,7 +44,7 @@ func (s *Server) Serve() error {
 	if err := os.MkdirAll(filepath.Dir(startupCfg.SocketPath), 0o700); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(startupCfg.SocketPath); err != nil {
+	if err := removeStaleSocket(startupCfg.SocketPath); err != nil {
 		return err
 	}
 	listener, err := net.Listen("unix", startupCfg.SocketPath)
@@ -64,6 +64,20 @@ func (s *Server) Serve() error {
 		}
 		go s.handle(conn)
 	}
+}
+
+func removeStaleSocket(socketPath string) error {
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket helper path: %s", socketPath)
+	}
+	return os.Remove(socketPath)
 }
 
 func setSocketPermissions(socketPath string) error {
@@ -278,6 +292,22 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			return errorResponse("SYNOGROUP_FAILED", synoGroupError("add_member", groupname, username, err))
 		}
 		return map[string]any{"success": true, "created": true}
+	case "remove_group_member":
+		groupname, err := requiredString(payload, "dsm_groupname")
+		if err != nil {
+			return errorResponse("BAD_REQUEST", err.Error())
+		}
+		username, err := requiredString(payload, "dsm_username")
+		if err != nil {
+			return errorResponse("BAD_REQUEST", err.Error())
+		}
+		if err := run(cfg.SynoGroupPath, "--memberdel", groupname, username); err != nil {
+			if isSynoNoSuchGroupError(err) {
+				return map[string]any{"success": true, "removed": false}
+			}
+			return errorResponse("SYNOGROUP_FAILED", synoGroupError("remove_member", groupname, username, err))
+		}
+		return map[string]any{"success": true, "removed": true}
 	default:
 		return errorResponse("BAD_REQUEST", "unsupported action")
 	}
@@ -459,6 +489,8 @@ func synoGroupError(action, groupname, username string, err error) string {
 		message = "DSM 群组创建失败"
 	case "add_member":
 		message = "DSM 群组成员添加失败"
+	case "remove_member":
+		message = "DSM 群组成员移除失败"
 	case "create_with_member":
 		message = "DSM 群组不存在，尝试创建并添加成员也失败"
 	}

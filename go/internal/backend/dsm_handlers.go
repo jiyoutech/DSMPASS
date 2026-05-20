@@ -14,15 +14,59 @@ import (
 
 func (s *Server) dsmAccounts(c *gin.Context) {
 	providerSlug := c.Query("provider")
-	where := ""
+	paging := parsePagination(c)
+	whereParts := []string{}
 	args := []any{}
 	if providerSlug != "" {
-		where = `WHERE EXISTS (
+		whereParts = append(whereParts, `EXISTS (
     SELECT 1 FROM external_accounts e
     WHERE e.app_identity_id = a.app_identity_id AND e.provider_slug = ?
-)`
+)`)
 		args = append(args, providerSlug)
 	}
+	switch status := strings.TrimSpace(c.Query("status")); status {
+	case "", "all":
+	case "disabled_login":
+		whereParts = append(whereParts, `a.allow_login = 0`)
+	default:
+		whereParts = append(whereParts, `a.provision_status = ?`)
+		args = append(args, status)
+	}
+	if q := queryText(c); q != "" {
+		pattern := likePattern(q)
+		whereParts = append(whereParts, `(
+			a.dsm_username LIKE ? ESCAPE '\'
+			OR i.display_name LIKE ? ESCAPE '\'
+			OR i.primary_email LIKE ? ESCAPE '\'
+			OR a.provision_status LIKE ? ESCAPE '\'
+			OR a.conflict_reason LIKE ? ESCAPE '\'
+			OR EXISTS (
+				SELECT 1 FROM external_accounts e
+				WHERE e.app_identity_id = a.app_identity_id
+				  AND (e.email LIKE ? ESCAPE '\' OR e.mobile_masked LIKE ? ESCAPE '\' OR e.subject LIKE ? ESCAPE '\')
+			)
+			OR EXISTS (
+				SELECT 1 FROM group_members m
+				JOIN dsm_groups g ON g.id = m.dsm_group_id
+				WHERE m.dsm_account_id = a.id AND m.active = 1 AND g.dsm_groupname LIKE ? ESCAPE '\'
+			)
+		)`)
+		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+	}
+	where := ""
+	if len(whereParts) > 0 {
+		where = "WHERE " + strings.Join(whereParts, " AND ")
+	}
+	total, err := queryCount(c.Request.Context(), s.store, `
+SELECT COUNT(*)
+FROM dsm_accounts a
+JOIN app_identities i ON i.id = a.app_identity_id
+`+where, args...)
+	if err != nil {
+		writeItems(c, nil, err)
+		return
+	}
+	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT a.id,
        COALESCE((SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1), '') AS provider_slug,
@@ -36,8 +80,9 @@ SELECT a.id,
 FROM dsm_accounts a
 JOIN app_identities i ON i.id = a.app_identity_id
 `+where+`
-ORDER BY a.created_at`, args...)
-	writeItems(c, rows, err)
+ORDER BY a.created_at
+LIMIT ? OFFSET ?`, dataArgs...)
+	writePagedItems(c, rows, total, paging, err)
 }
 
 func (s *Server) setDSMAccountLogin(c *gin.Context) {
@@ -87,11 +132,10 @@ func (s *Server) setDSMAccountsLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "too many ids"})
 		return
 	}
-	for _, id := range ids {
-		if _, err := s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET allow_login = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, boolToInt(*payload.AllowLogin), id); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-			return
-		}
+	args := append([]any{boolToInt(*payload.AllowLogin)}, anySlice(ids)...)
+	if _, err := s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET allow_login = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (`+placeholders(len(ids))+`)`, args...); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
 	}
 	rows, err := s.dsmAccountRows(c.Request.Context(), ids)
 	writeItems(c, rows, err)
@@ -193,16 +237,58 @@ func compactStringIDs(values []string) []string {
 
 func (s *Server) dsmGroups(c *gin.Context) {
 	providerSlug := c.Query("provider")
-	where := ""
+	paging := parsePagination(c)
+	whereParts := []string{}
 	args := []any{}
 	if providerSlug != "" {
-		where = `WHERE EXISTS (
+		whereParts = append(whereParts, `EXISTS (
     SELECT 1 FROM group_links l
     JOIN provider_groups pg ON pg.id = l.provider_group_id
     WHERE l.dsm_group_id = g.id AND pg.provider_slug = ?
-)`
+)`)
 		args = append(args, providerSlug)
 	}
+	switch status := strings.TrimSpace(c.Query("status")); status {
+	case "", "all":
+	default:
+		whereParts = append(whereParts, `g.provision_status = ?`)
+		args = append(args, status)
+	}
+	if q := queryText(c); q != "" {
+		pattern := likePattern(q)
+		whereParts = append(whereParts, `(
+			g.dsm_groupname LIKE ? ESCAPE '\'
+			OR g.provision_status LIKE ? ESCAPE '\'
+			OR g.conflict_reason LIKE ? ESCAPE '\'
+			OR EXISTS (
+				SELECT 1 FROM group_links l
+				JOIN provider_groups pg ON pg.id = l.provider_group_id
+				WHERE l.dsm_group_id = g.id
+				  AND (pg.name LIKE ? ESCAPE '\' OR pg.path LIKE ? ESCAPE '\' OR pg.subject LIKE ? ESCAPE '\')
+			)
+			OR EXISTS (
+				SELECT 1 FROM group_members m
+				JOIN dsm_accounts a ON a.id = m.dsm_account_id
+				JOIN app_identities i ON i.id = a.app_identity_id
+				WHERE m.dsm_group_id = g.id AND m.active = 1
+				  AND (a.dsm_username LIKE ? ESCAPE '\' OR i.display_name LIKE ? ESCAPE '\' OR i.primary_email LIKE ? ESCAPE '\')
+			)
+		)`)
+		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+	}
+	where := ""
+	if len(whereParts) > 0 {
+		where = "WHERE " + strings.Join(whereParts, " AND ")
+	}
+	total, err := queryCount(c.Request.Context(), s.store, `
+SELECT COUNT(*)
+FROM dsm_groups g
+`+where, args...)
+	if err != nil {
+		writeItems(c, nil, err)
+		return
+	}
+	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT g.id,
        COALESCE((SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_slug,
@@ -211,8 +297,9 @@ SELECT g.id,
        COALESCE((SELECT pg.path FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_path
 FROM dsm_groups g
 `+where+`
-ORDER BY g.created_at`, args...)
-	writeItems(c, rows, err)
+ORDER BY g.created_at
+LIMIT ? OFFSET ?`, dataArgs...)
+	writePagedItems(c, rows, total, paging, err)
 }
 
 func (s *Server) setDSMGroupName(c *gin.Context) {
@@ -288,8 +375,10 @@ func (s *Server) groupMembers(c *gin.Context) {
 	where := ""
 	args := []any{}
 	if providerSlug != "" {
-		where = `WHERE pg.provider_slug = ?`
+		where = `WHERE pg.provider_slug = ? AND m.active = 1`
 		args = append(args, providerSlug)
+	} else {
+		where = `WHERE m.active = 1`
 	}
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT m.id, pg.provider_slug, g.dsm_groupname, a.dsm_username, m.provision_status
@@ -410,10 +499,10 @@ func (s *Server) provisionGroupMember(c *gin.Context) {
 	var id, groupname, username string
 	err := s.store.DBTX().QueryRowContext(c.Request.Context(), `
 SELECT m.id, g.dsm_groupname, a.dsm_username
-FROM group_members m
-JOIN dsm_groups g ON g.id = m.dsm_group_id
-JOIN dsm_accounts a ON a.id = m.dsm_account_id
-WHERE m.id = ?`, c.Param("id")).Scan(&id, &groupname, &username)
+	FROM group_members m
+	JOIN dsm_groups g ON g.id = m.dsm_group_id
+	JOIN dsm_accounts a ON a.id = m.dsm_account_id
+	WHERE m.id = ? AND m.active = 1`, c.Param("id")).Scan(&id, &groupname, &username)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "group member not found"})
 		return

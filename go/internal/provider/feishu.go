@@ -296,17 +296,28 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 }
 
 func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any, error) {
-	endpoint := fmt.Sprintf("%s/departments/%s/children?page_size=%d&department_id_type=open_department_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.PathEscape(departmentID), f.cfg.FeishuDirectoryPageSize)
-	var out map[string]any
-	if err := f.getJSON(endpoint, token, &out); err != nil {
-		return nil, err
-	}
-	data, _ := out["data"].(map[string]any)
-	items, _ := data["items"].([]any)
-	result := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		if raw, ok := item.(map[string]any); ok {
-			result = append(result, raw)
+	var result []map[string]any
+	pageToken := ""
+	for {
+		endpoint := fmt.Sprintf("%s/departments/%s/children?page_size=%d&department_id_type=open_department_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.PathEscape(departmentID), f.cfg.FeishuDirectoryPageSize)
+		if pageToken != "" {
+			endpoint += "&page_token=" + url.QueryEscape(pageToken)
+		}
+		var out map[string]any
+		if err := f.getJSON(endpoint, token, &out); err != nil {
+			return nil, err
+		}
+		data, _ := out["data"].(map[string]any)
+		items, _ := data["items"].([]any)
+		for _, item := range items {
+			if raw, ok := item.(map[string]any); ok {
+				result = append(result, raw)
+			}
+		}
+		hasMore, _ := data["has_more"].(bool)
+		pageToken, _ = data["page_token"].(string)
+		if !hasMore || pageToken == "" {
+			break
 		}
 	}
 	return result, nil
@@ -394,7 +405,21 @@ func decodeResponse(response *http.Response, out any) error {
 	if response.StatusCode >= 400 {
 		return formatFeishuHTTPError(response.StatusCode, body)
 	}
+	if err := feishuAPIError(response.StatusCode, body); err != nil {
+		return err
+	}
 	return json.Unmarshal(body, out)
+}
+
+func feishuAPIError(statusCode int, body []byte) error {
+	var parsed feishuErrorBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if parsed.Code == 0 {
+		return nil
+	}
+	return formatFeishuHTTPError(statusCode, body)
 }
 
 func formatFeishuHTTPError(statusCode int, body []byte) error {

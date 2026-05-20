@@ -147,3 +147,45 @@ CREATE TABLE IF NOT EXISTS login_audit_logs (
     duration_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_identity_sources_sync_enabled
+    ON identity_sources(enabled, directory_sync_enabled);
+
+CREATE INDEX IF NOT EXISTS idx_external_accounts_provider_active_seen
+    ON external_accounts(provider_slug, active, last_seen_at);
+
+CREATE INDEX IF NOT EXISTS idx_external_accounts_app_identity
+    ON external_accounts(app_identity_id);
+
+CREATE INDEX IF NOT EXISTS idx_dsm_accounts_status
+    ON dsm_accounts(provision_status);
+
+CREATE INDEX IF NOT EXISTS idx_dsm_accounts_allow_status
+    ON dsm_accounts(allow_login, provision_status);
+
+CREATE INDEX IF NOT EXISTS idx_provider_groups_provider_active_updated
+    ON provider_groups(provider_slug, active, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_dsm_groups_status
+    ON dsm_groups(provision_status);
+
+CREATE INDEX IF NOT EXISTS idx_group_links_dsm_group
+    ON group_links(dsm_group_id);
+
+CREATE INDEX IF NOT EXISTS idx_group_members_account
+    ON group_members(dsm_account_id);
+
+CREATE INDEX IF NOT EXISTS idx_group_members_active_status_updated
+    ON group_members(active, provision_status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_sync_runs_source_started
+    ON sync_runs(source_slug, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sync_operation_logs_source_created
+    ON sync_operation_logs(source_slug, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_login_audit_logs_provider_created
+    ON login_audit_logs(provider_slug, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_login_audit_logs_created
+    ON login_audit_logs(created_at DESC);

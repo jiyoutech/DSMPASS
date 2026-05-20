@@ -34,6 +34,7 @@ func (s *Server) syncProvider(c *gin.Context) {
 }
 
 func (s *Server) runSyncProvider(ctx context.Context, providerSlug string) (syncsvc.Result, error) {
+	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
 		return syncsvc.Result{}, errUnknownProvider
@@ -49,6 +50,7 @@ func (s *Server) runSyncProvider(ctx context.Context, providerSlug string) (sync
 INSERT INTO sync_runs (id, source_slug, dry_run, status, started_at)
 VALUES (?, ?, 0, 'running', CURRENT_TIMESTAMP)
 `, runID, directory.Slug())
+	policy := s.sourceSyncPolicy(ctx, directory.Slug())
 	q := s.store
 	var tx *sql.Tx
 	if s.database != nil {
@@ -59,7 +61,9 @@ VALUES (?, ?, 0, 'running', CURRENT_TIMESTAMP)
 		}
 		q = db.New(tx)
 	}
-	result, err := syncsvc.NewEngine(s.cfg, q).SyncProvider(ctx, directory)
+	result, err := syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
+		DeactivateMissingData: policy.DeactivateMissingData,
+	}).SyncProvider(ctx, directory)
 	if tx != nil {
 		if err != nil {
 			_ = tx.Rollback()
@@ -72,7 +76,7 @@ VALUES (?, ?, 0, 'running', CURRENT_TIMESTAMP)
 		s.logSyncOperation(ctx, runID, directory.Slug(), "identity_source", directory.Slug(), "", "read_directory", "failed", "running", "failed", err.Error())
 		return result, err
 	}
-	operations, err := s.syncSourceToDSM(ctx, runID, directory.Slug(), syncStart)
+	operations, err := s.syncSourceToDSM(ctx, runID, directory.Slug(), syncStart, policy)
 	if err != nil {
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
 		return result, err
@@ -101,7 +105,24 @@ func (s *Server) endSourceSync(slug string) {
 	delete(s.syncRuns, slug)
 }
 
-func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncStart string) ([]syncsvc.PlanItem, error) {
+type sourceSyncPolicy struct {
+	DisableMissingUsers   bool
+	DeactivateMissingData bool
+}
+
+func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) sourceSyncPolicy {
+	source, err := s.loadIdentitySource(ctx, sourceSlug)
+	if err != nil {
+		return sourceSyncPolicy{DisableMissingUsers: false, DeactivateMissingData: true}
+	}
+	cfg := decodeSourceConfig(source.ConfigJSON)
+	return sourceSyncPolicy{
+		DisableMissingUsers:   boolValue(cfg.DisableMissingUsers, false),
+		DeactivateMissingData: boolValue(cfg.DeactivateMissingData, true),
+	}
+}
+
+func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy) ([]syncsvc.PlanItem, error) {
 	var operations []syncsvc.PlanItem
 	if err := s.ensureRealDSMProvisioning(ctx); err != nil {
 		return operations, err
@@ -230,6 +251,65 @@ ORDER BY m.created_at`, sourceSlug)
 	}
 	memberRows.Close()
 
+	if policy.DeactivateMissingData {
+		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		_, _ = s.store.DBTX().ExecContext(ctx, `
+UPDATE group_members SET active = 0, provision_status = 'remove_pending', updated_at = CURRENT_TIMESTAMP
+WHERE id IN (
+	SELECT m.id
+	FROM group_members m
+	JOIN dsm_groups g ON g.id = m.dsm_group_id
+	JOIN group_links l ON l.dsm_group_id = g.id
+	JOIN provider_groups p ON p.id = l.provider_group_id
+	WHERE p.provider_slug = ? AND p.active = 0 AND m.active = 1
+)`, sourceSlug)
+		removeRows, err := s.store.DBTX().QueryContext(ctx, `
+SELECT DISTINCT m.id, g.dsm_groupname, a.dsm_username, m.provision_status
+FROM group_members m
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN dsm_accounts a ON a.id = m.dsm_account_id
+JOIN group_links l ON l.dsm_group_id = g.id
+JOIN provider_groups p ON p.id = l.provider_group_id
+WHERE p.provider_slug = ? AND m.active = 0 AND m.provision_status IN ('remove_pending', 'remove_failed')
+ORDER BY m.updated_at`, sourceSlug)
+		if err != nil {
+			return operations, err
+		}
+		type pendingMemberRemoval struct {
+			id        string
+			groupname string
+			username  string
+			status    string
+		}
+		var pendingRemovals []pendingMemberRemoval
+		for removeRows.Next() {
+			var item pendingMemberRemoval
+			if err := removeRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
+				removeRows.Close()
+				return operations, err
+			}
+			pendingRemovals = append(pendingRemovals, item)
+		}
+		if err := removeRows.Err(); err != nil {
+			removeRows.Close()
+			return operations, err
+		}
+		removeRows.Close()
+		for _, item := range pendingRemovals {
+			if _, err := s.helper.RemoveGroupMember(ctx, "sync_member_remove_"+randomHex(8), item.groupname, item.username); err != nil {
+				_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'remove_failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id)
+				s.logSyncOperation(ctx, runID, sourceSlug, "member", item.id, item.groupname+":"+item.username, "remove", "failed", item.status, "remove_failed", err.Error())
+				return operations, err
+			}
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'removed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id)
+			s.logSyncOperation(ctx, runID, sourceSlug, "member", item.id, item.groupname+":"+item.username, "remove", "success", item.status, "removed", "")
+			operations = append(operations, syncsvc.PlanItem{Action: "remove_dsm_group_member", ProviderSlug: sourceSlug, Subject: item.id, DSMUsername: item.username, DSMGroupname: item.groupname, ProvisionStatus: "removed"})
+		}
+	}
+
+	if !policy.DisableMissingUsers {
+		return operations, nil
+	}
 	disableRows, err := s.store.DBTX().QueryContext(ctx, `
 SELECT DISTINCT e.id, a.id, a.dsm_username
 FROM external_accounts e
@@ -258,18 +338,6 @@ WHERE e.provider_slug = ? AND e.active = 1 AND a.allow_login = 1 AND (e.last_see
 		return operations, err
 	}
 	disableRows.Close()
-
-	_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-	_, _ = s.store.DBTX().ExecContext(ctx, `
-UPDATE group_members SET active = 0, updated_at = CURRENT_TIMESTAMP
-WHERE id IN (
-	SELECT m.id
-	FROM group_members m
-	JOIN dsm_groups g ON g.id = m.dsm_group_id
-	JOIN group_links l ON l.dsm_group_id = g.id
-	JOIN provider_groups p ON p.id = l.provider_group_id
-	WHERE p.provider_slug = ? AND p.active = 0
-)`, sourceSlug)
 	return operations, nil
 }
 
