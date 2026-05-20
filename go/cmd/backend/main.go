@@ -90,10 +90,10 @@ func main() {
 	} else {
 		log.Printf("idp tls disabled")
 	}
-	serve(server, listener, actualListen, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile)
+	serve(server, listener, actualListen, cfg.AdminRedirectListen, cfg.PublicBaseURL, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile)
 }
 
-func serve(server *backend.Server, adminListener net.Listener, adminListen string, tlsEnabled bool, certFile, keyFile, idpCertFile, idpKeyFile string) {
+func serve(server *backend.Server, adminListener net.Listener, adminListen, adminRedirectListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile, idpCertFile, idpKeyFile string) {
 	idpRoutes := &idpRouteService{
 		server:      server,
 		adminListen: adminListen,
@@ -119,11 +119,33 @@ func serve(server *backend.Server, adminListener net.Listener, adminListen strin
 		_ = adminListener.Close()
 		log.Fatal(err)
 	}
+	startAdminRedirect(adminRedirectListen, adminListen, publicBaseURL, tlsEnabled, certFile, keyFile)
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- serveHTTP(adminListener, server.AdminRouter(), tlsEnabled, certFile, keyFile)
 	}()
 	log.Fatal(<-errCh)
+}
+
+func startAdminRedirect(redirectListen, adminListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile string) {
+	if strings.TrimSpace(redirectListen) == "" || listenAddressEqual(redirectListen, adminListen) {
+		return
+	}
+	listener, actualListen, err := listenStrict(redirectListen)
+	if err != nil {
+		log.Printf("DSM Pass admin redirect disabled: %v", err)
+		return
+	}
+	targetBase := strings.TrimRight(publicBaseURL, "/")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetBase+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	})
+	log.Printf("DSM Pass admin redirect listening on %s -> %s", actualListen, targetBase)
+	go func() {
+		if err := serveHTTP(listener, handler, tlsEnabled, certFile, keyFile); err != nil {
+			log.Printf("DSM Pass admin redirect stopped: %v", err)
+		}
+	}()
 }
 
 type idpRouteService struct {

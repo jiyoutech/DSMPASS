@@ -102,6 +102,7 @@ load_env() {
   export DSMPASS_HELPER_SOCKET="${DSMPASS_HELPER_SOCKET:-$RUN_DIR/helper.sock}"
   export DSMPASS_HELPER_HMAC_SECRET="${DSMPASS_HELPER_HMAC_SECRET:-}"
   export DSMPASS_GO_LISTEN="${DSMPASS_GO_LISTEN:-0.0.0.0:25000}"
+  export DSMPASS_ADMIN_PORTAL_PORT="${DSMPASS_ADMIN_PORTAL_PORT:-25000}"
   export DSMPASS_ACCESS_HOST="${DSMPASS_ACCESS_HOST:-}"
   export DSMPASS_TLS_ENABLED="${DSMPASS_TLS_ENABLED:-1}"
   export DSMPASS_TLS_CERT_FILE="${DSMPASS_TLS_CERT_FILE:-$PKGVAR/data/tls/server.crt}"
@@ -147,6 +148,45 @@ sync_installed_admin_port() {
   done
 }
 
+schedule_installed_admin_port_sync() {
+  port=$(printf '%s\n' "${DSMPASS_GO_LISTEN##*:}" | tr -d '[]')
+  case "$port" in
+    ''|*[!0-9]*)
+      return 0
+      ;;
+  esac
+  nohup sh -c '
+package_name=$1
+port=$2
+for delay in 1 2 3 5 8 13; do
+  sleep "$delay"
+  info_file="/var/packages/$package_name/INFO"
+  [ -f "$info_file" ] || continue
+  tmp="$info_file.tmp.$$"
+  if grep -q "^adminport=" "$info_file"; then
+    sed "s|^adminport=.*|adminport=\"$port\"|" "$info_file" > "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+  else
+    cat "$info_file" > "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+    printf "adminport=\"%s\"\n" "$port" >> "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+  fi
+  cat "$tmp" > "$info_file" || {
+    rm -f "$tmp"
+    continue
+  }
+  rm -f "$tmp"
+done
+' sh "$PACKAGE_NAME" "$port" >/dev/null 2>&1 &
+}
+
 validate_listen_port() {
   port=$(printf '%s\n' "${DSMPASS_GO_LISTEN##*:}" | tr -d '[]')
   case "$port" in
@@ -169,6 +209,7 @@ case "${1:-}" in
     load_env
     validate_listen_port
     sync_installed_admin_port
+    schedule_installed_admin_port_sync
     if is_running; then
       exit 0
     fi
@@ -287,6 +328,39 @@ sync_installed_admin_port() {
   done
 }
 
+sync_installed_admin_port_later() {
+  nohup sh -c '
+package_name=$1
+port=$2
+for delay in 1 2 3 5 8 13; do
+  sleep "$delay"
+  info_file="/var/packages/$package_name/INFO"
+  [ -f "$info_file" ] || continue
+  tmp="$info_file.tmp.$$"
+  if grep -q "^adminport=" "$info_file"; then
+    sed "s|^adminport=.*|adminport=\"$port\"|" "$info_file" > "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+  else
+    cat "$info_file" > "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+    printf "adminport=\"%s\"\n" "$port" >> "$tmp" || {
+      rm -f "$tmp"
+      continue
+    }
+  fi
+  cat "$tmp" > "$info_file" || {
+    rm -f "$tmp"
+    continue
+  }
+  rm -f "$tmp"
+done
+' sh "$PACKAGE_NAME" "$management_port" >/dev/null 2>&1 &
+}
+
 case "$management_port" in
   ''|*[!0-9]*)
     echo "management_port must be a number" >&2
@@ -310,6 +384,7 @@ if [ ! -f "$ENVFILE" ]; then
   cat > "$ENVFILE" <<EOF_ENV
 DSMPASS_HELPER_HMAC_SECRET=$secret
 DSMPASS_GO_LISTEN=0.0.0.0:$management_port
+DSMPASS_ADMIN_PORTAL_PORT=$DEFAULT_MANAGEMENT_PORT
 DSMPASS_TLS_ENABLED=1
 DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt
 DSMPASS_TLS_KEY_FILE=$PKGVAR/data/tls/server.key
@@ -322,6 +397,9 @@ EOF_ENV
 else
   if [ "$management_port_was_provided" = "true" ]; then
     set_env_value DSMPASS_GO_LISTEN "0.0.0.0:$management_port"
+  fi
+  if ! grep -q '^DSMPASS_ADMIN_PORTAL_PORT=' "$ENVFILE"; then
+    set_env_value DSMPASS_ADMIN_PORTAL_PORT "$DEFAULT_MANAGEMENT_PORT"
   fi
   if ! grep -q '^DSMPASS_TLS_ENABLED=' "$ENVFILE"; then
     set_env_value DSMPASS_TLS_ENABLED 1
@@ -348,6 +426,7 @@ else
 fi
 
 sync_installed_admin_port
+sync_installed_admin_port_later
 log_install_status "install_or_upgrade_success management_port=$management_port provided=$management_port_was_provided"
 
 exit 0

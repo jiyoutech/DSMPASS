@@ -11,6 +11,7 @@ const defaultIDPAllowedCIDRs = "all"
 
 type BackendConfig struct {
 	Listen                     string
+	AdminRedirectListen        string
 	IDPListen                  string
 	DatabaseURL                string
 	DataDir                    string
@@ -99,6 +100,7 @@ func LoadBackend() BackendConfig {
 	}
 	return BackendConfig{
 		Listen:                     listen,
+		AdminRedirectListen:        env("DSMPASS_ADMIN_REDIRECT_LISTEN", ""),
 		IDPListen:                  idpListen,
 		DatabaseURL:                env("DSMPASS_DATABASE_URL", "sqlite:///volume1/docker/dsmpass/dsmpass.db"),
 		DataDir:                    dataDir,

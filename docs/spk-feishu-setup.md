@@ -37,14 +37,14 @@ DSMPASS-<version>-linux-arm64.spk
 如果需要自己打包，在项目根目录执行：
 
 ```bash
-DSMPASS_VERSION=0.8.26 make package-spk
+DSMPASS_VERSION=0.8.27 make package-spk
 ```
 
 输出文件在：
 
 ```text
-go/dist/dsm/DSMPASS-0.8.26-linux-amd64.spk
-go/dist/dsm/DSMPASS-0.8.26-linux-arm64.spk
+go/dist/dsm/DSMPASS-0.8.27-linux-amd64.spk
+go/dist/dsm/DSMPASS-0.8.27-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
