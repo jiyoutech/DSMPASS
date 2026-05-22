@@ -36,7 +36,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { EntityList, HelpLabel, IdentityCell, LogBlock, MetricStrip, PageTitle, RelationCount, SourceTable } from "./components/common";
 import { useAsyncData } from "./hooks/useAsyncData";
@@ -798,6 +798,8 @@ function SourceDetail({
   const [conflictPromptSource, setConflictPromptSource] = useState<string | null>(null);
   const accounts = useAsyncData(() => api.listDSMAccounts({ provider: source.slug, q: userQuery, status: userStatusFilter, page: accountPage, limit: sourceTablePageSize }), [source.slug, userQuery, userStatusFilter, accountPage]);
   const groups = useAsyncData(() => api.listDSMGroups({ provider: source.slug, q: groupQuery, status: groupStatusFilter, page: groupPage, limit: sourceTablePageSize }), [source.slug, groupQuery, groupStatusFilter, groupPage]);
+  const conflictAccountData = useAsyncData(() => api.listAllDSMAccounts({ provider: source.slug, status: "conflict" }), [source.slug]);
+  const conflictGroupData = useAsyncData(() => api.listAllDSMGroups({ provider: source.slug, status: "conflict" }), [source.slug]);
   const members = useAsyncData(() => api.listGroupMembers(source.slug), [source.slug]);
   const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug, { q: syncLogQuery, status: syncStatusFilter, page: syncLogPage, limit: sourceTablePageSize }), [source.slug, syncLogQuery, syncStatusFilter, syncLogPage]);
   const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
@@ -899,6 +901,8 @@ function SourceDetail({
     await Promise.all([
       accounts.reloadWithResult({ silent: true }),
       groups.reloadWithResult({ silent: true }),
+      conflictAccountData.reloadWithResult({ silent: true }),
+      conflictGroupData.reloadWithResult({ silent: true }),
       members.reloadWithResult({ silent: true }),
       syncLogs.reloadWithResult({ silent: true }),
       auditLogs.reloadWithResult({ silent: true })
@@ -906,49 +910,55 @@ function SourceDetail({
   }
 
   const memberRows = members.data?.items ?? [];
-  const groupsByUser = useMemo(() => {
+  const groupsByAccountID = useMemo(() => {
     const result = new Map<string, GroupMember[]>();
     for (const member of memberRows) {
-      const rows = result.get(member.dsm_username) ?? [];
+      const rows = result.get(member.dsm_account_id) ?? [];
       rows.push(member);
-      result.set(member.dsm_username, rows);
+      result.set(member.dsm_account_id, rows);
     }
     return result;
   }, [memberRows]);
-  const membersByGroup = useMemo(() => {
+  const membersByGroupID = useMemo(() => {
     const result = new Map<string, GroupMember[]>();
     for (const member of memberRows) {
-      const rows = result.get(member.dsm_groupname) ?? [];
+      const rows = result.get(member.dsm_group_id) ?? [];
       rows.push(member);
-      result.set(member.dsm_groupname, rows);
+      result.set(member.dsm_group_id, rows);
     }
     return result;
   }, [memberRows]);
-  const enrichedAccountRows = useMemo(() => {
-    return (accounts.data?.items ?? [])
+  const enrichAccounts = useCallback((items: DSMAccount[]) => {
+    return items
       .map((account) => {
-        const records = (groupsByUser.get(account.dsm_username) ?? []).slice().sort((a, b) => a.dsm_groupname.localeCompare(b.dsm_groupname));
+        const records = (groupsByAccountID.get(account.id) ?? []).slice().sort((a, b) => a.dsm_groupname.localeCompare(b.dsm_groupname));
         return { ...account, groups: records.map((member) => member.dsm_groupname), member_records: records };
       }) as EnrichedDSMAccount[];
-  }, [accounts.data?.items, groupsByUser]);
+  }, [groupsByAccountID]);
+  const enrichedAccountRows = useMemo(() => {
+    return enrichAccounts(accounts.data?.items ?? []);
+  }, [accounts.data?.items, enrichAccounts]);
   const accountRows = useMemo(() => {
     return enrichedAccountRows
       .filter((account) => userStatusFilter === "all" || String(account.provision_status) === userStatusFilter || (userStatusFilter === "disabled_login" && !account.allow_login))
       .filter((account) => includesQuery([account.dsm_username, account.display_name, account.primary_email, account.external_emails, account.mobile_masked, account.external_subjects, account.conflict_reason, account.app_identity_id, account.provision_status, ...account.groups], userQuery));
   }, [enrichedAccountRows, userQuery, userStatusFilter]);
-  const enrichedGroupRows = useMemo(() => {
-    return (groups.data?.items ?? [])
+  const enrichGroups = useCallback((items: DSMGroup[]) => {
+    return items
       .map((group) => {
-        const records = (membersByGroup.get(group.dsm_groupname) ?? []).slice().sort((a, b) => a.dsm_username.localeCompare(b.dsm_username));
+        const records = (membersByGroupID.get(group.id) ?? []).slice().sort((a, b) => a.dsm_username.localeCompare(b.dsm_username));
         return { ...group, members: records.map((member) => member.dsm_username), member_records: records };
       });
-  }, [groups.data?.items, membersByGroup]);
+  }, [membersByGroupID]);
+  const enrichedGroupRows = useMemo(() => {
+    return enrichGroups(groups.data?.items ?? []);
+  }, [groups.data?.items, enrichGroups]);
   const groupRows = useMemo(() => {
     return enrichedGroupRows
       .filter((group) => groupStatusFilter === "all" || String(group.provision_status) === groupStatusFilter)
       .filter((group) => includesQuery([group.dsm_groupname, group.provider_group_name, group.provider_group_path, group.provision_status, group.conflict_reason, ...group.members], groupQuery));
   }, [enrichedGroupRows, groupQuery, groupStatusFilter]);
-  const conflictAccounts = useMemo(() => enrichedAccountRows.filter((account) => account.provision_status === "conflict"), [enrichedAccountRows]);
+  const conflictAccounts = useMemo(() => enrichAccounts(conflictAccountData.data?.items ?? []), [conflictAccountData.data?.items, enrichAccounts]);
   const feishuDuplicateAccountGroups = useMemo(() => {
     const groupsByName = new Map<string, EnrichedDSMAccount[]>();
     for (const account of conflictAccounts) {
@@ -967,7 +977,7 @@ function SourceDetail({
   const nonFeishuDuplicateConflictAccounts = useMemo(() => {
     return conflictAccounts.filter((account) => accountConflictKind(account) !== "feishu_duplicate");
   }, [conflictAccounts]);
-  const conflictGroups = useMemo(() => enrichedGroupRows.filter((group) => group.provision_status === "conflict"), [enrichedGroupRows]);
+  const conflictGroups = useMemo(() => enrichGroups(conflictGroupData.data?.items ?? []), [conflictGroupData.data?.items, enrichGroups]);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
   const currentFeishuDuplicateGroup = feishuDuplicateAccountGroups[0];
   const conflictStepCount = (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
@@ -995,27 +1005,27 @@ function SourceDetail({
       users: accounts.data?.total ?? accountItems.length,
       disabledLogin: accountItems.filter((item) => !item.allow_login).length,
       pendingUsers: accountItems.filter((item) => item.provision_status === "pending").length,
-      accountConflicts: accountItems.filter((item) => item.provision_status === "conflict").length,
+      accountConflicts: conflictAccountData.data?.total ?? conflictAccounts.length,
       groups: groups.data?.total ?? groupItems.length,
       pendingGroups: groupItems.filter((item) => item.provision_status === "pending").length,
-      conflicts: groupItems.filter((item) => item.provision_status === "conflict").length,
+      conflicts: conflictGroupData.data?.total ?? conflictGroups.length,
       members: memberItems.length,
       syncLogs: syncLogs.data?.total ?? syncItems.length,
       syncFailed: syncItems.filter((item) => item.status === "failed" || item.status === "fail").length,
       loginAudits: auditLogs.data?.total ?? auditItems.length,
       loginFailed: auditItems.filter((item) => item.result === "failed" || item.result === "fail").length
     };
-  }, [accounts.data?.items, accounts.data?.total, auditLogs.data?.items, auditLogs.data?.total, groups.data?.items, groups.data?.total, members.data?.items, syncLogs.data?.items, syncLogs.data?.total]);
+  }, [accounts.data?.items, accounts.data?.total, auditLogs.data?.items, auditLogs.data?.total, conflictAccountData.data?.total, conflictAccounts.length, conflictGroupData.data?.total, conflictGroups.length, groups.data?.items, groups.data?.total, members.data?.items, syncLogs.data?.items, syncLogs.data?.total]);
 
   useEffect(() => {
-    if (!accounts.loading && !groups.loading && hasConflicts && conflictPromptSource !== source.slug) {
+    if (!conflictAccountData.loading && !conflictGroupData.loading && hasConflicts && conflictPromptSource !== source.slug) {
       setConflictModalOpen(true);
       setConflictPromptSource(source.slug);
     }
     if (!hasConflicts) {
       setConflictModalOpen(false);
     }
-  }, [accounts.loading, conflictPromptSource, groups.loading, hasConflicts, source.slug]);
+  }, [conflictAccountData.loading, conflictGroupData.loading, conflictPromptSource, hasConflicts, source.slug]);
 
   function apply() {
     modal.confirm({
@@ -1096,7 +1106,11 @@ function SourceDetail({
 
   async function provisionAccountAfterRename(id: string) {
     const result = await api.provisionAccount(id);
-    await accounts.reloadWithResult({ silent: true });
+    await Promise.all([
+      accounts.reloadWithResult({ silent: true }),
+      conflictAccountData.reloadWithResult({ silent: true }),
+      members.reloadWithResult({ silent: true })
+    ]);
     return result;
   }
 
@@ -1136,7 +1150,11 @@ function SourceDetail({
 
   async function provisionGroupAfterRename(id: string) {
     const result = await api.provisionGroup(id);
-    await groups.reloadWithResult({ silent: true });
+    await Promise.all([
+      groups.reloadWithResult({ silent: true }),
+      conflictGroupData.reloadWithResult({ silent: true }),
+      members.reloadWithResult({ silent: true })
+    ]);
     return result;
   }
 
@@ -1208,7 +1226,11 @@ function SourceDetail({
       });
       message.success(linkedExisting > 0 ? `已保存 ${records.length} 个用户，其中 ${linkedExisting} 个关联已有 DSM 用户` : `已保存并开通 ${records.length} 个 DSM 用户`);
     } catch (err) {
-      await accounts.reloadWithResult({ silent: true });
+      await Promise.all([
+        accounts.reloadWithResult({ silent: true }),
+        conflictAccountData.reloadWithResult({ silent: true }),
+        members.reloadWithResult({ silent: true })
+      ]);
       message.error(err instanceof Error ? err.message : "保存或开通失败，请继续修改或检查 Helper 权限");
     } finally {
       setSavingConflictKey(null);
@@ -1244,7 +1266,11 @@ function SourceDetail({
       });
       message.success(pendingEmptyGroups > 0 ? `已保存 ${records.length} 个部门，其中 ${pendingEmptyGroups} 个空部门会在成员同步时创建` : `已保存并开通 ${records.length} 个 DSM 部门组`);
     } catch (err) {
-      await groups.reloadWithResult({ silent: true });
+      await Promise.all([
+        groups.reloadWithResult({ silent: true }),
+        conflictGroupData.reloadWithResult({ silent: true }),
+        members.reloadWithResult({ silent: true })
+      ]);
       message.error(err instanceof Error ? err.message : "保存或开通失败，请继续修改或检查 Helper 权限");
     } finally {
       setSavingConflictKey(null);

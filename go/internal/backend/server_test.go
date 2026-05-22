@@ -817,6 +817,26 @@ func TestDSMAccountsSearchesBeforePagination(t *testing.T) {
 	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].DSMUsername != "bob" {
 		t.Fatalf("search should filter before pagination, got %#v", body)
 	}
+
+	membersResponse := httptest.NewRecorder()
+	membersRequest := httptest.NewRequest("GET", "/api/admin/group-members?provider=source-a", nil)
+	router.ServeHTTP(membersResponse, membersRequest)
+	if membersResponse.Code != http.StatusOK {
+		t.Fatalf("group members got %d body=%s", membersResponse.Code, membersResponse.Body.String())
+	}
+	var membersBody struct {
+		Items []struct {
+			DSMGroupID   string `json:"dsm_group_id"`
+			DSMAccountID string `json:"dsm_account_id"`
+			DSMUsername  string `json:"dsm_username"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(membersResponse.Body.Bytes(), &membersBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(membersBody.Items) != 1 || membersBody.Items[0].DSMGroupID != "dsm-group-a" || membersBody.Items[0].DSMAccountID != "account-identity-b" || membersBody.Items[0].DSMUsername != "bob" {
+		t.Fatalf("group members should expose stable relation ids, got %#v", membersBody)
+	}
 }
 
 func TestCleanupLogsRemovesExpiredRows(t *testing.T) {

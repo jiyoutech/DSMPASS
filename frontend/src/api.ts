@@ -33,6 +33,8 @@ export interface ListParams {
   limit?: number;
 }
 
+const MAX_PAGE_LIMIT = 200;
+
 function queryString(params: ListParams = {}) {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -43,6 +45,22 @@ function queryString(params: ListParams = {}) {
   }
   const encoded = search.toString();
   return encoded ? `?${encoded}` : "";
+}
+
+async function listAllPaged<T>(loader: (params: ListParams) => Promise<PagedResponse<T>>, params: ListParams = {}) {
+  const limit = Math.max(1, params.limit ?? MAX_PAGE_LIMIT);
+  let page = 1;
+  const items: T[] = [];
+  let total = 0;
+  for (;;) {
+    const response = await loader({ ...params, page, limit });
+    items.push(...response.items);
+    total = response.total;
+    if (items.length >= response.total || response.items.length === 0) {
+      return { ...response, items, page: 1, limit, total, offset: 0 };
+    }
+    page += 1;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -81,7 +99,9 @@ export const api = {
     request<{ success: boolean; username: string }>("/api/admin/auth/password", { method: "PUT", body: JSON.stringify(payload) }),
   syncApply: (provider: string) => request<SyncResult>(`/api/sync/${provider}/apply`, { method: "POST" }),
   listDSMAccounts: (params?: ListParams) => request<PagedResponse<DSMAccount>>(`/api/admin/dsm-accounts${queryString(params)}`),
+  listAllDSMAccounts: (params?: ListParams) => listAllPaged<DSMAccount>(api.listDSMAccounts, { ...params, limit: params?.limit ?? MAX_PAGE_LIMIT }),
   listDSMGroups: (params?: ListParams) => request<PagedResponse<DSMGroup>>(`/api/admin/dsm-groups${queryString(params)}`),
+  listAllDSMGroups: (params?: ListParams) => listAllPaged<DSMGroup>(api.listDSMGroups, { ...params, limit: params?.limit ?? MAX_PAGE_LIMIT }),
   listGroupMembers: (provider?: string) => request<{ items: GroupMember[] }>(`/api/admin/group-members${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   provisionAccount: (id: string) => request<DSMAccount>(`/api/admin/dsm-accounts/${id}/provision`, { method: "POST" }),
   setDSMAccountUsername: (id: string, dsm_username: string) =>

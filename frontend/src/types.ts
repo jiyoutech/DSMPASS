@@ -51,6 +51,8 @@ export interface DSMGroup {
 export interface GroupMember {
   id: string;
   provider_slug: string;
+  dsm_group_id: string;
+  dsm_account_id: string;
   dsm_groupname: string;
   dsm_username: string;
   provision_status: ProvisionStatus;

@@ -381,7 +381,7 @@ func (s *Server) groupMembers(c *gin.Context) {
 		where = `WHERE m.active = 1`
 	}
 	rows, err := queryJSON(c.Request.Context(), s.store, `
-SELECT m.id, pg.provider_slug, g.dsm_groupname, a.dsm_username, m.provision_status
+SELECT m.id, pg.provider_slug, g.id AS dsm_group_id, a.id AS dsm_account_id, g.dsm_groupname, a.dsm_username, m.provision_status
 FROM group_members m
 JOIN dsm_groups g ON g.id = m.dsm_group_id
 JOIN dsm_accounts a ON a.id = m.dsm_account_id
