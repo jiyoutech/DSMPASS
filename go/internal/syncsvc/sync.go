@@ -137,7 +137,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
-	membersByGroup := usersDepartmentMemberships(users)
+	membersByGroup := usersDepartmentMemberships(users, groups)
 	currentMemberships := map[string]bool{}
 	for _, group := range groups {
 		dsmGroup, ok := groupMap[group.Subject]
@@ -216,18 +216,52 @@ WHERE id = ? AND active = 1`, id); err != nil {
 	return nil
 }
 
-func usersDepartmentMemberships(users []provider.User) map[string][]string {
+func usersDepartmentMemberships(users []provider.User, groups []provider.Group) map[string][]string {
 	result := map[string][]string{}
+	parentByGroup := groupParentSubjects(groups)
+	seenMemberships := map[string]bool{}
 	for _, user := range users {
 		if len(user.DepartmentSubjects) == 0 {
 			continue
 		}
 		for _, departmentSubject := range user.DepartmentSubjects {
-			if departmentSubject == "" {
-				continue
+			for _, inheritedSubject := range inheritedDepartmentSubjects(departmentSubject, parentByGroup) {
+				key := inheritedSubject + "\x00" + user.Subject
+				if seenMemberships[key] {
+					continue
+				}
+				seenMemberships[key] = true
+				result[inheritedSubject] = append(result[inheritedSubject], user.Subject)
 			}
-			result[departmentSubject] = append(result[departmentSubject], user.Subject)
 		}
+	}
+	return result
+}
+
+func groupParentSubjects(groups []provider.Group) map[string]string {
+	result := map[string]string{}
+	for _, group := range groups {
+		subject := strings.TrimSpace(group.Subject)
+		parent := strings.TrimSpace(group.ParentSubject)
+		if subject == "" || parent == "" || subject == parent {
+			continue
+		}
+		result[subject] = parent
+	}
+	return result
+}
+
+func inheritedDepartmentSubjects(subject string, parentByGroup map[string]string) []string {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return nil
+	}
+	var result []string
+	seen := map[string]bool{}
+	for subject != "" && !seen[subject] {
+		seen[subject] = true
+		result = append(result, subject)
+		subject = strings.TrimSpace(parentByGroup[subject])
 	}
 	return result
 }

@@ -123,6 +123,32 @@ func TestSyncProviderMarksMovedGroupMemberForRemoval(t *testing.T) {
 	assertMemberState(t, ctx, database, "g2", "u1", true, "pending")
 }
 
+func TestSyncProviderInheritsNestedDepartmentMemberships(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	directory := fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g3"}}},
+		groups: []provider.Group{
+			{ProviderSlug: "feishu-main", Subject: "g1", Name: "matrix"},
+			{ProviderSlug: "feishu-main", Subject: "g2", ParentSubject: "g1", Name: "sup1"},
+			{ProviderSlug: "feishu-main", Subject: "g3", ParentSubject: "g2", Name: "sup2"},
+		},
+	}
+	if _, err := engine.SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
+	assertMemberState(t, ctx, database, "g2", "u1", true, "pending")
+	assertMemberState(t, ctx, database, "g3", "u1", true, "pending")
+}
+
 func TestSyncProviderReactivatesRemovedGroupMemberAsPending(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
