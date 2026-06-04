@@ -1567,6 +1567,41 @@ function SourceDetail({
     return `${allowLogin ? "allow" : "deny"}:${ids.slice().sort().join(",")}`;
   }
 
+  function closeConflictModal() {
+    if (conflictAutoSyncing && progressRunning()) {
+      return;
+    }
+    setConflictAutoSyncing(false);
+    setConflictModalOpen(false);
+  }
+
+  const activeConflictSaveAction = (() => {
+    if (conflictAutoSyncing) {
+      return null;
+    }
+    if (conflictGroups.length > 0) {
+      return {
+        key: "groups:all",
+        save: () => void saveGroupConflictBatch(conflictGroups, "groups:all")
+      };
+    }
+    if (currentFeishuDuplicateGroup) {
+      const key = `accounts:feishu:${currentFeishuDuplicateGroup.name}`;
+      return {
+        key,
+        save: () => void saveAccountConflictBatch(currentFeishuDuplicateGroup.items, key)
+      };
+    }
+    if (nonFeishuDuplicateConflictAccounts.length > 0) {
+      return {
+        key: "accounts:other",
+        save: () => void saveAccountConflictBatch(nonFeishuDuplicateConflictAccounts, "accounts:other")
+      };
+    }
+    return null;
+  })();
+  const conflictCloseDisabled = conflictAutoSyncing && progressRunning();
+
   return (
     <Space direction="vertical" size={16} className="page">
       <PageTitle
@@ -1630,25 +1665,25 @@ function SourceDetail({
         open={conflictModalOpen}
         width={sourceModalWidth}
         style={{ top: 24 }}
-        okText={conflictAutoSyncing && progressRunning() ? "同步中" : "关闭"}
-        cancelButtonProps={{ style: { display: "none" } }}
-        okButtonProps={{ disabled: conflictAutoSyncing && progressRunning() }}
         maskClosable={!(conflictAutoSyncing && progressRunning())}
         closable={!(conflictAutoSyncing && progressRunning())}
-        onOk={() => {
-          if (conflictAutoSyncing && progressRunning()) {
-            return;
-          }
-          setConflictAutoSyncing(false);
-          setConflictModalOpen(false);
-        }}
-        onCancel={() => {
-          if (conflictAutoSyncing && progressRunning()) {
-            return;
-          }
-          setConflictAutoSyncing(false);
-          setConflictModalOpen(false);
-        }}
+        onCancel={closeConflictModal}
+        footer={(
+          <Space>
+            <Button onClick={closeConflictModal} disabled={conflictCloseDisabled}>
+              {conflictCloseDisabled ? "同步中" : "关闭"}
+            </Button>
+            {activeConflictSaveAction && (
+              <Button
+                type="primary"
+                loading={savingConflictKey === activeConflictSaveAction.key}
+                onClick={activeConflictSaveAction.save}
+              >
+                保存并开通本组
+              </Button>
+            )}
+          </Space>
+        )}
       >
         {conflictAutoSyncing ? (
           <Space direction="vertical" size={16} className="conflict-modal-body">
@@ -1684,15 +1719,6 @@ function SourceDetail({
             <Card
               className="conflict-step-card"
               title={<Space><span>第 1 / {conflictStepCount} 组：部门冲突</span><Tag color="error">{conflictGroups.length}</Tag></Space>}
-              extra={(
-                <Button
-                  type="primary"
-                  loading={savingConflictKey === "groups:all"}
-                  onClick={() => void saveGroupConflictBatch(conflictGroups, "groups:all")}
-                >
-                  保存并开通本组
-                </Button>
-              )}
             >
               <Table
                 size="small"
@@ -1723,15 +1749,6 @@ function SourceDetail({
                   <Tag color="error">{currentFeishuDuplicateGroup.items.length} 个同名用户</Tag>
                 </Space>
               )}
-              extra={(
-                <Button
-                  type="primary"
-                  loading={savingConflictKey === `accounts:feishu:${currentFeishuDuplicateGroup.name}`}
-                  onClick={() => void saveAccountConflictBatch(currentFeishuDuplicateGroup.items, `accounts:feishu:${currentFeishuDuplicateGroup.name}`)}
-                >
-                  保存并开通本组
-                </Button>
-              )}
             >
               <div className="conflict-user-group">
                 <div className="conflict-user-group-head">
@@ -1753,15 +1770,6 @@ function SourceDetail({
             <Card
               className="conflict-step-card"
               title={<Space><span>第 1 / {conflictStepCount} 组：其他用户命名冲突</span><Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag></Space>}
-              extra={(
-                <Button
-                  type="primary"
-                  loading={savingConflictKey === "accounts:other"}
-                  onClick={() => void saveAccountConflictBatch(nonFeishuDuplicateConflictAccounts, "accounts:other")}
-                >
-                  保存并开通本组
-                </Button>
-              )}
             >
               <Table
                 size="small"
