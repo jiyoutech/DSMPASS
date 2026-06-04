@@ -1,0 +1,8 @@
+dist/
+node_modules/
+frontend/dist/
+frontend/node_modules/
+go/dist/
+go/.gocache/
+go/.gomodcache/
+media/
