@@ -2,6 +2,9 @@ package settings
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -9,6 +12,52 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
+
+const helperHMACSecretSettingKey = "relay_helper_hmac_secret"
+
+func EnsureHelperHMACSecret(ctx context.Context, q *db.Queries, current string) (string, bool, error) {
+	current = strings.TrimSpace(current)
+	if current != "" {
+		return current, false, nil
+	}
+	if q == nil {
+		return "", false, nil
+	}
+	if existing, err := runtimeStringSetting(ctx, q, helperHMACSecretSettingKey); err == nil && strings.TrimSpace(existing) != "" {
+		return existing, false, nil
+	} else if err != nil && !errorsIsNoRows(err) {
+		return "", false, err
+	}
+	generated, err := randomHex(32)
+	if err != nil {
+		return "", false, err
+	}
+	raw, err := json.Marshal(generated)
+	if err != nil {
+		return "", false, err
+	}
+	_, err = q.DBTX().ExecContext(ctx, `
+	INSERT INTO runtime_settings (key, value_json, updated_at)
+	VALUES (?, ?, CURRENT_TIMESTAMP)
+	ON CONFLICT(key) DO UPDATE SET
+		value_json = CASE
+			WHEN runtime_settings.value_json = '""' THEN excluded.value_json
+			ELSE runtime_settings.value_json
+		END,
+		updated_at = CASE
+			WHEN runtime_settings.value_json = '""' THEN excluded.updated_at
+			ELSE runtime_settings.updated_at
+		END
+	`, helperHMACSecretSettingKey, string(raw))
+	if err != nil {
+		return "", false, err
+	}
+	actual, err := runtimeStringSetting(ctx, q, helperHMACSecretSettingKey)
+	if err != nil {
+		return "", false, err
+	}
+	return actual, actual == generated, nil
+}
 
 func ApplyHelperRuntime(ctx context.Context, cfg config.HelperConfig, q *db.Queries) config.HelperConfig {
 	if q == nil {
@@ -70,6 +119,30 @@ func ApplyHelperRuntime(ctx context.Context, cfg config.HelperConfig, q *db.Quer
 		}
 	}
 	return cfg
+}
+
+func runtimeStringSetting(ctx context.Context, q *db.Queries, key string) (string, error) {
+	row, err := q.GetRuntimeSetting(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	var value string
+	if err := json.Unmarshal([]byte(row.ValueJson), &value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func randomHex(bytes int) (string, error) {
+	buffer := make([]byte, bytes)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buffer), nil
+}
+
+func errorsIsNoRows(err error) bool {
+	return err == sql.ErrNoRows
 }
 
 func normalizedAccessScheme(value string) string {

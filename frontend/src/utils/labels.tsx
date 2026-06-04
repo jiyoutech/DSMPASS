@@ -10,6 +10,7 @@ const statusLabels: Record<string, string> = {
   success: "成功",
   fail: "失败",
   failed: "失败",
+  blocked: "阻断",
   warning: "警告",
   pass: "通过",
   missing: "缺失",
@@ -32,15 +33,18 @@ const actionLabels: Record<string, string> = {
   sync_dsm_user: "同步 DSM 用户",
   sync_dsm_group: "同步 DSM 部门",
   sync_dsm_group_member: "同步成员关系",
+  disable_local_group_member: "禁用本地成员关系",
   disable_missing_dsm_user: "禁用已删除用户",
   create_or_update: "创建或更新",
   link_existing_dsm_user: "关联已有 DSM 用户",
+  link_existing_dsm_group: "关联已有 DSM 部门",
   disable_missing: "禁用已删除",
   ensure_dsm_user: "准备 DSM 用户",
   ensure_dsm_group: "准备 DSM 部门",
   ensure_group_member: "准备成员关系",
   update_external_account: "更新外部账号",
-  update_provider_group: "更新部门"
+  update_provider_group: "更新部门",
+  resolve_group_conflicts: "处理部门冲突"
 };
 
 export function labelOf(value: unknown) {
@@ -67,7 +71,7 @@ export function actionTag(action: string) {
 
 export function resultTag(result: string) {
   const normalized = result.toLowerCase();
-  const color = normalized === "success" || normalized === "pass" ? "success" : normalized === "fail" || normalized === "failed" ? "error" : "default";
+  const color = normalized === "success" || normalized === "pass" ? "success" : normalized === "fail" || normalized === "failed" || normalized === "blocked" ? "error" : "default";
   return <Tag color={color}>{labelOf(result)}</Tag>;
 }
 

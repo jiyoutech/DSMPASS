@@ -18,6 +18,8 @@ type Server struct {
 	helper           helperclient.Client
 	database         *sql.DB
 	store            *db.Queries
+	logDatabase      *sql.DB
+	logStore         *db.Queries
 	stateMu          sync.Mutex
 	states           map[string]oauthState
 	adminMu          sync.Mutex
@@ -53,17 +55,37 @@ func NewWithDB(cfg config.BackendConfig, helper helperclient.Client, database *s
 	return server
 }
 
+func NewWithDatabases(cfg config.BackendConfig, helper helperclient.Client, database *sql.DB, store *db.Queries, logDatabase *sql.DB, logStore *db.Queries) *Server {
+	server := newServer(cfg, helper, database, store)
+	if logStore != nil {
+		server.logDatabase = logDatabase
+		server.logStore = logStore
+	}
+	_ = server.LoadRuntimeSettings(context.Background())
+	server.refreshAdminSetupState()
+	return server
+}
+
 func newServer(cfg config.BackendConfig, helper helperclient.Client, database *sql.DB, store *db.Queries) *Server {
 	cfg.RelayMode = "socket"
 	return &Server{
-		cfg:      cfg,
-		helper:   helper,
-		database: database,
-		store:    store,
-		states:   map[string]oauthState{},
-		syncRuns: map[string]bool{},
-		autoSync: map[string]time.Time{},
+		cfg:         cfg,
+		helper:      helper,
+		database:    database,
+		store:       store,
+		logDatabase: database,
+		logStore:    store,
+		states:      map[string]oauthState{},
+		syncRuns:    map[string]bool{},
+		autoSync:    map[string]time.Time{},
 	}
+}
+
+func (s *Server) logs() *db.Queries {
+	if s.logStore != nil {
+		return s.logStore
+	}
+	return s.store
 }
 
 func HelperFromConfig(cfg config.BackendConfig) helperclient.Client {

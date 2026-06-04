@@ -6,6 +6,8 @@ GO_DIR="$ROOT_DIR/go"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 VERSION=$("$GO_DIR/scripts/dsm/version.sh")
 LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.FrontendVersion=$VERSION"
+export GOCACHE="${GOCACHE:-$GO_DIR/.gocache}"
+export GOMODCACHE="${GOMODCACHE:-$GO_DIR/.gomodcache}"
 
 cd "$FRONTEND_DIR"
 npm run build
@@ -15,10 +17,10 @@ rm -rf dist/dsm/package-linux-amd64 dist/dsm/package-linux-arm64
 mkdir -p dist/dsm/package-linux-amd64/bin dist/dsm/package-linux-amd64/frontend
 mkdir -p dist/dsm/package-linux-arm64/bin dist/dsm/package-linux-arm64/frontend
 
-GOCACHE="$GO_DIR/.gocache" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-amd64/bin/dsmpass-backend ./cmd/backend
-GOCACHE="$GO_DIR/.gocache" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-amd64/bin/dsmpass-helper ./cmd/helper
-GOCACHE="$GO_DIR/.gocache" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-arm64/bin/dsmpass-backend ./cmd/backend
-GOCACHE="$GO_DIR/.gocache" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-arm64/bin/dsmpass-helper ./cmd/helper
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-amd64/bin/dsmpass-backend ./cmd/backend
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-amd64/bin/dsmpass-helper ./cmd/helper
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-arm64/bin/dsmpass-backend ./cmd/backend
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath "-ldflags=$LDFLAGS" -o dist/dsm/package-linux-arm64/bin/dsmpass-helper ./cmd/helper
 
 rm -rf dist/dsm/package-linux-amd64/frontend/dist dist/dsm/package-linux-arm64/frontend/dist
 cp -R "$FRONTEND_DIR/dist" dist/dsm/package-linux-amd64/frontend/dist

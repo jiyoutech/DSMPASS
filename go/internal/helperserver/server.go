@@ -40,6 +40,17 @@ func NewWithStore(cfg config.HelperConfig, store *db.Queries) *Server {
 }
 
 func (s *Server) Serve() error {
+	secret, generated, err := settings.EnsureHelperHMACSecret(context.Background(), s.store, s.cfg.HMACSecret)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("helper hmac secret is not configured")
+	}
+	s.cfg.HMACSecret = secret
+	if generated {
+		log.Printf("DSM Pass helper hmac secret generated and persisted")
+	}
 	startupCfg := settings.ApplyHelperRuntime(context.Background(), s.cfg, s.store)
 	if err := os.MkdirAll(filepath.Dir(startupCfg.SocketPath), 0o700); err != nil {
 		return err
@@ -275,6 +286,9 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
 			return errorResponse("BAD_REQUEST", err.Error())
+		}
+		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
+			return errorResponse("SYNOUSER_MISSING", "DSM 用户不存在，不能添加到群组："+err.Error())
 		}
 		if err := run(cfg.SynoGroupPath, "--memberadd", groupname, username); err != nil {
 			if isSynoGroupMemberPresent(err, groupname, username) {

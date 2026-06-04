@@ -49,8 +49,10 @@ import type {
   AdminAuthStatus,
   AdminLoginRequest,
   HelperStatus,
+  OperationEvent,
+  OperationRun,
+  PagedResponse,
   ProviderItem,
-  ProviderTypeItem,
   ProviderUpsert,
   SystemSettings,
   SystemSettingsUpdate
@@ -63,6 +65,11 @@ const { Title } = Typography;
 const appName = "DSM Pass";
 const defaultIDPPort = 26000;
 const sourceTablePageSize = 50;
+const sourceModalWidth = "min(1180px, calc(100vw - 32px))";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 function helperStatusOK(status: HelperStatus | null | undefined) {
   const details = status?.details;
@@ -80,6 +87,132 @@ function helperStatusProblem(status: HelperStatus) {
   const synouser = details.synouser_status?.executable ? "ok" : details.synouser_status?.error || "不可执行";
   const synogroup = details.synogroup_status?.executable ? "ok" : details.synogroup_status?.error || "不可执行";
   return `检查未通过：当前 EUID ${details.euid ?? "-"}，synouser: ${synouser}，synogroup: ${synogroup}`;
+}
+
+function operationKindLabel(kind?: string | null) {
+  switch (kind) {
+    case "sync":
+      return "同步";
+    case "cleanup":
+      return "清理";
+    case "login_enable":
+      return "允许登录";
+    case "login_disable":
+      return "禁止登录";
+    default:
+      return "操作";
+  }
+}
+
+function operationStatusLabel(status?: string | null) {
+  switch (status) {
+    case "success":
+      return "已完成";
+    case "failed":
+    case "fail":
+      return "失败";
+    case "running":
+      return "进行中";
+    default:
+      return "等待中";
+  }
+}
+
+function operationStatusColor(status?: string | null) {
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "failed" || status === "fail") {
+    return "error";
+  }
+  return "processing";
+}
+
+function operationAlertType(status?: string | null): "success" | "error" | "info" {
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "failed" || status === "fail") {
+    return "error";
+  }
+  return "info";
+}
+
+function operationMessage(run: OperationRun) {
+  const kind = operationKindLabel(run.kind);
+  if (run.status === "success") {
+    return `${kind}已完成`;
+  }
+  if (run.status === "failed" || run.status === "fail") {
+    return `${kind}失败`;
+  }
+  return `${kind}进行中`;
+}
+
+function operationDescription(run: OperationRun) {
+  if (run.status === "failed" || run.status === "fail") {
+    return run.error || run.message || "操作未完成，请查看最近进度并按错误提示处理。";
+  }
+  if (run.status === "success") {
+    return run.message || "操作已经完成，相关数据已刷新。";
+  }
+  return run.message || (run.phase ? `当前阶段：${run.phase}` : "正在等待后端返回进度。");
+}
+
+function OperationProgressPanel({ state }: { state: { run: OperationRun; events: OperationEvent[] } | null }) {
+  if (!state) {
+    return (
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Alert type="info" showIcon message="正在准备任务" description="正在创建后台任务，稍后会显示实时进度。" />
+        <Progress percent={0} status="active" showInfo={false} />
+      </Space>
+    );
+  }
+  const { run, events } = state;
+  const total = Number(run.total || 0);
+  const current = Number(run.current || 0);
+  const remaining = Math.max(total - current, 0);
+  const percent = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  const status = run.status === "failed" || run.status === "fail" ? "exception" : run.status === "success" ? "success" : "active";
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Alert
+        type={operationAlertType(run.status)}
+        showIcon
+        message={(
+          <Flex justify="space-between" align="center" gap={12} wrap>
+            <Space wrap>
+              <Tag color={operationStatusColor(run.status)}>{operationStatusLabel(run.status)}</Tag>
+              <strong>{operationMessage(run)}</strong>
+              {run.phase && <Typography.Text type="secondary">{run.phase}</Typography.Text>}
+            </Space>
+            <Typography.Text strong>{total > 0 ? `${current}/${total}，剩余 ${remaining}` : "正在准备"}</Typography.Text>
+          </Flex>
+        )}
+        description={operationDescription(run)}
+      />
+      <Progress percent={percent} status={status} />
+      <Space wrap>
+        <Tag>已处理 {current}</Tag>
+        <Tag>总数 {total || "-"}</Tag>
+        <Tag>剩余 {total > 0 ? remaining : "-"}</Tag>
+      </Space>
+      {events.length > 0 && (
+        <Card size="small" title="最近进度">
+          <div className="operation-events">
+            {events.slice(0, 5).map((event) => (
+              <div key={event.id} className="operation-event">
+                <span>{formatLocalTime(event.created_at)}</span>
+                <span>{event.phase}</span>
+                <span>{event.message}</span>
+                {event.total > 0 && <span>{event.current}/{event.total}</span>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </Space>
+  );
 }
 
 function preferredInitialIDPPort(settings: SystemSettings | null) {
@@ -497,7 +630,6 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
             <Header className="app-header">
               <div className="header-title">
                 <Title level={4}>{appName}</Title>
-                <span>飞书身份源到 DSM 登录与账号同步</span>
               </div>
               <div className="header-meta">
                 <div className="version-stack" aria-label="版本">
@@ -778,6 +910,11 @@ function SourceDetail({
   const [deletingSource, setDeletingSource] = useState(false);
   const [syncApplying, setSyncApplying] = useState(false);
   const [accountLoginAction, setAccountLoginAction] = useState<string | null>(null);
+  const [activeOperation, setActiveOperation] = useState<{ run: OperationRun; events: OperationEvent[] } | null>(null);
+  const [operationModalOpen, setOperationModalOpen] = useState(false);
+  const [operationModalTitle, setOperationModalTitle] = useState("操作进度");
+  const [operationModalAction, setOperationModalAction] = useState<"sync" | "cleanup" | null>(null);
+  const [operationStarted, setOperationStarted] = useState(false);
   const [userQuery, setUserQuery] = useState("");
   const [groupQuery, setGroupQuery] = useState("");
   const [syncLogQuery, setSyncLogQuery] = useState("");
@@ -796,6 +933,7 @@ function SourceDetail({
   const [savingConflictKey, setSavingConflictKey] = useState<string | null>(null);
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictPromptSource, setConflictPromptSource] = useState<string | null>(null);
+  const [conflictAutoSyncing, setConflictAutoSyncing] = useState(false);
   const accounts = useAsyncData(() => api.listDSMAccounts({ provider: source.slug, q: userQuery, status: userStatusFilter, page: accountPage, limit: sourceTablePageSize }), [source.slug, userQuery, userStatusFilter, accountPage]);
   const groups = useAsyncData(() => api.listDSMGroups({ provider: source.slug, q: groupQuery, status: groupStatusFilter, page: groupPage, limit: sourceTablePageSize }), [source.slug, groupQuery, groupStatusFilter, groupPage]);
   const conflictAccountData = useAsyncData(() => api.listAllDSMAccounts({ provider: source.slug, status: "conflict" }), [source.slug]);
@@ -909,6 +1047,148 @@ function SourceDetail({
     ]);
   }
 
+  async function waitOperation(runID: string) {
+    for (;;) {
+      const [run, eventPage] = await Promise.all([
+        api.operationRun(runID),
+        api.operationRunEvents(runID, { page: 1, limit: 20 })
+      ]);
+      setActiveOperation({ run, events: eventPage.items });
+      if (run.status === "success") {
+        return run;
+      }
+      if (run.status === "failed" || run.status === "fail") {
+        throw new Error(run.error || run.message || "操作失败");
+      }
+      await sleep(800);
+    }
+  }
+
+  function openOperationModal(title: string, action: "sync" | "cleanup" | null = null) {
+    setOperationModalTitle(title);
+    setOperationModalAction(action);
+    setOperationStarted(action === null);
+    setActiveOperation(null);
+    setOperationModalOpen(true);
+  }
+
+  function operationRunning() {
+    return operationModalOpen && operationStarted && (!activeOperation || activeOperation.run.status === "running");
+  }
+
+  function progressRunning() {
+    return !activeOperation || activeOperation.run.status === "running";
+  }
+
+  function operationOkText() {
+    if (!operationStarted && operationModalAction === "sync") {
+      return "同步";
+    }
+    if (!operationStarted && operationModalAction === "cleanup") {
+      return "清理";
+    }
+    return operationRunning() ? "处理中" : "关闭";
+  }
+
+  function operationConfirmMessage() {
+    if (operationModalAction === "cleanup") {
+      return "会先禁用 DSM 中对应用户，然后清理该身份源的本地同步映射数据；如需彻底删除 DSM 用户，请到 DSM 手动操作。";
+    }
+    return "将读取身份源通讯录，更新本地映射，并把待处理用户、部门和成员关系同步到 DSM。";
+  }
+
+  async function startOperationFromModal() {
+    if (operationModalAction === "sync") {
+      setOperationStarted(true);
+      setSyncApplying(true);
+      setSyncError(null);
+      try {
+        const { run_id } = await api.startSyncRun(source.slug);
+        await waitOperation(run_id);
+        showLatestSyncLogs();
+        await refreshAll();
+        message.success("同步完成");
+      } catch (err) {
+        setSyncError(err instanceof Error ? err.message : "同步失败");
+        showLatestSyncLogs();
+        await refreshAfterSyncFailure();
+      } finally {
+        setSyncApplying(false);
+      }
+      return;
+    }
+    if (operationModalAction === "cleanup") {
+      setOperationStarted(true);
+      setResettingSyncData(true);
+      setSyncError(null);
+      try {
+        const { run_id } = await api.startCleanupRun(source.slug);
+        const run = await waitOperation(run_id);
+        await refreshAll();
+        message.success(run.message || "已清理");
+      } catch (err) {
+        message.error(err instanceof Error ? err.message : "清理失败");
+      } finally {
+        setResettingSyncData(false);
+      }
+    }
+  }
+
+  function showLatestSyncLogs() {
+    setSyncLogQuery("");
+    setSyncStatusFilter("all");
+    setSyncLogPage(1);
+    onTabChange("sync-logs");
+  }
+
+  async function refreshAfterSyncFailure() {
+    const [accountConflicts, groupConflicts] = await Promise.all([
+      conflictAccountData.reloadWithResult({ silent: true }),
+      conflictGroupData.reloadWithResult({ silent: true }),
+      accounts.reloadWithResult({ silent: true }),
+      groups.reloadWithResult({ silent: true }),
+      members.reloadWithResult({ silent: true }),
+      syncLogs.reloadWithResult({ silent: true }),
+      auditLogs.reloadWithResult({ silent: true })
+    ]);
+    const hasFreshConflicts = (accountConflicts?.total ?? accountConflicts?.items.length ?? 0) > 0 || (groupConflicts?.total ?? groupConflicts?.items.length ?? 0) > 0;
+    if (hasFreshConflicts) {
+      setConflictModalOpen(true);
+      setConflictPromptSource(source.slug);
+    }
+  }
+
+  function conflictCount<T>(response: PagedResponse<T> | null | undefined) {
+    return response?.total ?? response?.items.length ?? 0;
+  }
+
+  async function syncIfConflictsResolved(accountConflicts: PagedResponse<DSMAccount> | null, groupConflicts: PagedResponse<DSMGroup> | null) {
+    if (conflictCount(accountConflicts) > 0 || conflictCount(groupConflicts) > 0) {
+      message.success("已保存，继续处理剩余冲突");
+      return;
+    }
+    setConflictModalOpen(true);
+    setConflictAutoSyncing(true);
+    setActiveOperation(null);
+    setOperationModalOpen(false);
+    setSyncApplying(true);
+    setSyncError(null);
+    try {
+      message.info("冲突异常已处理，正在继续同步");
+      const { run_id } = await api.startSyncRun(source.slug);
+      await waitOperation(run_id);
+      showLatestSyncLogs();
+      await refreshAll();
+      message.success("冲突异常已处理，已自动同步完成");
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "同步失败");
+      showLatestSyncLogs();
+      await refreshAfterSyncFailure();
+    } finally {
+      setSyncApplying(false);
+    }
+  }
+
   const memberRows = members.data?.items ?? [];
   const groupsByAccountID = useMemo(() => {
     const result = new Map<string, GroupMember[]>();
@@ -1011,63 +1291,28 @@ function SourceDetail({
       conflicts: conflictGroupData.data?.total ?? conflictGroups.length,
       members: memberItems.length,
       syncLogs: syncLogs.data?.total ?? syncItems.length,
-      syncFailed: syncItems.filter((item) => item.status === "failed" || item.status === "fail").length,
+      syncFailed: syncItems.filter((item) => item.status === "failed" || item.status === "fail" || (hasConflicts && item.status === "blocked")).length,
       loginAudits: auditLogs.data?.total ?? auditItems.length,
       loginFailed: auditItems.filter((item) => item.result === "failed" || item.result === "fail").length
     };
-  }, [accounts.data?.items, accounts.data?.total, auditLogs.data?.items, auditLogs.data?.total, conflictAccountData.data?.total, conflictAccounts.length, conflictGroupData.data?.total, conflictGroups.length, groups.data?.items, groups.data?.total, members.data?.items, syncLogs.data?.items, syncLogs.data?.total]);
+  }, [accounts.data?.items, accounts.data?.total, auditLogs.data?.items, auditLogs.data?.total, conflictAccountData.data?.total, conflictAccounts.length, conflictGroupData.data?.total, conflictGroups.length, groups.data?.items, groups.data?.total, hasConflicts, members.data?.items, syncLogs.data?.items, syncLogs.data?.total]);
 
   useEffect(() => {
     if (!conflictAccountData.loading && !conflictGroupData.loading && hasConflicts && conflictPromptSource !== source.slug) {
       setConflictModalOpen(true);
       setConflictPromptSource(source.slug);
     }
-    if (!hasConflicts) {
+    if (!hasConflicts && !conflictAutoSyncing) {
       setConflictModalOpen(false);
     }
-  }, [conflictAccountData.loading, conflictGroupData.loading, conflictPromptSource, hasConflicts, source.slug]);
+  }, [conflictAccountData.loading, conflictGroupData.loading, conflictAutoSyncing, conflictPromptSource, hasConflicts, source.slug]);
 
   function apply() {
-    modal.confirm({
-      title: `同步 ${source.display_name}`,
-      okText: "同步",
-      cancelText: "取消",
-      onOk: async () => {
-        setSyncApplying(true);
-        setSyncError(null);
-        try {
-          await api.syncApply(source.slug);
-          await refreshAll();
-          message.success("同步完成");
-        } catch (err) {
-          setSyncError(err instanceof Error ? err.message : "同步失败");
-        } finally {
-          setSyncApplying(false);
-        }
-      }
-    });
+    openOperationModal(`同步 ${source.display_name}`, "sync");
   }
 
   function resetSyncData() {
-    modal.confirm({
-      title: `清理 ${source.display_name}`,
-      okText: "清理",
-      cancelText: "取消",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setResettingSyncData(true);
-        setSyncError(null);
-        try {
-          await api.resetProviderSyncData(source.slug);
-          await refreshAll();
-          message.success("已清理");
-        } catch (err) {
-          message.error(err instanceof Error ? err.message : "清理失败");
-        } finally {
-          setResettingSyncData(false);
-        }
-      }
-    });
+    openOperationModal(`清理 ${source.display_name}`, "cleanup");
   }
 
   function deleteSource() {
@@ -1080,8 +1325,12 @@ function SourceDetail({
       onOk: async () => {
         setDeletingSource(true);
         try {
-          await api.deleteProvider(source.slug);
-          message.success("已删除身份源");
+          const result = await api.deleteProvider(source.slug);
+          if (result.disabled_dsm_users > 0) {
+            message.warning("已删除身份源并禁用 DSM 用户；如需彻底删除用户，请到 DSM 手动删除");
+          } else {
+            message.success("已删除身份源");
+          }
           onDeleted();
         } catch (err) {
           message.error(err instanceof Error ? err.message : "删除失败");
@@ -1104,16 +1353,6 @@ function SourceDetail({
     });
   };
 
-  async function provisionAccountAfterRename(id: string) {
-    const result = await api.provisionAccount(id);
-    await Promise.all([
-      accounts.reloadWithResult({ silent: true }),
-      conflictAccountData.reloadWithResult({ silent: true }),
-      members.reloadWithResult({ silent: true })
-    ]);
-    return result;
-  }
-
   const editAccountUsername = (record: DSMAccount) => {
     let nextUsername = record.dsm_username;
     modal.confirm({
@@ -1130,8 +1369,13 @@ function SourceDetail({
       ),
       onOk: async () => {
         await api.setDSMAccountUsername(record.id, nextUsername);
-        const result = await provisionAccountAfterRename(record.id);
-        message.success(result.provision_status === "linked_existing" ? "已保存并关联已有 DSM 用户" : "已保存并开通 DSM 用户");
+        const [accountConflicts, groupConflicts] = await Promise.all([
+          conflictAccountData.reloadWithResult({ silent: true }),
+          conflictGroupData.reloadWithResult({ silent: true }),
+          accounts.reloadWithResult({ silent: true }),
+          members.reloadWithResult({ silent: true })
+        ]);
+        await syncIfConflictsResolved(accountConflicts, groupConflicts);
       }
     });
   };
@@ -1148,16 +1392,6 @@ function SourceDetail({
     });
   };
 
-  async function provisionGroupAfterRename(id: string) {
-    const result = await api.provisionGroup(id);
-    await Promise.all([
-      groups.reloadWithResult({ silent: true }),
-      conflictGroupData.reloadWithResult({ silent: true }),
-      members.reloadWithResult({ silent: true })
-    ]);
-    return result;
-  }
-
   const editGroupName = (record: DSMGroup) => {
     let nextGroupname = record.dsm_groupname;
     modal.confirm({
@@ -1173,8 +1407,13 @@ function SourceDetail({
       ),
       onOk: async () => {
         await api.setDSMGroupName(record.id, nextGroupname);
-        const result = await provisionGroupAfterRename(record.id);
-        message.success(result.provision_status === "created" ? "已保存并开通 DSM 部门组" : "已保存，空部门会在成员同步时创建");
+        const [accountConflicts, groupConflicts] = await Promise.all([
+          conflictAccountData.reloadWithResult({ silent: true }),
+          conflictGroupData.reloadWithResult({ silent: true }),
+          groups.reloadWithResult({ silent: true }),
+          members.reloadWithResult({ silent: true })
+        ]);
+        await syncIfConflictsResolved(accountConflicts, groupConflicts);
       }
     });
   };
@@ -1208,14 +1447,9 @@ function SourceDetail({
     }
     setSavingConflictKey(batchKey);
     try {
-      let linkedExisting = 0;
       for (const record of records) {
         const nextUsername = (accountConflictDrafts[record.id] ?? record.dsm_username).trim();
         await api.setDSMAccountUsername(record.id, nextUsername);
-        const result = await provisionAccountAfterRename(record.id);
-        if (result.provision_status === "linked_existing") {
-          linkedExisting += 1;
-        }
       }
       setAccountConflictDrafts((drafts) => {
         const next = { ...drafts };
@@ -1224,7 +1458,13 @@ function SourceDetail({
         }
         return next;
       });
-      message.success(linkedExisting > 0 ? `已保存 ${records.length} 个用户，其中 ${linkedExisting} 个关联已有 DSM 用户` : `已保存并开通 ${records.length} 个 DSM 用户`);
+      const [accountConflicts, groupConflicts] = await Promise.all([
+        conflictAccountData.reloadWithResult({ silent: true }),
+        conflictGroupData.reloadWithResult({ silent: true }),
+        accounts.reloadWithResult({ silent: true }),
+        members.reloadWithResult({ silent: true })
+      ]);
+      await syncIfConflictsResolved(accountConflicts, groupConflicts);
     } catch (err) {
       await Promise.all([
         accounts.reloadWithResult({ silent: true }),
@@ -1246,16 +1486,18 @@ function SourceDetail({
     )) {
       return;
     }
+    const unchangedRecords = records.filter((record) => (
+      (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim().toLowerCase() === record.dsm_groupname.trim().toLowerCase()
+    ));
+    if (unchangedRecords.length > 0) {
+      message.error("请先修改所有冲突部门的 DSM 部门组名");
+      return;
+    }
     setSavingConflictKey(batchKey);
     try {
-      let pendingEmptyGroups = 0;
       for (const record of records) {
         const nextGroupname = (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim();
         await api.setDSMGroupName(record.id, nextGroupname);
-        const result = await provisionGroupAfterRename(record.id);
-        if (result.provision_status !== "created") {
-          pendingEmptyGroups += 1;
-        }
       }
       setGroupConflictDrafts((drafts) => {
         const next = { ...drafts };
@@ -1264,7 +1506,13 @@ function SourceDetail({
         }
         return next;
       });
-      message.success(pendingEmptyGroups > 0 ? `已保存 ${records.length} 个部门，其中 ${pendingEmptyGroups} 个空部门会在成员同步时创建` : `已保存并开通 ${records.length} 个 DSM 部门组`);
+      const [accountConflicts, groupConflicts] = await Promise.all([
+        conflictAccountData.reloadWithResult({ silent: true }),
+        conflictGroupData.reloadWithResult({ silent: true }),
+        groups.reloadWithResult({ silent: true }),
+        members.reloadWithResult({ silent: true })
+      ]);
+      await syncIfConflictsResolved(accountConflicts, groupConflicts);
     } catch (err) {
       await Promise.all([
         groups.reloadWithResult({ silent: true }),
@@ -1301,12 +1549,10 @@ function SourceDetail({
     }
     const actionKey = accountLoginActionKey(ids, allowLogin);
     setAccountLoginAction(actionKey);
+    openOperationModal(`${allowLogin ? "允许" : "禁止"}登录 ${ids.length} 个用户`);
     try {
-      if (ids.length === 1) {
-        await api.setDSMAccountLogin(ids[0], allowLogin);
-      } else {
-        await api.setDSMAccountsLogin(ids, allowLogin);
-      }
+      const { run_id } = await api.startDSMAccountsLoginRun(ids, allowLogin);
+      await waitOperation(run_id);
       setSelectedAccountIDs([]);
       await accounts.reloadWithResult({ silent: true });
       message.success(allowLogin ? "已允许登录" : "已禁止登录");
@@ -1346,15 +1592,87 @@ function SourceDetail({
       />
       {syncError && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
       <Modal
-        title={`待处理冲突：${source.display_name}`}
-        open={conflictModalOpen}
-        width="min(1480px, calc(100vw - 32px))"
-        style={{ top: 24 }}
-        okText="关闭"
-        cancelButtonProps={{ style: { display: "none" } }}
-        onOk={() => setConflictModalOpen(false)}
-        onCancel={() => setConflictModalOpen(false)}
+        title={operationModalTitle}
+        open={operationModalOpen}
+        width={sourceModalWidth}
+        okText={operationOkText()}
+        cancelText="取消"
+        cancelButtonProps={{ style: operationStarted ? { display: "none" } : undefined }}
+        okButtonProps={{ disabled: operationRunning() }}
+        okType={operationModalAction === "cleanup" && !operationStarted ? "danger" : "primary"}
+        maskClosable={!operationRunning()}
+        closable={!operationRunning()}
+        onOk={() => {
+          if (!operationStarted && operationModalAction) {
+            void startOperationFromModal();
+            return;
+          }
+          setOperationModalOpen(false);
+        }}
+        onCancel={() => {
+          if (!operationRunning()) {
+            setOperationModalOpen(false);
+          }
+        }}
       >
+        {operationStarted ? (
+          <OperationProgressPanel state={activeOperation} />
+        ) : (
+          <Alert
+            type={operationModalAction === "cleanup" ? "warning" : "info"}
+            showIcon
+            message={operationConfirmMessage()}
+          />
+        )}
+      </Modal>
+      <Modal
+        title={conflictAutoSyncing ? `冲突已处理，继续同步：${source.display_name}` : `待处理冲突：${source.display_name}`}
+        open={conflictModalOpen}
+        width={sourceModalWidth}
+        style={{ top: 24 }}
+        okText={conflictAutoSyncing && progressRunning() ? "同步中" : "关闭"}
+        cancelButtonProps={{ style: { display: "none" } }}
+        okButtonProps={{ disabled: conflictAutoSyncing && progressRunning() }}
+        maskClosable={!(conflictAutoSyncing && progressRunning())}
+        closable={!(conflictAutoSyncing && progressRunning())}
+        onOk={() => {
+          if (conflictAutoSyncing && progressRunning()) {
+            return;
+          }
+          setConflictAutoSyncing(false);
+          setConflictModalOpen(false);
+        }}
+        onCancel={() => {
+          if (conflictAutoSyncing && progressRunning()) {
+            return;
+          }
+          setConflictAutoSyncing(false);
+          setConflictModalOpen(false);
+        }}
+      >
+        {conflictAutoSyncing ? (
+          <Space direction="vertical" size={16} className="conflict-modal-body">
+            <Alert
+              type={activeOperation?.run.status === "failed" || activeOperation?.run.status === "fail" ? "error" : activeOperation?.run.status === "success" ? "success" : "info"}
+              showIcon
+              message={
+                activeOperation?.run.status === "failed" || activeOperation?.run.status === "fail"
+                  ? "冲突已处理，但自动同步失败"
+                  : activeOperation?.run.status === "success"
+                    ? "冲突已处理，自动同步完成"
+                    : "冲突已处理，正在继续同步"
+              }
+              description={
+                activeOperation?.run.status === "failed" || activeOperation?.run.status === "fail"
+                  ? "请查看下面的失败原因和最近进度，修复后可重新发起同步。"
+                  : activeOperation?.run.status === "success"
+                    ? "处理后的映射已同步到 DSM，页面数据会自动刷新。"
+                    : "请保持窗口打开，系统会把处理后的映射继续写入 DSM。"
+              }
+            />
+            <OperationProgressPanel state={activeOperation} />
+          </Space>
+        ) : (
         <Space direction="vertical" size={16} className="conflict-modal-body">
           <Alert
             type="error"
@@ -1457,6 +1775,7 @@ function SourceDetail({
             </Card>
           )}
         </Space>
+        )}
       </Modal>
       <Tabs
         activeKey={activeTab}
@@ -1718,7 +2037,7 @@ function SourceDetail({
                   <MetricStrip
                     items={[
                       { label: "同步日志", value: sourceStats.syncLogs },
-                      { label: "同步失败", value: sourceStats.syncFailed, tone: sourceStats.syncFailed ? "danger" : "default" },
+                      { label: "同步异常", value: sourceStats.syncFailed, tone: sourceStats.syncFailed ? "danger" : "default" },
                       { label: "成员关系", value: sourceStats.members }
                     ]}
                   />
@@ -1733,6 +2052,7 @@ function SourceDetail({
                         { label: "全部", value: "all" },
                         { label: "成功", value: "success" },
                         { label: "失败", value: "failed" },
+                        { label: "阻断", value: "blocked" },
                         { label: "待处理", value: "pending" }
                       ]}
                     />

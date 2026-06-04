@@ -799,6 +799,27 @@ body {
   color: #1677ff;
 }
 
+.operation-events {
+  display: grid;
+  gap: 8px;
+}
+
+.operation-event {
+  display: grid;
+  grid-template-columns: 150px 130px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+}
+
+.operation-event span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 980px) {
   .app-sider {
     position: fixed;
@@ -857,5 +878,10 @@ body {
 
   .launch-copy-row {
     grid-template-columns: 1fr;
+  }
+
+  .operation-event {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }

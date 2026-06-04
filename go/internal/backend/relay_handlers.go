@@ -136,10 +136,10 @@ func (s *Server) handleFeishuCallback(c *gin.Context, source db.IdentitySource) 
 		return
 	}
 	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.fetch_profile.success", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{"profile": profile})
-	subject := firstProfileString(profile, "user_id", "open_id", "union_id")
+	subject, subjectType := feishuProfileSubject(profile)
 	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.subject.selected", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
 		"subject":      subject,
-		"subject_type": "feishu_user_id",
+		"subject_type": subjectType,
 		"name":         firstProfileString(profile, "name", "en_name", "nickname"),
 		"email":        firstProfileString(profile, "email"),
 		"mobile":       firstProfileString(profile, "mobile"),
@@ -266,4 +266,20 @@ func (s *Server) handleFeishuCallback(c *gin.Context, source db.IdentitySource) 
 		DurationMs:        time.Since(start).Milliseconds(),
 	})
 	c.Redirect(http.StatusFound, dsmRedirectURL)
+}
+
+func feishuProfileSubject(profile map[string]any) (string, string) {
+	for _, item := range []struct {
+		field       string
+		subjectType string
+	}{
+		{"open_id", "feishu_open_id"},
+		{"user_id", "feishu_user_id"},
+		{"union_id", "feishu_union_id"},
+	} {
+		if value := firstProfileString(profile, item.field); value != "" {
+			return value, item.subjectType
+		}
+	}
+	return "", ""
 }

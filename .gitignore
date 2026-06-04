@@ -14,6 +14,7 @@ frontend/tsconfig.tsbuildinfo
 
 .gocache/
 go/.gocache/
+go/.gomodcache/
 go/dist/
 
 coverage/

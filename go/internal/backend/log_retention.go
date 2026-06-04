@@ -27,20 +27,31 @@ func (s *Server) maybeCleanupLogs(ctx context.Context) {
 }
 
 func (s *Server) cleanupLogs(ctx context.Context) error {
-	if err := cleanupOldLogs(ctx, s.store.DBTX(), "sync_operation_logs"); err != nil {
+	logs := s.logs().DBTX()
+	if err := cleanupOldLogs(ctx, logs, "sync_operation_logs"); err != nil {
 		return err
 	}
-	if err := cleanupOldLogs(ctx, s.store.DBTX(), "login_audit_logs"); err != nil {
+	if err := cleanupOldLogs(ctx, logs, "login_audit_logs"); err != nil {
 		return err
 	}
-	if err := cleanupSyncOperationLogCaps(ctx, s.store.DBTX()); err != nil {
+	if err := cleanupOldLogs(ctx, logs, "operation_events"); err != nil {
 		return err
 	}
-	return cleanupLoginAuditLogCaps(ctx, s.store.DBTX())
+	if err := cleanupOldRowsByColumn(ctx, logs, "operation_runs", "started_at"); err != nil {
+		return err
+	}
+	if err := cleanupSyncOperationLogCaps(ctx, logs); err != nil {
+		return err
+	}
+	return cleanupLoginAuditLogCaps(ctx, logs)
 }
 
 func cleanupOldLogs(ctx context.Context, tx db.DBTX, table string) error {
-	_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE created_at < datetime('now', ?)`, "-"+strconv.Itoa(logRetentionDays)+" days")
+	return cleanupOldRowsByColumn(ctx, tx, table, "created_at")
+}
+
+func cleanupOldRowsByColumn(ctx context.Context, tx db.DBTX, table, column string) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+column+` < datetime('now', ?)`, "-"+strconv.Itoa(logRetentionDays)+" days")
 	return err
 }
 

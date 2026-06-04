@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 type point struct {
@@ -25,6 +26,9 @@ func main() {
 	}
 	writeIcon(filepath.Join(*outDir, "PACKAGE_ICON.PNG"), 64)
 	writeIcon(filepath.Join(*outDir, "PACKAGE_ICON_256.PNG"), 256)
+	for _, size := range []int{16, 24, 32, 48, 64, 72, 256} {
+		writeIcon(filepath.Join(*outDir, "dsmpass_"+strconv.Itoa(size)+".png"), size)
+	}
 }
 
 func writeIcon(path string, size int) {

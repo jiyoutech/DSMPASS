@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+	"github.com/dsmpass/dsmpass/go/internal/settings"
 )
 
 func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
@@ -31,6 +33,9 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	}
 	s.refreshAdminSetupState()
 	if err := s.ensureAdminJWTSecret(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureHelperHMACSecret(ctx); err != nil {
 		return err
 	}
 	if err := s.persistPublicBaseURLPolicy(ctx); err != nil {
@@ -195,5 +200,21 @@ func (s *Server) ensureAdminJWTSecret(ctx context.Context) error {
 		return err
 	}
 	s.cfg.AdminJWTSecret = secret
+	return nil
+}
+
+func (s *Server) ensureHelperHMACSecret(ctx context.Context) error {
+	secret, _, err := settings.EnsureHelperHMACSecret(ctx, s.store, s.cfg.RelayHelperHMACSecret)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil
+	}
+	s.cfg.RelayHelperHMACSecret = secret
+	switch s.helper.(type) {
+	case helperclient.UnixSocketClient, *helperclient.UnixSocketClient:
+		s.helper = HelperFromConfig(s.cfg)
+	}
 	return nil
 }

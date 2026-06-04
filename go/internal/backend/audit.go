@@ -24,7 +24,7 @@ type loginAuditEvent struct {
 }
 
 func (s *Server) logLoginAudit(ctx context.Context, event loginAuditEvent) {
-	_ = s.store.CreateLoginAuditLog(ctx, db.CreateLoginAuditLogParams{
+	_ = s.logs().CreateLoginAuditLog(ctx, db.CreateLoginAuditLogParams{
 		ID:                randomHex(16),
 		RequestID:         event.RequestID,
 		ProviderSlug:      event.Provider,

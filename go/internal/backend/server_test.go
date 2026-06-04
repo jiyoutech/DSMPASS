@@ -19,6 +19,7 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
 
 type testHelper struct{}
@@ -76,8 +77,9 @@ func (testHelper) RemoveGroupMember(ctx context.Context, requestID, groupname, u
 
 type recordingHelper struct {
 	testHelper
-	disabled []string
-	removed  []string
+	disabled    []string
+	provisioned []string
+	removed     []string
 }
 
 func (h *recordingHelper) DisableUser(ctx context.Context, requestID, username string) (bool, error) {
@@ -85,8 +87,33 @@ func (h *recordingHelper) DisableUser(ctx context.Context, requestID, username s
 	return true, nil
 }
 
+func (h *recordingHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	h.provisioned = append(h.provisioned, username)
+	return false, nil
+}
+
 func (h *recordingHelper) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	h.removed = append(h.removed, groupname+":"+username)
+	return true, nil
+}
+
+type provisioningOrderHelper struct {
+	testHelper
+	operations []string
+}
+
+func (h *provisioningOrderHelper) ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error) {
+	h.operations = append(h.operations, "group:"+groupname)
+	return true, nil
+}
+
+func (h *provisioningOrderHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	h.operations = append(h.operations, "user:"+username)
+	return true, nil
+}
+
+func (h *provisioningOrderHelper) AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
+	h.operations = append(h.operations, "member:"+groupname+":"+username)
 	return true, nil
 }
 
@@ -101,7 +128,7 @@ func TestSourceConfigDefaultsEnablePermissionCleanupButNotMissingUserDisable(t *
 	}
 }
 
-func TestSyncSourceToDSMRemovesStaleGroupMember(t *testing.T) {
+func TestSyncSourceToDSMMarksStaleGroupMemberForManualRemoval(t *testing.T) {
 	ctx := context.Background()
 	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
 	if err != nil {
@@ -117,18 +144,18 @@ func TestSyncSourceToDSMRemovesStaleGroupMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(helper.removed) != 1 || helper.removed[0] != "engineering:alice" {
-		t.Fatalf("stale member was not removed from DSM, got %#v", helper.removed)
+	if len(helper.removed) != 0 {
+		t.Fatalf("stale member should not be removed automatically from DSM, got %#v", helper.removed)
 	}
-	assertLocalMemberStatus(t, ctx, database, "member-1", 0, "removed")
+	assertLocalMemberStatus(t, ctx, database, "member-1", 0, "disabled")
 	found := false
 	for _, operation := range operations {
-		if operation.Action == "remove_dsm_group_member" && operation.DSMGroupname == "engineering" && operation.DSMUsername == "alice" {
+		if operation.Action == "disable_local_group_member" && operation.DSMGroupname == "engineering" && operation.DSMUsername == "alice" && operation.ProvisionStatus == "disabled" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("remove operation missing from result: %#v", operations)
+		t.Fatalf("local member disable operation missing from result: %#v", operations)
 	}
 }
 
@@ -150,11 +177,188 @@ func TestSyncSourceToDSMDisableMissingUsersPolicy(t *testing.T) {
 		t.Fatalf("disabled missing user while policy was off: %#v", helper.disabled)
 	}
 
-	if _, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2999-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: false}); err != nil {
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2999-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: true}); err != nil {
 		t.Fatal(err)
 	}
 	if len(helper.disabled) != 1 || helper.disabled[0] != "alice" {
 		t.Fatalf("missing user was not disabled in DSM, got %#v", helper.disabled)
+	}
+}
+
+func TestSyncSourceToDSMReenablesMappedDisabledUser(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	seedSyncedAccount(t, ctx, database, "feishu-main", "identity-1", "external-1", "u1", "alice", "2999-01-01 00:00:00")
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'disabled', allow_login = 0 WHERE id = 'account-identity-1'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "feishu-main", "2000-01-01 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: true}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(helper.provisioned) != fmt.Sprint([]string{"alice"}) {
+		t.Fatalf("disabled mapped user should be provisioned again, got %#v", helper.provisioned)
+	}
+	var allowLogin int
+	var status string
+	if err := database.QueryRowContext(ctx, `SELECT allow_login, provision_status FROM dsm_accounts WHERE id = 'account-identity-1'`).Scan(&allowLogin, &status); err != nil {
+		t.Fatal(err)
+	}
+	if allowLogin != 1 || status != "linked_existing" {
+		t.Fatalf("disabled mapped user was not re-enabled, allow_login=%d status=%s", allowLogin, status)
+	}
+}
+
+func TestSyncSourceToDSMOnlyProvisionsRequestedSource(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, active)
+	VALUES
+		('provider-group-a', 'source-a', 'dep-a', 'dep-a', 'Engineering A', 1),
+		('provider-group-b', 'source-b', 'dep-b', 'dep-b', 'Engineering B', 1);
+	INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status)
+	VALUES
+		('group-a', 'engineering_a', 'engineering_a', 'pending'),
+		('group-b', 'engineering_b', 'engineering_b', 'pending');
+	INSERT INTO group_links (id, provider_group_id, dsm_group_id)
+	VALUES
+		('link-a', 'provider-group-a', 'group-a'),
+		('link-b', 'provider-group-b', 'group-b');
+	INSERT INTO app_identities (id, display_name, primary_email)
+	VALUES
+		('identity-a', 'Alice', 'alice@example.test'),
+		('identity-b', 'Bob', 'bob@example.test');
+	INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+	VALUES
+		('external-a', 'source-a', 'user-a', 'user-a', 'user', 'identity-a', 1),
+		('external-b', 'source-b', 'user-b', 'user-b', 'user', 'identity-b', 1);
+	INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+	VALUES
+		('account-a', 'identity-a', 'alice', 'alice', 'pending', 1),
+		('account-b', 'identity-b', 'bob', 'bob', 'pending', 1);
+	INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status)
+	VALUES
+		('member-a', 'group-a', 'account-a', 'pending'),
+		('member-b', 'group-b', 'account-b', 'pending');
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id)
+	VALUES
+		('map-group-a', 'group', 'source-a', '', 'provider-group-a', NULL, 'group-a'),
+		('map-group-b', 'group', 'source-b', '', 'provider-group-b', NULL, 'group-b'),
+		('map-user-a', 'user', 'source-a', 'external-a', '', 'account-a', NULL),
+		('map-user-b', 'user', 'source-b', 'external-b', '', 'account-b', NULL),
+		('map-member-a', 'member', 'source-a', 'external-a', 'provider-group-a', 'account-a', 'group-a'),
+		('map-member-b', 'member', 'source-b', 'external-b', 'provider-group-b', 'account-b', 'group-b');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	helper := &provisioningOrderHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+
+	if _, err := server.syncSourceToDSM(ctx, "sync-a", "source-a", "2026-05-29 00:00:00", sourceSyncPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"group:engineering_a", "user:alice", "member:engineering_a:alice"}
+	if fmt.Sprint(helper.operations) != fmt.Sprint(want) {
+		t.Fatalf("provision operations got %v, want %v", helper.operations, want)
+	}
+}
+
+func TestSyncSourceToDSMRevalidatesLinkedExistingUsers(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO app_identities (id, display_name, primary_email)
+	VALUES ('identity-a', 'Alice', 'alice@example.test');
+	INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+	VALUES ('external-a', 'source-a', 'user-a', 'user-a', 'user', 'identity-a', 1);
+	INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+	VALUES ('account-a', 'identity-a', 'alice', 'alice', 'linked_existing', 1);
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id)
+	VALUES ('map-user-a', 'user', 'source-a', 'external-a', '', 'account-a', NULL);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	helper := &provisioningOrderHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+
+	if _, err := server.syncSourceToDSM(ctx, "sync-a", "source-a", "2026-05-29 00:00:00", sourceSyncPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"user:alice"}
+	if fmt.Sprint(helper.operations) != fmt.Sprint(want) {
+		t.Fatalf("provision operations got %v, want %v", helper.operations, want)
+	}
+}
+
+func TestSyncSourceToDSMOnlyCleansRequestedSource(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO app_identities (id, display_name)
+	VALUES ('identity-a', 'Alice'), ('identity-b', 'Bob');
+	INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+	VALUES
+		('external-a', 'source-a', 'user-a', 'user-a', 'user', 'identity-a', 0),
+		('external-b', 'source-b', 'user-b', 'user-b', 'user', 'identity-b', 0);
+	INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+	VALUES
+		('account-a', 'identity-a', 'alice', 'alice', 'created', 1),
+		('account-b', 'identity-b', 'bob', 'bob', 'created', 1);
+	INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, active)
+	VALUES
+		('provider-group-a', 'source-a', 'dep-a', 'dep-a', 'Engineering A', 0),
+		('provider-group-b', 'source-b', 'dep-b', 'dep-b', 'Engineering B', 0);
+	INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status)
+	VALUES
+		('group-a', 'engineering_a', 'engineering_a', 'created'),
+		('group-b', 'engineering_b', 'engineering_b', 'created');
+	INSERT INTO group_links (id, provider_group_id, dsm_group_id)
+	VALUES
+		('link-a', 'provider-group-a', 'group-a'),
+		('link-b', 'provider-group-b', 'group-b');
+	INSERT INTO group_members (id, dsm_group_id, dsm_account_id, active, provision_status)
+	VALUES
+		('member-a', 'group-a', 'account-a', 0, 'remove_pending'),
+		('member-b', 'group-b', 'account-b', 0, 'remove_pending');
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id, active)
+	VALUES
+		('map-user-a', 'user', 'source-a', 'external-a', '', 'account-a', NULL, 0),
+		('map-user-b', 'user', 'source-b', 'external-b', '', 'account-b', NULL, 0),
+		('map-member-a', 'member', 'source-a', 'external-a', 'provider-group-a', 'account-a', 'group-a', 0),
+		('map-member-b', 'member', 'source-b', 'external-b', 'provider-group-b', 'account-b', 'group-b', 0);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+
+	if _, err := server.syncSourceToDSM(ctx, "sync-a", "source-a", "2026-05-29 00:00:00", sourceSyncPolicy{DisableMissingUsers: true, DeactivateMissingData: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper.removed) != 0 {
+		t.Fatalf("members should not be removed automatically from DSM, got %#v", helper.removed)
+	}
+	if fmt.Sprint(helper.disabled) != fmt.Sprint([]string{"alice"}) {
+		t.Fatalf("disabled users got %#v", helper.disabled)
 	}
 }
 
@@ -189,6 +393,17 @@ func TestServerServesFrontendAndAPI(t *testing.T) {
 	}
 }
 
+func TestFeishuProfileSubjectPrefersOpenID(t *testing.T) {
+	subject, subjectType := feishuProfileSubject(map[string]any{
+		"open_id":  "ou_login",
+		"user_id":  "ca32gc25",
+		"union_id": "on_union",
+	})
+	if subject != "ou_login" || subjectType != "feishu_open_id" {
+		t.Fatalf("expected open_id login subject, got subject=%q type=%q", subject, subjectType)
+	}
+}
+
 func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	cfg := config.BackendConfig{
 		RelayMode:         "socket",
@@ -218,6 +433,66 @@ func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	router.ServeHTTP(allowed, allowedRequest)
 	if allowed.Code == http.StatusForbidden {
 		t.Fatalf("expected allowed network, got %d body=%s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestIDPAccessControlRequiresIntranet(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com:26000",
+		IDPAllowedCIDRs:   "all",
+		RelayMode:         "socket",
+		DSMRedirectURL:    "https://nas.example.com/",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).IDPRouter()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/idp/source-a/launch", nil)
+	request.Host = "nas.example.com:26000"
+	request.RemoteAddr = "203.0.113.10:12345"
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden, got %d body=%s", response.Code, response.Body.String())
+	}
+
+	allowed := httptest.NewRecorder()
+	allowedRequest := httptest.NewRequest("GET", "/idp/source-a/launch", nil)
+	allowedRequest.Host = "nas.example.com:26000"
+	allowedRequest.RemoteAddr = "192.168.1.20:12345"
+	router.ServeHTTP(allowed, allowedRequest)
+	if allowed.Code == http.StatusForbidden {
+		t.Fatalf("expected allowed network, got %d body=%s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestNewWithDBGeneratesHelperHMACSecret(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	if len(server.cfg.RelayHelperHMACSecret) != 64 {
+		t.Fatalf("expected generated 32-byte hex helper secret, got %q", server.cfg.RelayHelperHMACSecret)
+	}
+	row, err := queries.GetRuntimeSetting(context.Background(), "relay_helper_hmac_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := json.Unmarshal([]byte(row.ValueJson), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != server.cfg.RelayHelperHMACSecret {
+		t.Fatalf("stored secret does not match runtime secret")
 	}
 }
 
@@ -371,6 +646,7 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	launchResponse = httptest.NewRecorder()
 	launchRequest = httptest.NewRequest("GET", "/idp/"+created.Slug+"/launch", nil)
 	launchRequest.Host = "nas.example.com:25000"
+	launchRequest.RemoteAddr = "192.168.1.20:12345"
 	launchRequest.Header.Set("X-Forwarded-Host", "evil-forwarded.example.com")
 	router.ServeHTTP(launchResponse, launchRequest)
 	if launchResponse.Code != http.StatusOK {
@@ -705,10 +981,14 @@ INSERT INTO app_identities (id, display_name) VALUES ('identity-a', 'Alice');
 INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id) VALUES ('external-a', 'source-a', 'alice', 'alice', 'user', 'identity-a');
 INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm) VALUES ('account-a', 'identity-a', 'alice', 'alice');
 INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name) VALUES ('provider-group-a', 'source-a', 'department-a', 'department-a', 'Engineering');
-INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status) VALUES ('group-a', 'engineering', 'engineering', 'created');
-INSERT INTO group_links (id, provider_group_id, dsm_group_id) VALUES ('link-a', 'provider-group-a', 'group-a');
-INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status) VALUES ('member-a', 'group-a', 'account-a', 'created');
-INSERT INTO sync_runs (id, source_slug, status) VALUES ('sync-a', 'source-a', 'success');
+	INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status) VALUES ('group-a', 'engineering', 'engineering', 'created');
+	INSERT INTO group_links (id, provider_group_id, dsm_group_id) VALUES ('link-a', 'provider-group-a', 'group-a');
+	INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status) VALUES ('member-a', 'group-a', 'account-a', 'created');
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id) VALUES
+	('map-user-a', 'user', 'source-a', 'external-a', '', 'account-a', NULL),
+	('map-group-a', 'group', 'source-a', '', 'provider-group-a', NULL, 'group-a'),
+	('map-member-a', 'member', 'source-a', 'external-a', 'provider-group-a', 'account-a', 'group-a');
+	INSERT INTO sync_runs (id, source_slug, status) VALUES ('sync-a', 'source-a', 'success');
 INSERT INTO sync_operation_logs (id, sync_run_id, source_slug, object_type, object_key, action, status) VALUES ('log-a', 'sync-a', 'source-a', 'user', 'alice', 'sync', 'success');
 INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('audit-a', 'request-a', 'source-a', 'success');
 `)
@@ -725,8 +1005,8 @@ INSERT INTO login_audit_logs (id, request_id, provider_slug, result) VALUES ('au
 	if len(helper.disabled) != 1 || helper.disabled[0] != "alice" {
 		t.Fatalf("expected alice disabled, got %#v", helper.disabled)
 	}
-	if len(helper.removed) != 1 || helper.removed[0] != "engineering:alice" {
-		t.Fatalf("expected alice removed from source group, got %#v", helper.removed)
+	if len(helper.removed) != 0 {
+		t.Fatalf("DSM group members should not be removed automatically, got %#v", helper.removed)
 	}
 	for _, item := range []struct {
 		table string
@@ -909,7 +1189,13 @@ func TestAdminAuthUsesJWTCookie(t *testing.T) {
 
 	assertStatus(t, router, "GET", "/api/admin/version", http.StatusUnauthorized)
 	assertStatus(t, router, "GET", "/", http.StatusOK)
-	assertStatus(t, router, "GET", "/idp/missing/launch", http.StatusNotFound)
+	missingIDPResponse := httptest.NewRecorder()
+	missingIDPRequest := httptest.NewRequest("GET", "/idp/missing/launch", nil)
+	missingIDPRequest.RemoteAddr = "192.168.1.20:12345"
+	router.ServeHTTP(missingIDPResponse, missingIDPRequest)
+	if missingIDPResponse.Code != http.StatusNotFound {
+		t.Fatalf("GET /idp/missing/launch got %d want %d", missingIDPResponse.Code, http.StatusNotFound)
+	}
 
 	loginResponse := httptest.NewRecorder()
 	loginRequest := httptest.NewRequest("POST", "/api/admin/auth/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
@@ -1155,6 +1441,17 @@ VALUES ('external-a', 'feishu-main', 'user-a', 'user-a', 'user', 'identity-a', '
 		t.Fatalf("duplicate username got %d body=%s", duplicate.Code, duplicate.Body.String())
 	}
 
+	unchanged := httptest.NewRecorder()
+	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"zhangsan_conflict_a"}`))
+	unchangedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(unchanged, unchangedRequest)
+	if unchanged.Code != http.StatusOK {
+		t.Fatalf("unchanged conflict username got %d body=%s", unchanged.Code, unchanged.Body.String())
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = '冲突' WHERE id = 'account-a'`); err != nil {
+		t.Fatal(err)
+	}
+
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"zhangsan_a"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -1226,10 +1523,27 @@ VALUES
 ('group-b', 'sup5', 'sup5', 1, 'conflict', '飞书部门名重名')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'Alice', 'alice@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm) VALUES ('account-a', 'identity-a', 'alice', 'alice')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.ExecContext(ctx, `INSERT INTO group_links (id, provider_group_id, dsm_group_id) VALUES ('link-a', 'provider-group-a', 'group-a')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status) VALUES ('member-a', 'group-a', 'account-a', 'created')`); err != nil {
+		t.Fatal(err)
+	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	unchanged := httptest.NewRecorder()
+	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"matrix_sup1_sup2_sup5"}`))
+	unchangedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(unchanged, unchangedRequest)
+	if unchanged.Code != http.StatusConflict {
+		t.Fatalf("unchanged conflict group name got %d body=%s", unchanged.Code, unchanged.Body.String())
+	}
 
 	duplicate := httptest.NewRecorder()
 	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
@@ -1254,6 +1568,123 @@ VALUES
 	if managed != 0 || status != "pending" || conflictReason != "" {
 		t.Fatalf("group conflict not resolved: managed=%d status=%s reason=%q", managed, status, conflictReason)
 	}
+	var linkCount, memberCount int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_links WHERE id = 'link-a' AND provider_group_id = 'provider-group-a' AND dsm_group_id = 'group-a'`).Scan(&linkCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_members WHERE id = 'member-a' AND dsm_group_id = 'group-a' AND dsm_account_id = 'account-a'`).Scan(&memberCount); err != nil {
+		t.Fatal(err)
+	}
+	if linkCount != 1 || memberCount != 1 {
+		t.Fatalf("group relationships were not preserved: links=%d members=%d", linkCount, memberCount)
+	}
+}
+
+func TestSyncSourceToDSMLogsBlockedGroupConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, active)
+VALUES ('provider-group-a', 'feishu-main', 'dep-a', 'dep-a', 'sup5', 1);
+INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status, conflict_reason)
+VALUES ('group-a', 'sup5', 'sup5', 'conflict', '飞书部门名重名');
+INSERT INTO group_links (id, provider_group_id, dsm_group_id)
+VALUES ('link-a', 'provider-group-a', 'group-a');
+INSERT INTO sync_runs (id, source_slug, status)
+VALUES ('sync-a', 'feishu-main', 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries)
+
+	_, err = server.syncSourceToDSM(ctx, "sync-a", "feishu-main", "2026-05-29 00:00:00", sourceSyncPolicy{})
+	if err == nil || !strings.Contains(err.Error(), "存在飞书部门名冲突") {
+		t.Fatalf("expected group conflict block, got %v", err)
+	}
+	var status, action, errorText string
+	if err := database.QueryRowContext(ctx, `
+SELECT status, action, COALESCE(error, '')
+FROM sync_operation_logs
+WHERE sync_run_id = 'sync-a' AND source_slug = 'feishu-main'`).Scan(&status, &action, &errorText); err != nil {
+		t.Fatal(err)
+	}
+	if status != "blocked" || action != "resolve_group_conflicts" || !strings.Contains(errorText, "存在飞书部门名冲突") {
+		t.Fatalf("unexpected blocked log: status=%s action=%s error=%q", status, action, errorText)
+	}
+}
+
+func TestLogDirectoryLinkPlanRecordsCrossSourceLinks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries)
+
+	server.logDirectoryLinkPlan(ctx, "sync-a", "source-b", []syncsvc.PlanItem{
+		{Action: "link_existing_dsm_user", Subject: "user-b", DSMUsername: "alice"},
+		{Action: "link_existing_dsm_group", Subject: "group-b", DSMGroupname: "engineering"},
+	})
+
+	var userLinks, groupLinks int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_user' AND status = 'success' AND error LIKE '%跨身份源同名用户%'`).Scan(&userLinks); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_group' AND status = 'success' AND error LIKE '%跨身份源同名部门%'`).Scan(&groupLinks); err != nil {
+		t.Fatal(err)
+	}
+	if userLinks != 1 || groupLinks != 1 {
+		t.Fatalf("expected cross-source link logs, got user=%d group=%d", userLinks, groupLinks)
+	}
+}
+
+func TestSyncSourceToDSMProvisionsGroupsBeforeUsers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO provider_groups (id, provider_slug, subject, subject_norm, name, active)
+VALUES ('provider-group-a', 'feishu-main', 'dep-a', 'dep-a', 'engineering', 1);
+INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, provision_status)
+VALUES ('group-a', 'engineering', 'engineering', 'pending');
+INSERT INTO group_links (id, provider_group_id, dsm_group_id)
+VALUES ('link-a', 'provider-group-a', 'group-a');
+INSERT INTO app_identities (id, display_name, primary_email)
+VALUES ('identity-a', 'Alice', 'alice@example.com');
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-a', 'feishu-main', 'user-a', 'user-a', 'user', 'identity-a', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
+	INSERT INTO group_members (id, dsm_group_id, dsm_account_id, provision_status)
+	VALUES ('member-a', 'group-a', 'account-a', 'pending');
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id) VALUES
+	('map-user-a', 'user', 'feishu-main', 'external-a', '', 'account-a', NULL),
+	('map-group-a', 'group', 'feishu-main', '', 'provider-group-a', NULL, 'group-a'),
+	('map-member-a', 'member', 'feishu-main', 'external-a', 'provider-group-a', 'account-a', 'group-a');
+	INSERT INTO sync_runs (id, source_slug, status)
+VALUES ('sync-a', 'feishu-main', 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	helper := &provisioningOrderHelper{}
+	server := NewWithDB(config.BackendConfig{}, helper, database, queries)
+
+	if _, err := server.syncSourceToDSM(ctx, "sync-a", "feishu-main", "2026-05-29 00:00:00", sourceSyncPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"group:engineering", "user:alice", "member:engineering:alice"}
+	if fmt.Sprint(helper.operations) != fmt.Sprint(want) {
+		t.Fatalf("provision order got %v, want %v", helper.operations, want)
+	}
 }
 
 func seedSyncedAccount(t *testing.T, ctx context.Context, database *sql.DB, providerSlug, identityID, externalID, subject, username, lastSeen string) {
@@ -1269,8 +1700,13 @@ VALUES (?, ?, ?, ?, 'directory_subject', ?, 1, ?)`, externalID, providerSlug, su
 		t.Fatal(err)
 	}
 	if _, err := database.ExecContext(ctx, `
-INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login)
-VALUES (?, ?, ?, ?, 1, 'linked_existing', 1)`, "account-"+identityID, identityID, username, username); err != nil {
+	INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login)
+	VALUES (?, ?, ?, ?, 1, 'linked_existing', 1)`, "account-"+identityID, identityID, username, username); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id)
+	VALUES (?, 'user', ?, ?, '', ?)`, "map-user-"+externalID, providerSlug, externalID, "account-"+identityID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1293,8 +1729,18 @@ VALUES (?, ?, ?)`, "link-"+memberID, providerGroupID, dsmGroupID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.ExecContext(ctx, `
-INSERT INTO group_members (id, dsm_group_id, dsm_account_id, active, provision_status)
-VALUES (?, ?, ?, ?, ?)`, memberID, dsmGroupID, "account-"+identityID, active, status); err != nil {
+	INSERT INTO group_members (id, dsm_group_id, dsm_account_id, active, provision_status)
+	VALUES (?, ?, ?, ?, ?)`, memberID, dsmGroupID, "account-"+identityID, active, status); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_group_id)
+	VALUES (?, 'group', ?, '', ?, ?)`, "map-group-"+memberID, providerSlug, providerGroupID, dsmGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+	INSERT INTO dsm_mapping_entries (id, mapping_type, provider_slug, external_account_id, provider_group_id, dsm_account_id, dsm_group_id)
+	VALUES (?, 'member', ?, ?, ?, ?, ?)`, "map-member-"+memberID, providerSlug, "external-"+identityID, providerGroupID, "account-"+identityID, dsmGroupID); err != nil {
 		t.Fatal(err)
 	}
 }

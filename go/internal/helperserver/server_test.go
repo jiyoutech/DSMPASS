@@ -99,6 +99,39 @@ func TestSynoGroupMemberPresentErrorIsIdempotentSuccess(t *testing.T) {
 	}
 }
 
+func TestAddGroupMemberRejectsMissingDSMUser(t *testing.T) {
+	dir := t.TempDir()
+	synouserPath := filepath.Join(dir, "synouser")
+	synogroupPath := filepath.Join(dir, "synogroup")
+	groupCalledPath := filepath.Join(dir, "group-called")
+	if err := os.WriteFile(synouserPath, []byte("#!/bin/sh\necho 'SYNOUserGet failed, synoerr=[0x1D00]' >&2\nexit 255\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(synogroupPath, []byte("#!/bin/sh\ntouch '"+groupCalledPath+"'\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := "secret"
+	server := New(config.HelperConfig{
+		HMACSecret:           secret,
+		TimestampSkewSeconds: 60,
+		SynoUserPath:         synouserPath,
+		SynoGroupPath:        synogroupPath,
+	})
+
+	response := server.handlePayload(signedPayload(t, secret, map[string]any{
+		"action":        "add_group_member",
+		"dsm_groupname": "engineering",
+		"dsm_username":  "alice",
+	}))
+
+	if response["success"] != false || response["error_code"] != "SYNOUSER_MISSING" {
+		t.Fatalf("unexpected response %#v", response)
+	}
+	if _, err := os.Stat(groupCalledPath); !os.IsNotExist(err) {
+		t.Fatalf("synogroup should not be called when user is missing, stat err=%v", err)
+	}
+}
+
 func TestDSMHTTPClientCanSkipTLSVerification(t *testing.T) {
 	client := dsmHTTPClient(config.HelperConfig{
 		DSMLoginAPI:       "https://192.0.2.10:5001/webapi/entry.cgi",
@@ -218,7 +251,7 @@ func TestRedactedURLHidesDSMLoginSecrets(t *testing.T) {
 
 func send(t *testing.T, socketPath, secret string, payload map[string]any) map[string]any {
 	t.Helper()
-	payload["timestamp"] = time.Now().Unix()
+	payload["timestamp"] = float64(time.Now().Unix())
 	payload["nonce"] = time.Now().Format(time.RFC3339Nano)
 	signature, err := signing.Sign(payload, secret)
 	if err != nil {
@@ -242,6 +275,18 @@ func send(t *testing.T, socketPath, secret string, payload map[string]any) map[s
 		t.Fatal(err)
 	}
 	return response
+}
+
+func signedPayload(t *testing.T, secret string, payload map[string]any) map[string]any {
+	t.Helper()
+	payload["timestamp"] = float64(time.Now().Unix())
+	payload["nonce"] = time.Now().Format(time.RFC3339Nano)
+	signature, err := signing.Sign(payload, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload["signature"] = signature
+	return payload
 }
 
 func waitForSocket(t *testing.T, path string) {

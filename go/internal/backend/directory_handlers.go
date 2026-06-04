@@ -33,13 +33,13 @@ func (s *Server) loginAuditLogs(c *gin.Context) {
 	if len(whereParts) > 0 {
 		where = "WHERE " + strings.Join(whereParts, " AND ")
 	}
-	total, err := queryCount(c.Request.Context(), s.store, `SELECT COUNT(*) FROM login_audit_logs `+where, args...)
+	total, err := queryCount(c.Request.Context(), s.logs(), `SELECT COUNT(*) FROM login_audit_logs `+where, args...)
 	if err != nil {
 		writeItems(c, nil, err)
 		return
 	}
 	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
-	rows, err := queryJSON(c.Request.Context(), s.store, `
+	rows, err := queryJSON(c.Request.Context(), s.logs(), `
 SELECT id, request_id, provider_slug, external_account_id, app_identity_id, dsm_username, result, error_code, ip_address, ip_hash, user_agent_hash, duration_ms, created_at
 FROM login_audit_logs
 `+where+`

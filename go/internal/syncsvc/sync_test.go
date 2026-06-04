@@ -76,6 +76,59 @@ func TestSyncProviderKeepsExistingMappedUserWhenFeishuNameLaterDuplicates(t *tes
 	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 1)
 }
 
+func TestSyncProviderLinksCrossSourceSameNameUser(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:  "source-a",
+		users: []provider.User{{ProviderSlug: "source-a", Subject: "u1", DisplayName: "alice", Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:  "source-b",
+		users: []provider.User{{ProviderSlug: "source-b", Subject: "u2", DisplayName: "alice", Active: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTableCount(t, ctx, database, "app_identities", 1)
+	assertTableCount(t, ctx, database, "dsm_accounts", 1)
+	assertTableCount(t, ctx, database, "external_accounts", 2)
+	assertPlanAction(t, result, "link_existing_dsm_user")
+}
+
+func TestSyncProviderKeepsCrossSourceSameNameMemberships(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "source-a",
+		users:  []provider.User{{ProviderSlug: "source-a", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g-a"}}},
+		groups: []provider.Group{{ProviderSlug: "source-a", Subject: "g-a", Name: "engineering-a"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "source-b",
+		users:  []provider.User{{ProviderSlug: "source-b", Subject: "u2", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g-b"}}},
+		groups: []provider.Group{{ProviderSlug: "source-b", Subject: "g-b", Name: "engineering-b"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertTableCount(t, ctx, database, "dsm_accounts", 1)
+	assertActiveMemberMappingCount(t, ctx, database, "source-a", 1)
+	assertActiveMemberMappingCount(t, ctx, database, "source-b", 1)
+	assertDistinctActiveMemberTargets(t, ctx, database, 1, 2)
+	assertTableCount(t, ctx, database, "group_members", 2)
+}
+
 func TestSyncProviderMarksAllDuplicateGroupsConflict(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
@@ -94,6 +147,31 @@ func TestSyncProviderMarksAllDuplicateGroupsConflict(t *testing.T) {
 	assertProvisionCount(t, ctx, database, "dsm_groups", "pending", 0)
 }
 
+func TestSyncProviderLinksCrossSourceSameNameGroup(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngine(config.BackendConfig{}, queries)
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "source-a",
+		groups: []provider.Group{{ProviderSlug: "source-a", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "source-b",
+		groups: []provider.Group{{ProviderSlug: "source-b", Subject: "g2", Name: "engineering"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTableCount(t, ctx, database, "dsm_groups", 1)
+	assertTableCount(t, ctx, database, "provider_groups", 2)
+	assertTableCount(t, ctx, database, "group_links", 2)
+	assertPlanAction(t, result, "link_existing_dsm_group")
+}
+
 func TestSyncProviderMarksMovedGroupMemberForRemoval(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
@@ -109,6 +187,9 @@ func TestSyncProviderMarksMovedGroupMemberForRemoval(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'feishu-main'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := engine.SyncProvider(ctx, fakeDirectory{
 		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g2"}}},
 		groups: []provider.Group{
@@ -119,7 +200,7 @@ func TestSyncProviderMarksMovedGroupMemberForRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertMemberState(t, ctx, database, "g1", "u1", false, "remove_pending")
+	assertMemberState(t, ctx, database, "g1", "u1", false, "disabled")
 	assertMemberState(t, ctx, database, "g2", "u1", true, "pending")
 }
 
@@ -196,11 +277,17 @@ func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testi
 }
 
 type fakeDirectory struct {
+	slug   string
 	users  []provider.User
 	groups []provider.Group
 }
 
-func (f fakeDirectory) Slug() string { return "feishu-main" }
+func (f fakeDirectory) Slug() string {
+	if f.slug != "" {
+		return f.slug
+	}
+	return "feishu-main"
+}
 
 func (f fakeDirectory) ListUsers() ([]provider.User, error) { return f.users, nil }
 
@@ -229,6 +316,57 @@ func assertProvisionCount(t *testing.T, ctx context.Context, database *sql.DB, t
 	}
 	if got != want {
 		t.Fatalf("%s status %s got %d want %d", table, status, got, want)
+	}
+}
+
+func assertTableCount(t *testing.T, ctx context.Context, database *sql.DB, table string, want int) {
+	t.Helper()
+	var got int
+	if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("%s count got %d want %d", table, got, want)
+	}
+}
+
+func assertPlanAction(t *testing.T, result Result, action string) {
+	t.Helper()
+	for _, item := range result.Items {
+		if item.Action == action {
+			return
+		}
+	}
+	t.Fatalf("missing plan action %s in %#v", action, result.Items)
+}
+
+func assertActiveMemberMappingCount(t *testing.T, ctx context.Context, database *sql.DB, providerSlug string, want int) {
+	t.Helper()
+	var got int
+	err := database.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM dsm_mapping_entries
+WHERE mapping_type = 'member' AND provider_slug = ? AND active = 1`, providerSlug).Scan(&got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("provider %s active member mapping count got %d want %d", providerSlug, got, want)
+	}
+}
+
+func assertDistinctActiveMemberTargets(t *testing.T, ctx context.Context, database *sql.DB, wantAccounts, wantGroups int) {
+	t.Helper()
+	var accounts, groups int
+	err := database.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT dsm_account_id), COUNT(DISTINCT dsm_group_id)
+FROM dsm_mapping_entries
+WHERE mapping_type = 'member' AND active = 1`).Scan(&accounts, &groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts != wantAccounts || groups != wantGroups {
+		t.Fatalf("active member targets got accounts=%d groups=%d want accounts=%d groups=%d", accounts, groups, wantAccounts, wantGroups)
 	}
 }
 

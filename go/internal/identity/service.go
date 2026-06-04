@@ -87,27 +87,52 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 }
 
 func (s *Service) ResolveOrCreateIdentity(ctx context.Context, external db.ExternalAccount) (db.AppIdentity, error) {
+	identity, _, err := s.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
+	return identity, err
+}
+
+func (s *Service) ResolveOrCreateIdentityWithLinkedExisting(ctx context.Context, external db.ExternalAccount) (db.AppIdentity, bool, error) {
 	if external.AppIdentityID.Valid {
 		identity, err := s.getIdentity(ctx, external.AppIdentityID.String)
 		if err == nil {
-			return identity, nil
+			return identity, false, nil
+		}
+	}
+	if username, err := s.allocateUsernameForDisplayName(external.DisplayName); err == nil {
+		existing, existingErr := s.getDSMAccountByNorm(ctx, Normalize(username))
+		if existingErr == nil {
+			hasSameProvider, err := s.identityHasProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
+			if err != nil {
+				return db.AppIdentity{}, false, err
+			}
+			hasDifferentProvider, err := s.identityHasDifferentProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
+			if err != nil {
+				return db.AppIdentity{}, false, err
+			}
+			if hasDifferentProvider && !hasSameProvider {
+				if err := s.linkExternalToIdentity(ctx, external.ID, existing.AppIdentityID); err != nil {
+					return db.AppIdentity{}, false, err
+				}
+				identity, err := s.getIdentity(ctx, existing.AppIdentityID)
+				return identity, true, err
+			}
+		} else if !errors.Is(existingErr, sql.ErrNoRows) {
+			return db.AppIdentity{}, false, existingErr
 		}
 	}
 	id := uuid.NewString()
 	_, err := s.q.DBTX().ExecContext(ctx, `
-INSERT INTO app_identities (id, display_name, primary_email, primary_email_norm, status, created_by, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'active', 'system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, id, external.DisplayName, external.Email, external.EmailNorm)
+	INSERT INTO app_identities (id, display_name, primary_email, primary_email_norm, status, created_by, created_at, updated_at)
+	VALUES (?, ?, ?, ?, 'active', 'system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, id, external.DisplayName, external.Email, external.EmailNorm)
 	if err != nil {
-		return db.AppIdentity{}, err
+		return db.AppIdentity{}, false, err
 	}
-	_, err = s.q.DBTX().ExecContext(ctx, `
-UPDATE external_accounts SET app_identity_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-`, id, external.ID)
-	if err != nil {
-		return db.AppIdentity{}, err
+	if err := s.linkExternalToIdentity(ctx, external.ID, id); err != nil {
+		return db.AppIdentity{}, false, err
 	}
-	return s.getIdentity(ctx, id)
+	identity, err := s.getIdentity(ctx, id)
+	return identity, false, err
 }
 
 func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity) (db.DSMAccount, error) {
@@ -227,9 +252,14 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 }
 
 func (s *Service) EnsureDSMGroup(ctx context.Context, providerGroup db.ProviderGroup) (db.DSMGroup, error) {
+	group, _, err := s.EnsureDSMGroupWithLinkedExisting(ctx, providerGroup)
+	return group, err
+}
+
+func (s *Service) EnsureDSMGroupWithLinkedExisting(ctx context.Context, providerGroup db.ProviderGroup) (db.DSMGroup, bool, error) {
 	groupName, err := SanitizeGroupName(providerGroup.Name)
 	if err != nil {
-		return db.DSMGroup{}, err
+		return db.DSMGroup{}, false, err
 	}
 	groupNorm := Normalize(groupName)
 	linked, err := s.getDSMGroupByProviderGroup(ctx, providerGroup.ID)
@@ -237,69 +267,91 @@ func (s *Service) EnsureDSMGroup(ctx context.Context, providerGroup db.ProviderG
 		if linked.Managed == 1 && linked.DSMGroupnameNorm != groupNorm {
 			existing, existingErr := s.getDSMGroupByNorm(ctx, groupNorm)
 			if existingErr == nil && existing.ID != linked.ID {
+				canLink, err := s.canLinkGroupToDifferentProvider(ctx, existing.ID, providerGroup.ProviderSlug)
+				if err != nil {
+					return db.DSMGroup{}, false, err
+				}
+				if canLink {
+					if err := s.relinkProviderGroup(ctx, providerGroup.ID, linked.ID, existing.ID); err != nil {
+						return db.DSMGroup{}, false, err
+					}
+					return existing, true, nil
+				}
 				_, _ = s.q.DBTX().ExecContext(ctx, `
-UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = 'provider group name maps to existing DSM group', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-`, linked.ID)
-				return s.getDSMGroup(ctx, linked.ID)
+	UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = 'provider group name maps to existing DSM group', updated_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, linked.ID)
+				group, err := s.getDSMGroup(ctx, linked.ID)
+				return group, false, err
 			}
 			if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
-				return db.DSMGroup{}, existingErr
+				return db.DSMGroup{}, false, existingErr
 			}
 			linkCount, err := s.countGroupLinks(ctx, linked.ID)
 			if err != nil {
-				return db.DSMGroup{}, err
+				return db.DSMGroup{}, false, err
 			}
 			if linkCount > 1 {
 				id := uuid.NewString()
 				_, err = s.q.DBTX().ExecContext(ctx, `
-INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status, created_at, updated_at)
-VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, id, groupName, groupNorm)
+	INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status, created_at, updated_at)
+	VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, id, groupName, groupNorm)
 				if err != nil {
-					return db.DSMGroup{}, err
+					return db.DSMGroup{}, false, err
 				}
 				_, err = s.q.DBTX().ExecContext(ctx, `
-UPDATE group_links SET dsm_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE provider_group_id = ? AND dsm_group_id = ?
-`, id, providerGroup.ID, linked.ID)
+	UPDATE group_links SET dsm_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE provider_group_id = ? AND dsm_group_id = ?
+	`, id, providerGroup.ID, linked.ID)
 				if err != nil {
-					return db.DSMGroup{}, err
+					return db.DSMGroup{}, false, err
 				}
-				return s.getDSMGroup(ctx, id)
+				group, err := s.getDSMGroup(ctx, id)
+				return group, false, err
 			}
 			_, err = s.q.DBTX().ExecContext(ctx, `
-UPDATE dsm_groups
-SET dsm_groupname = ?, dsm_groupname_norm = ?, provision_status = 'pending', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = ?
-`, groupName, groupNorm, linked.ID)
+	UPDATE dsm_groups
+	SET dsm_groupname = ?, dsm_groupname_norm = ?, provision_status = 'pending', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP
+	WHERE id = ?
+	`, groupName, groupNorm, linked.ID)
 			if err != nil {
-				return db.DSMGroup{}, err
+				return db.DSMGroup{}, false, err
 			}
-			return s.getDSMGroup(ctx, linked.ID)
+			group, err := s.getDSMGroup(ctx, linked.ID)
+			return group, false, err
 		}
-		return linked, nil
+		return linked, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return db.DSMGroup{}, err
+		return db.DSMGroup{}, false, err
 	}
 	existing, err := s.getDSMGroupByNorm(ctx, groupNorm)
 	if err == nil {
+		canLink, linkErr := s.canLinkGroupToDifferentProvider(ctx, existing.ID, providerGroup.ProviderSlug)
+		if linkErr != nil {
+			return db.DSMGroup{}, false, linkErr
+		}
+		if canLink {
+			return existing, true, nil
+		}
 		_, _ = s.q.DBTX().ExecContext(ctx, `
-UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = 'provider group name maps to existing DSM group', updated_at = CURRENT_TIMESTAMP WHERE id = ?
-`, existing.ID)
-		return s.getDSMGroup(ctx, existing.ID)
+	UPDATE dsm_groups SET provision_status = 'conflict', conflict_reason = 'provider group name maps to existing DSM group', updated_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, existing.ID)
+		group, err := s.getDSMGroup(ctx, existing.ID)
+		return group, false, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return db.DSMGroup{}, err
+		return db.DSMGroup{}, false, err
 	}
 	id := uuid.NewString()
 	_, err = s.q.DBTX().ExecContext(ctx, `
-INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status, created_at, updated_at)
-VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, id, groupName, groupNorm)
+	INSERT INTO dsm_groups (id, dsm_groupname, dsm_groupname_norm, managed, provision_status, created_at, updated_at)
+	VALUES (?, ?, ?, 1, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, id, groupName, groupNorm)
 	if err != nil {
-		return db.DSMGroup{}, err
+		return db.DSMGroup{}, false, err
 	}
-	return s.getDSMGroup(ctx, id)
+	group, err := s.getDSMGroup(ctx, id)
+	return group, false, err
 }
 
 func (s *Service) MarkDSMGroupConflict(ctx context.Context, id, reason string) (db.DSMGroup, error) {
@@ -315,9 +367,92 @@ WHERE id = ? AND (provision_status <> 'conflict' OR conflict_reason IS NULL OR c
 
 func (s *Service) EnsureGroupLink(ctx context.Context, providerGroupID, dsmGroupID string) error {
 	_, err := s.q.DBTX().ExecContext(ctx, `
-INSERT OR IGNORE INTO group_links (id, provider_group_id, dsm_group_id, link_mode, created_at, updated_at)
-VALUES (?, ?, ?, 'managed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, uuid.NewString(), providerGroupID, dsmGroupID)
+	INSERT OR IGNORE INTO group_links (id, provider_group_id, dsm_group_id, link_mode, created_at, updated_at)
+	VALUES (?, ?, ?, 'managed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, uuid.NewString(), providerGroupID, dsmGroupID)
+	return err
+}
+
+func (s *Service) EnsureDSMUserMapping(ctx context.Context, providerSlug, externalAccountID, dsmAccountID string) error {
+	return s.ensureDSMMapping(ctx, "user", providerSlug, externalAccountID, "", dsmAccountID, "")
+}
+
+func (s *Service) EnsureDSMGroupMapping(ctx context.Context, providerSlug, providerGroupID, dsmGroupID string) error {
+	return s.ensureDSMMapping(ctx, "group", providerSlug, "", providerGroupID, "", dsmGroupID)
+}
+
+func (s *Service) EnsureDSMMemberMapping(ctx context.Context, providerSlug, providerGroupID, memberSubject, dsmGroupID, dsmAccountID string) error {
+	externalID, err := s.externalIDBySubject(ctx, providerSlug, Normalize(memberSubject))
+	if err != nil {
+		return err
+	}
+	return s.ensureDSMMapping(ctx, "member", providerSlug, externalID, providerGroupID, dsmAccountID, dsmGroupID)
+}
+
+func (s *Service) ensureDSMMapping(ctx context.Context, mappingType, providerSlug, externalAccountID, providerGroupID, dsmAccountID, dsmGroupID string) error {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+INSERT INTO dsm_mapping_entries (
+	id, mapping_type, provider_slug, external_account_id, provider_group_id,
+	dsm_account_id, dsm_group_id, active, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(mapping_type, provider_slug, external_account_id, provider_group_id) DO UPDATE SET
+	dsm_account_id = excluded.dsm_account_id,
+	dsm_group_id = excluded.dsm_group_id,
+	active = 1,
+	updated_at = CURRENT_TIMESTAMP
+`, uuid.NewString(), mappingType, providerSlug, externalAccountID, providerGroupID, nullString(dsmAccountID), nullString(dsmGroupID))
+	return err
+}
+
+func (s *Service) DeactivateStaleMappings(ctx context.Context, providerSlug, syncStart string) error {
+	if strings.TrimSpace(syncStart) == "" {
+		return nil
+	}
+	_, err := s.q.DBTX().ExecContext(ctx, `
+UPDATE dsm_mapping_entries
+SET active = 0, updated_at = CURRENT_TIMESTAMP
+WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, providerSlug, syncStart)
+	return err
+}
+
+func (s *Service) ReconcileFinalGroupMembers(ctx context.Context) error {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+UPDATE group_members
+SET active = 0,
+	provision_status = CASE
+		WHEN provision_status IN ('removed') THEN provision_status
+		ELSE 'disabled'
+	END,
+	updated_at = CURRENT_TIMESTAMP
+WHERE active = 1
+  AND NOT EXISTS (
+	SELECT 1
+	FROM dsm_mapping_entries me
+	WHERE me.mapping_type = 'member'
+	  AND me.active = 1
+	  AND me.dsm_group_id = group_members.dsm_group_id
+	  AND me.dsm_account_id = group_members.dsm_account_id
+  )`)
+	if err != nil {
+		return err
+	}
+	_, err = s.q.DBTX().ExecContext(ctx, `
+UPDATE group_members
+SET active = 1,
+	provision_status = CASE
+		WHEN provision_status IN ('disabled', 'remove_pending', 'remove_failed', 'removed') THEN 'pending'
+		ELSE provision_status
+	END,
+	updated_at = CURRENT_TIMESTAMP
+WHERE active = 0
+  AND EXISTS (
+	SELECT 1
+	FROM dsm_mapping_entries me
+	WHERE me.mapping_type = 'member'
+	  AND me.active = 1
+	  AND me.dsm_group_id = group_members.dsm_group_id
+	  AND me.dsm_account_id = group_members.dsm_account_id
+  )`)
 	return err
 }
 
@@ -328,7 +463,7 @@ func (s *Service) EnsureGroupMember(ctx context.Context, dsmGroupID, dsmAccountI
 UPDATE group_members
 SET active = 1,
 	provision_status = CASE
-		WHEN provision_status IN ('remove_pending', 'remove_failed', 'removed') THEN 'pending'
+		WHEN provision_status IN ('disabled', 'remove_pending', 'remove_failed', 'removed') THEN 'pending'
 		ELSE provision_status
 	END,
 	updated_at = CURRENT_TIMESTAMP
@@ -349,7 +484,7 @@ VALUES (?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(dsm_group_id, dsm_account_id) DO UPDATE SET
 	active = 1,
 	provision_status = CASE
-		WHEN provision_status IN ('remove_pending', 'remove_failed', 'removed') THEN 'pending'
+		WHEN provision_status IN ('disabled', 'remove_pending', 'remove_failed', 'removed') THEN 'pending'
 		ELSE provision_status
 	END,
 	updated_at = CURRENT_TIMESTAMP
@@ -408,15 +543,23 @@ WHERE p.provider_slug = ?
 }
 
 func (s *Service) allocateUsername(ctx context.Context, identity db.AppIdentity) (string, error) {
-	displayName := ""
-	if identity.DisplayName.Valid {
-		displayName = identity.DisplayName.String
-	}
-	username, err := GenerateRequiredSequentialReadableUsername(displayName, s.cfg.UsernameReadableDelimiter, 1, 32)
+	username, err := s.allocateUsernameForDisplayName(identity.DisplayName)
 	if err != nil {
+		displayName := ""
+		if identity.DisplayName.Valid {
+			displayName = identity.DisplayName.String
+		}
 		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认飞书返回真实姓名并且姓名包含 DSM 支持的字符", displayName)
 	}
 	return username, nil
+}
+
+func (s *Service) allocateUsernameForDisplayName(displayName sql.NullString) (string, error) {
+	value := ""
+	if displayName.Valid {
+		value = displayName.String
+	}
+	return GenerateRequiredSequentialReadableUsername(value, s.cfg.UsernameReadableDelimiter, 1, 32)
 }
 
 func conflictUsername(username, identityID string) string {
@@ -453,11 +596,36 @@ FROM external_accounts WHERE provider_slug = ? AND subject_norm = ?
 	return item, err
 }
 
+func (s *Service) externalIDBySubject(ctx context.Context, providerSlug, subjectNorm string) (string, error) {
+	var id string
+	err := s.q.DBTX().QueryRowContext(ctx, `SELECT id FROM external_accounts WHERE provider_slug = ? AND subject_norm = ?`, providerSlug, subjectNorm).Scan(&id)
+	return id, err
+}
+
 func (s *Service) getIdentity(ctx context.Context, id string) (db.AppIdentity, error) {
 	row := s.q.DBTX().QueryRowContext(ctx, `SELECT id, display_name, primary_email, primary_email_norm, status, created_by, created_at, updated_at FROM app_identities WHERE id = ?`, id)
 	var item db.AppIdentity
 	err := row.Scan(&item.ID, &item.DisplayName, &item.PrimaryEmail, &item.PrimaryEmailNorm, &item.Status, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt)
 	return item, err
+}
+
+func (s *Service) linkExternalToIdentity(ctx context.Context, externalID, identityID string) error {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+	UPDATE external_accounts SET app_identity_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, identityID, externalID)
+	return err
+}
+
+func (s *Service) identityHasProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
+	var count int
+	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts WHERE app_identity_id = ? AND provider_slug = ?`, identityID, providerSlug).Scan(&count)
+	return count > 0, err
+}
+
+func (s *Service) identityHasDifferentProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
+	var count int
+	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts WHERE app_identity_id = ? AND provider_slug <> ?`, identityID, providerSlug).Scan(&count)
+	return count > 0, err
 }
 
 func (s *Service) getDSMAccount(ctx context.Context, id string) (db.DSMAccount, error) {
@@ -492,6 +660,28 @@ func (s *Service) countGroupLinks(ctx context.Context, dsmGroupID string) (int, 
 	var count int
 	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM group_links WHERE dsm_group_id = ?`, dsmGroupID).Scan(&count)
 	return count, err
+}
+
+func (s *Service) canLinkGroupToDifferentProvider(ctx context.Context, dsmGroupID, providerSlug string) (bool, error) {
+	var sameProviderLinks, differentProviderLinks int
+	err := s.q.DBTX().QueryRowContext(ctx, `
+SELECT
+	COUNT(CASE WHEN p.provider_slug = ? THEN 1 END),
+	COUNT(CASE WHEN p.provider_slug <> ? THEN 1 END)
+FROM group_links l
+JOIN provider_groups p ON p.id = l.provider_group_id
+WHERE l.dsm_group_id = ?`, providerSlug, providerSlug, dsmGroupID).Scan(&sameProviderLinks, &differentProviderLinks)
+	if err != nil {
+		return false, err
+	}
+	return differentProviderLinks > 0 && sameProviderLinks == 0, nil
+}
+
+func (s *Service) relinkProviderGroup(ctx context.Context, providerGroupID, oldDSMGroupID, newDSMGroupID string) error {
+	_, err := s.q.DBTX().ExecContext(ctx, `
+UPDATE group_links SET dsm_group_id = ?, updated_at = CURRENT_TIMESTAMP
+WHERE provider_group_id = ? AND dsm_group_id = ?`, newDSMGroupID, providerGroupID, oldDSMGroupID)
+	return err
 }
 
 func (s *Service) getDSMGroup(ctx context.Context, id string) (db.DSMGroup, error) {

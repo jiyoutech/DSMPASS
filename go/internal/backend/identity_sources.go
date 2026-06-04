@@ -180,12 +180,6 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		}
 		disabledDSMUsers++
 	}
-	removedDSMGroupMembers, err := s.removeSourceGroupMembersFromDSM(c.Request.Context(), tx, slug, "delete_source_member_remove_")
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"detail": "删除身份源前移除 DSM 组成员失败：" + err.Error()})
-		return
-	}
-
 	result, err := deleteIdentitySourceDataWithIDs(c.Request.Context(), tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
@@ -201,16 +195,23 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
+	deletedSyncRuns, deletedSyncLogs, deletedAuditLogs, err := s.deleteSourceLogs(c.Request.Context(), slug)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	result["deleted_sync_runs"] = int64Value(result, "deleted_sync_runs") + deletedSyncRuns
+	result["deleted_sync_logs"] = int64Value(result, "deleted_sync_logs") + deletedSyncLogs
+	result["deleted_login_audit"] = int64Value(result, "deleted_login_audit") + deletedAuditLogs
 	result["slug"] = slug
 	result["deleted_sources"] = deletedSources
 	result["disabled_dsm_users"] = disabledDSMUsers
-	result["removed_dsm_group_members"] = removedDSMGroupMembers
-	result["detail"] = "已禁用 DSM 中对应用户，并删除身份源配置、本地同步映射和日志"
+	result["detail"] = "已禁用 DSM 中对应用户，并删除身份源配置、本地同步映射和日志；如需彻底删除这些 DSM 用户，请到 DSM 手动删除"
 	c.JSON(http.StatusOK, result)
 }
 
 func (s *Server) sourceSyncRuns(c *gin.Context) {
-	rows, err := queryJSON(c.Request.Context(), s.store, `
+	rows, err := queryJSON(c.Request.Context(), s.logs(), `
 SELECT id, source_slug, dry_run, status, started_at, finished_at, error
 FROM sync_runs
 WHERE source_slug = ?
@@ -235,13 +236,13 @@ func (s *Server) sourceSyncLogs(c *gin.Context) {
 		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 	}
 	where := "WHERE " + strings.Join(whereParts, " AND ")
-	total, err := queryCount(c.Request.Context(), s.store, `SELECT COUNT(*) FROM sync_operation_logs `+where, args...)
+	total, err := queryCount(c.Request.Context(), s.logs(), `SELECT COUNT(*) FROM sync_operation_logs `+where, args...)
 	if err != nil {
 		writeItems(c, nil, err)
 		return
 	}
 	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
-	rows, err := queryJSON(c.Request.Context(), s.store, `
+	rows, err := queryJSON(c.Request.Context(), s.logs(), `
 SELECT id, sync_run_id, source_slug, object_type, object_key, dsm_name, action, status, before_state, after_state, error, created_at
 FROM sync_operation_logs
 `+where+`

@@ -11,9 +11,6 @@ import (
 
 func main() {
 	cfg := config.LoadHelper()
-	if cfg.HMACSecret == "" {
-		log.Fatal("DSMPASS_HELPER_HMAC_SECRET is required")
-	}
 	database, queries, err := backend.OpenDatabaseReader(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)

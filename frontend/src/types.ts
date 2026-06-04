@@ -131,6 +131,7 @@ export interface ResetSyncDataResult {
   deleted_dsm_groups: number;
   deleted_group_links: number;
   deleted_group_members: number;
+  deleted_dsm_mappings?: number;
   disabled_dsm_users: number;
   detail: string;
 }
@@ -217,6 +218,35 @@ export interface LoginAuditLog {
   ip_hash: string | null;
   user_agent_hash: string | null;
   duration_ms: number | null;
+  created_at: string;
+}
+
+export interface OperationRun {
+  id: string;
+  kind: string;
+  source_slug: string | null;
+  status: "running" | "success" | "failed" | string;
+  phase: string;
+  message: string;
+  current: number;
+  total: number;
+  started_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface OperationEvent {
+  id: string;
+  operation_run_id: string;
+  source_slug: string | null;
+  kind: string;
+  phase: string;
+  message: string;
+  current: number;
+  total: number;
+  status: string;
+  error: string | null;
   created_at: string;
 }
 

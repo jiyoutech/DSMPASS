@@ -16,6 +16,10 @@ func (s *Server) adminAccessControl() gin.HandlerFunc {
 
 func (s *Server) idpAccessControl() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !isIntranetIP(requestRemoteIP(c.Request)) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "idp access is only allowed from intranet"})
+			return
+		}
 		if !requestMatchesPublicBaseURL(c.Request, s.cfg.PublicBaseURL) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "idp entry address is not allowed"})
 			return
@@ -32,6 +36,13 @@ func (s *Server) accessControl(cidrs func() string) gin.HandlerFunc {
 		}
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "admin access is not allowed from this network"})
 	}
+}
+
+func isIntranetIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 func requestMatchesPublicBaseURL(r *http.Request, publicBaseURL string) bool {

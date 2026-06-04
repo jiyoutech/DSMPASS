@@ -26,6 +26,8 @@ func TestPrepareSchemaCreatesPerformanceIndexes(t *testing.T) {
 		"idx_group_links_dsm_group",
 		"idx_group_members_account",
 		"idx_group_members_active_status_updated",
+		"idx_dsm_mapping_entries_target",
+		"idx_dsm_mapping_entries_source_updated",
 		"idx_sync_runs_source_started",
 		"idx_sync_operation_logs_source_created",
 		"idx_login_audit_logs_provider_created",

@@ -13,6 +13,7 @@ import (
 
 var ErrBadSignature = errors.New("bad signature")
 var ErrExpired = errors.New("timestamp outside allowed skew")
+var ErrMissingSecret = errors.New("missing signing secret")
 
 func CanonicalPayload(payload map[string]any) ([]byte, error) {
 	clean := make(map[string]any, len(payload))
@@ -32,6 +33,9 @@ func CanonicalPayload(payload map[string]any) ([]byte, error) {
 }
 
 func Sign(payload map[string]any, secret string) (string, error) {
+	if secret == "" {
+		return "", ErrMissingSecret
+	}
 	canonical, err := CanonicalPayload(payload)
 	if err != nil {
 		return "", err

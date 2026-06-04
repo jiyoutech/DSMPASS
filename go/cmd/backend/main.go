@@ -24,9 +24,6 @@ import (
 
 func main() {
 	cfg := config.LoadBackend()
-	if cfg.RelayHelperHMACSecret == "" {
-		log.Fatal("DSMPASS_HELPER_HMAC_SECRET is required")
-	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		log.Fatal(err)
 	}
@@ -50,7 +47,21 @@ func main() {
 		log.Fatal(err)
 	}
 	defer database.Close()
-	server := backend.NewWithDB(cfg, backend.HelperFromConfig(cfg), database, queries)
+	logDatabaseURL := os.Getenv("DSMPASS_LOG_DATABASE_URL")
+	if logDatabaseURL == "" {
+		logDatabaseURL = backend.LogDatabaseURL(cfg.DatabaseURL)
+	}
+	logDatabase, logQueries, err := backend.OpenLogDatabase(context.Background(), logDatabaseURL)
+	if err != nil {
+		_ = listener.Close()
+		log.Fatal(err)
+	}
+	defer logDatabase.Close()
+	if err := backend.MigrateLogsToLogDatabase(context.Background(), database, logDatabase); err != nil {
+		_ = listener.Close()
+		log.Fatal(err)
+	}
+	server := backend.NewWithDatabases(cfg, backend.HelperFromConfig(cfg), database, queries, logDatabase, logQueries)
 	if err := server.CleanupIdentitySourcePublicBaseURLs(context.Background()); err != nil {
 		log.Printf("failed to clean identity source public base urls: %v", err)
 	}

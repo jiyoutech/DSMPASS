@@ -33,6 +33,8 @@ type Engine struct {
 
 type Options struct {
 	DeactivateMissingData bool
+	SyncStart             string
+	Progress              func(phase string, current, total int, message string)
 }
 
 func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
@@ -46,17 +48,26 @@ func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Optio
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
 	result := Result{ProviderSlug: directory.Slug()}
+	syncStart := e.options.SyncStart
+	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
+		_ = e.q.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
+	}
 	users, err := directory.ListUsers()
 	if err != nil {
 		return result, err
 	}
+	e.report("写入用户映射", 0, len(users), "正在写入用户映射")
 	duplicateUserNames := duplicateUserNameCounts(users, e.cfg)
-	for _, user := range users {
+	for index, user := range users {
 		verified := true
+		subjectType := strings.TrimSpace(user.SubjectType)
+		if subjectType == "" {
+			subjectType = "directory_subject"
+		}
 		external, err := identityService.UpsertProfile(ctx, identity.ExternalProfile{
 			ProviderSlug:  user.ProviderSlug,
 			Subject:       user.Subject,
-			SubjectType:   "directory_subject",
+			SubjectType:   subjectType,
 			DisplayName:   user.DisplayName,
 			Email:         user.Email,
 			EmailVerified: &verified,
@@ -65,7 +76,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err != nil {
 			return result, err
 		}
-		appIdentity, err := identityService.ResolveOrCreateIdentity(ctx, external)
+		appIdentity, identityLinkedExisting, err := identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
 		if err != nil {
 			return result, err
 		}
@@ -79,8 +90,15 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 				return result, err
 			}
 		}
+		if account.ProvisionStatus != "conflict" {
+			if err := identityService.EnsureDSMUserMapping(ctx, user.ProviderSlug, external.ID, account.ID); err != nil {
+				return result, err
+			}
+		}
 		action := "update_external_account"
-		if account.ProvisionStatus == "pending" {
+		if identityLinkedExisting {
+			action = "link_existing_dsm_user"
+		} else if account.ProvisionStatus == "pending" {
 			action = "ensure_dsm_user"
 		}
 		result.Items = append(result.Items, PlanItem{
@@ -91,19 +109,21 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			DSMUsername:     account.DSMUsername,
 			ProvisionStatus: account.ProvisionStatus,
 		})
+		e.report("写入用户映射", index+1, len(users), user.DisplayName)
 	}
 	groups, err := directory.ListGroups()
 	if err != nil {
 		return result, err
 	}
+	e.report("写入部门映射", 0, len(groups), "正在写入部门映射")
 	duplicateGroupSubjects := duplicateGroupSubjects(groups)
 	groups = disambiguateDuplicateGroupNames(groups)
-	for _, group := range groups {
+	for index, group := range groups {
 		providerGroup, err := identityService.EnsureProviderGroup(ctx, group.ProviderSlug, group.Subject, group.ParentSubject, group.Name, group.Path)
 		if err != nil {
 			return result, err
 		}
-		dsmGroup, err := identityService.EnsureDSMGroup(ctx, providerGroup)
+		dsmGroup, groupLinkedExisting, err := identityService.EnsureDSMGroupWithLinkedExisting(ctx, providerGroup)
 		if err != nil {
 			return result, err
 		}
@@ -116,8 +136,15 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err := identityService.EnsureGroupLink(ctx, providerGroup.ID, dsmGroup.ID); err != nil {
 			return result, err
 		}
+		if dsmGroup.ProvisionStatus != "conflict" {
+			if err := identityService.EnsureDSMGroupMapping(ctx, group.ProviderSlug, providerGroup.ID, dsmGroup.ID); err != nil {
+				return result, err
+			}
+		}
 		action := "update_provider_group"
-		if dsmGroup.ProvisionStatus == "pending" {
+		if groupLinkedExisting {
+			action = "link_existing_dsm_group"
+		} else if dsmGroup.ProvisionStatus == "pending" {
 			action = "ensure_dsm_group"
 		}
 		result.Items = append(result.Items, PlanItem{
@@ -128,6 +155,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			DSMGroupname:    dsmGroup.DSMGroupname,
 			ProvisionStatus: dsmGroup.ProvisionStatus,
 		})
+		e.report("写入部门映射", index+1, len(groups), group.Path)
 	}
 	groupMap, err := identityService.ProviderGroupsToDSMGroups(ctx, directory.Slug())
 	if err != nil {
@@ -138,10 +166,19 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		return result, err
 	}
 	membersByGroup := usersDepartmentMemberships(users, groups)
-	currentMemberships := map[string]bool{}
+	memberTotal := 0
+	if len(membersByGroup) > 0 {
+		for _, members := range membersByGroup {
+			memberTotal += len(members)
+		}
+	} else {
+		memberTotal = len(groups)
+	}
+	memberCurrent := 0
+	e.report("写入成员映射", 0, memberTotal, "正在写入成员映射")
 	for _, group := range groups {
 		dsmGroup, ok := groupMap[group.Subject]
-		if !ok {
+		if !ok || dsmGroup.ProvisionStatus == "conflict" {
 			continue
 		}
 		members := membersByGroup[group.Subject]
@@ -151,13 +188,17 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			if err != nil {
 				return result, err
 			}
+			memberCurrent++
+			e.report("读取部门成员", memberCurrent, memberTotal, group.Path)
 		}
 		for _, memberSubject := range members {
 			account, ok := accountMap[memberSubject]
-			if !ok {
+			if !ok || account.ProvisionStatus == "conflict" {
 				continue
 			}
-			currentMemberships[dsmGroup.ID+"\x00"+account.ID] = true
+			if err := identityService.EnsureDSMMemberMapping(ctx, group.ProviderSlug, group.Subject, memberSubject, dsmGroup.ID, account.ID); err != nil {
+				return result, err
+			}
 			member, err := identityService.EnsureGroupMember(ctx, dsmGroup.ID, account.ID)
 			if err != nil {
 				return result, err
@@ -170,14 +211,25 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 				DSMGroupname:    dsmGroup.DSMGroupname,
 				ProvisionStatus: member.ProvisionStatus,
 			})
+			memberCurrent++
+			e.report("写入成员映射", memberCurrent, memberTotal, group.Path)
 		}
 	}
 	if e.options.DeactivateMissingData {
-		if err := deactivateMissingGroupMembers(ctx, e.q, directory.Slug(), currentMemberships); err != nil {
+		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart); err != nil {
 			return result, err
 		}
 	}
+	if err := identityService.ReconcileFinalGroupMembers(ctx); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+func (e *Engine) report(phase string, current, total int, message string) {
+	if e.options.Progress != nil {
+		e.options.Progress(phase, current, total, message)
+	}
 }
 
 func deactivateMissingGroupMembers(ctx context.Context, q *db.Queries, providerSlug string, current map[string]bool) error {

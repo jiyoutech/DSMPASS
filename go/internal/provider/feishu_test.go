@@ -72,6 +72,41 @@ func TestDecodeResponseRejectsFeishuErrorWithHTTP200(t *testing.T) {
 	}
 }
 
+func TestFetchProfileRejectsFeishuAPIError(t *testing.T) {
+	feishu := Feishu{
+		cfg: config.BackendConfig{FeishuUserInfoURL: "https://feishu.test/profile"},
+		client: http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+			"code": 99991672,
+			"msg": "Access denied.",
+			"error": {
+				"log_id": "log-profile",
+				"permission_violations": [
+					{"type": "action_scope_required", "subject": "contact:user.base:readonly"}
+				]
+			}
+		}`)),
+			}, nil
+		})},
+	}
+	_, err := feishu.FetchProfile(map[string]any{"access_token": "token"})
+	if err == nil {
+		t.Fatal("expected profile api error")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "飞书接口权限不足") || !strings.Contains(message, "contact:user.base:readonly") || !strings.Contains(message, "log-profile") {
+		t.Fatalf("unexpected error message: %s", message)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func TestBuildAuthorizeURLUsesAccountsEndpointAndClientID(t *testing.T) {
 	feishu := NewFeishu(config.BackendConfig{
 		FeishuAuthorizeURL: "https://accounts.feishu.cn/open-apis/authen/v1/authorize",
@@ -297,6 +332,52 @@ func TestListUsersMergesMultipleDepartmentIDs(t *testing.T) {
 	got := strings.Join(users[0].DepartmentSubjects, ",")
 	if got != "marketing,sup2,sup3" {
 		t.Fatalf("DepartmentSubjects got %q", got)
+	}
+}
+
+func TestListUsersPrefersOpenIDOverUserID(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 50,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/departments/0/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{
+				{"open_department_id": "sup2", "name": "sup2"},
+			}}}, http.StatusOK
+		case "/departments/sup2/children":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{}}}, http.StatusOK
+		case "/users/find_by_department":
+			return map[string]any{"data": map[string]any{"items": []map[string]any{
+				{"user_id": "ca32gc25", "open_id": "ou_ca32gc25", "name": "amktest"},
+			}}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	users, err := feishu.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("users length got %d", len(users))
+	}
+	if users[0].Subject != "ou_ca32gc25" || users[0].SubjectType != "feishu_open_id" {
+		t.Fatalf("expected open_id subject, got subject=%q type=%q", users[0].Subject, users[0].SubjectType)
+	}
+	members, err := feishu.ListGroupMembers("sup2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(members, ",") != "ou_ca32gc25" {
+		t.Fatalf("members should use open_id, got %#v", members)
 	}
 }
 

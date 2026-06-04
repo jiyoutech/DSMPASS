@@ -8,6 +8,8 @@ import type {
   GroupMember,
   HelperStatus,
   LoginAuditLog,
+  OperationEvent,
+  OperationRun,
   PagedResponse,
   ProviderUpsert,
   ProviderItem,
@@ -51,13 +53,11 @@ async function listAllPaged<T>(loader: (params: ListParams) => Promise<PagedResp
   const limit = Math.max(1, params.limit ?? MAX_PAGE_LIMIT);
   let page = 1;
   const items: T[] = [];
-  let total = 0;
   for (;;) {
     const response = await loader({ ...params, page, limit });
     items.push(...response.items);
-    total = response.total;
     if (items.length >= response.total || response.items.length === 0) {
-      return { ...response, items, page: 1, limit, total, offset: 0 };
+      return { ...response, items, page: 1, limit, total: response.total, offset: 0 };
     }
     page += 1;
   }
@@ -98,6 +98,7 @@ export const api = {
   adminChangePassword: (payload: AdminPasswordChange) =>
     request<{ success: boolean; username: string }>("/api/admin/auth/password", { method: "PUT", body: JSON.stringify(payload) }),
   syncApply: (provider: string) => request<SyncResult>(`/api/sync/${provider}/apply`, { method: "POST" }),
+  startSyncRun: (provider: string) => request<{ run_id: string }>(`/api/admin/providers/${provider}/sync-runs`, { method: "POST" }),
   listDSMAccounts: (params?: ListParams) => request<PagedResponse<DSMAccount>>(`/api/admin/dsm-accounts${queryString(params)}`),
   listAllDSMAccounts: (params?: ListParams) => listAllPaged<DSMAccount>(api.listDSMAccounts, { ...params, limit: params?.limit ?? MAX_PAGE_LIMIT }),
   listDSMGroups: (params?: ListParams) => request<PagedResponse<DSMGroup>>(`/api/admin/dsm-groups${queryString(params)}`),
@@ -110,6 +111,8 @@ export const api = {
     request<DSMAccount>(`/api/admin/dsm-accounts/${id}/login`, { method: "PUT", body: JSON.stringify({ allow_login }) }),
   setDSMAccountsLogin: (ids: string[], allow_login: boolean) =>
     request<{ items: DSMAccount[] }>("/api/admin/dsm-accounts/login", { method: "PUT", body: JSON.stringify({ ids, allow_login }) }),
+  startDSMAccountsLoginRun: (ids: string[], allow_login: boolean) =>
+    request<{ run_id: string }>("/api/admin/dsm-accounts/login-runs", { method: "POST", body: JSON.stringify({ ids, allow_login }) }),
   provisionGroup: (id: string) => request<DSMGroup>(`/api/admin/dsm-groups/${id}/provision`, { method: "POST" }),
   setDSMGroupName: (id: string, dsm_groupname: string) =>
     request<DSMGroup>(`/api/admin/dsm-groups/${id}/name`, { method: "PUT", body: JSON.stringify({ dsm_groupname }) }),
@@ -125,7 +128,11 @@ export const api = {
     request<{ slug: string; deleted_sources: number; disabled_dsm_users: number; detail: string }>(`/api/admin/providers/${slug}`, { method: "DELETE" }),
   resetProviderSyncData: (slug: string) =>
     request<ResetSyncDataResult>(`/api/admin/providers/${slug}/reset-sync-data`, { method: "POST" }),
+  startCleanupRun: (slug: string) =>
+    request<{ run_id: string }>(`/api/admin/providers/${slug}/cleanup-runs`, { method: "POST" }),
   sourceSyncLogs: (slug: string, params?: ListParams) => request<PagedResponse<SyncOperationLog>>(`/api/admin/providers/${slug}/sync-logs${queryString(params)}`),
+  operationRun: (runID: string) => request<OperationRun>(`/api/admin/operation-runs/${runID}`),
+  operationRunEvents: (runID: string, params?: ListParams) => request<PagedResponse<OperationEvent>>(`/api/admin/operation-runs/${runID}/events${queryString(params)}`),
   helperStatus: () => request<HelperStatus>("/api/admin/helper/status"),
   restartHelper: () => request<{ success: boolean }>("/api/admin/helper/restart", { method: "POST" }),
   version: () => request<VersionInfo>("/api/admin/version"),

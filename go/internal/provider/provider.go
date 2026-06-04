@@ -3,6 +3,7 @@ package provider
 type User struct {
 	ProviderSlug       string
 	Subject            string
+	SubjectType        string
 	DisplayName        string
 	Email              string
 	Mobile             string

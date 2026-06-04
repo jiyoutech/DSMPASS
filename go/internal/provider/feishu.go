@@ -108,7 +108,7 @@ func (f Feishu) FetchProfile(token map[string]any) (map[string]any, error) {
 	}
 	defer response.Body.Close()
 	var out map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
+	if err := decodeResponse(response, &out); err != nil {
 		return nil, err
 	}
 	if data, ok := out["data"].(map[string]any); ok {
@@ -133,7 +133,7 @@ func (f Feishu) ListUsers() ([]User, error) {
 			return nil, err
 		}
 		for _, raw := range items {
-			subject := firstString(raw, "user_id", "open_id", "union_id")
+			subject, subjectType := feishuUserSubject(raw)
 			if subject == "" {
 				continue
 			}
@@ -155,6 +155,7 @@ func (f Feishu) ListUsers() ([]User, error) {
 			user := User{
 				ProviderSlug: f.slug,
 				Subject:      subject,
+				SubjectType:  subjectType,
 				DisplayName:  displayName,
 				Email:        firstString(raw, "email"),
 				Mobile:       firstString(raw, "mobile"),
@@ -259,7 +260,7 @@ func (f Feishu) ListGroupMembers(groupSubject string) ([]string, error) {
 	}
 	var members []string
 	for _, raw := range items {
-		subject := firstString(raw, "user_id", "open_id", "union_id")
+		subject, _ := feishuUserSubject(raw)
 		if subject != "" {
 			members = append(members, subject)
 		}
@@ -516,6 +517,22 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func feishuUserSubject(raw map[string]any) (string, string) {
+	for _, item := range []struct {
+		field       string
+		subjectType string
+	}{
+		{"open_id", "feishu_open_id"},
+		{"user_id", "feishu_user_id"},
+		{"union_id", "feishu_union_id"},
+	} {
+		if value := firstString(raw, item.field); value != "" {
+			return value, item.subjectType
+		}
+	}
+	return "", ""
 }
 
 func departmentName(raw map[string]any, fallback string) string {

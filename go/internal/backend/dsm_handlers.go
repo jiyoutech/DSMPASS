@@ -18,11 +18,14 @@ func (s *Server) dsmAccounts(c *gin.Context) {
 	whereParts := []string{}
 	args := []any{}
 	if providerSlug != "" {
-		whereParts = append(whereParts, `EXISTS (
-    SELECT 1 FROM external_accounts e
-    WHERE e.app_identity_id = a.app_identity_id AND e.provider_slug = ?
-)`)
-		args = append(args, providerSlug)
+		whereParts = append(whereParts, `(EXISTS (
+	    SELECT 1 FROM dsm_mapping_entries me
+	    WHERE me.mapping_type = 'user' AND me.active = 1 AND me.dsm_account_id = a.id AND me.provider_slug = ?
+	) OR EXISTS (
+	    SELECT 1 FROM external_accounts e
+	    WHERE e.app_identity_id = a.app_identity_id AND e.provider_slug = ?
+	))`)
+		args = append(args, providerSlug, providerSlug)
 	}
 	switch status := strings.TrimSpace(c.Query("status")); status {
 	case "", "all":
@@ -69,7 +72,11 @@ JOIN app_identities i ON i.id = a.app_identity_id
 	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT a.id,
-       COALESCE((SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1), '') AS provider_slug,
+	       COALESCE(
+	         (SELECT me.provider_slug FROM dsm_mapping_entries me WHERE me.mapping_type = 'user' AND me.active = 1 AND me.dsm_account_id = a.id ORDER BY me.created_at LIMIT 1),
+	         (SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1),
+	         ''
+	       ) AS provider_slug,
        a.app_identity_id, a.dsm_username,
        COALESCE(i.display_name, '') AS display_name,
        COALESCE(i.primary_email, '') AS primary_email,
@@ -98,11 +105,7 @@ func (s *Server) setDSMAccountLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "missing id"})
 		return
 	}
-	if _, err := s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET allow_login = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, boolToInt(*payload.AllowLogin), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	rows, err := s.dsmAccountRows(c.Request.Context(), []string{id})
+	rows, err := s.runDSMAccountsLogin(c.Request.Context(), []string{id}, *payload.AllowLogin, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
@@ -132,13 +135,73 @@ func (s *Server) setDSMAccountsLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "too many ids"})
 		return
 	}
-	args := append([]any{boolToInt(*payload.AllowLogin)}, anySlice(ids)...)
-	if _, err := s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET allow_login = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (`+placeholders(len(ids))+`)`, args...); err != nil {
+	rows, err := s.runDSMAccountsLogin(c.Request.Context(), ids, *payload.AllowLogin, nil)
+	writeItems(c, rows, err)
+}
+
+func (s *Server) startDSMAccountsLoginRun(c *gin.Context) {
+	var payload struct {
+		IDs        []string `json:"ids"`
+		AllowLogin *bool    `json:"allow_login"`
+	}
+	if err := c.BindJSON(&payload); err != nil || payload.AllowLogin == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid json"})
+		return
+	}
+	ids := compactStringIDs(payload.IDs)
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "missing ids"})
+		return
+	}
+	if len(ids) > 500 {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "too many ids"})
+		return
+	}
+	kind := "login_disable"
+	message := "禁用登录任务已创建"
+	if *payload.AllowLogin {
+		kind = "login_enable"
+		message = "启用登录任务已创建"
+	}
+	progress, err := s.createOperationRun(c.Request.Context(), kind, "", "等待开始", message, len(ids))
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	rows, err := s.dsmAccountRows(c.Request.Context(), ids)
-	writeItems(c, rows, err)
+	go func() {
+		ctx := context.Background()
+		_, err := s.runDSMAccountsLogin(ctx, ids, *payload.AllowLogin, progress)
+		if err != nil {
+			progress.fail(ctx, err)
+			return
+		}
+		if *payload.AllowLogin {
+			progress.complete(ctx, "已允许登录")
+		} else {
+			progress.complete(ctx, "已禁止登录")
+		}
+	}()
+	c.JSON(http.StatusAccepted, gin.H{"run_id": progress.id})
+}
+
+func (s *Server) runDSMAccountsLogin(ctx context.Context, ids []string, allowLogin bool, progress *operationProgress) ([]map[string]any, error) {
+	ids = compactStringIDs(ids)
+	if progress != nil {
+		message := "正在禁止登录"
+		if allowLogin {
+			message = "正在允许登录"
+		}
+		progress.setTotal(ctx, "更新登录权限", message, len(ids))
+	}
+	for _, id := range ids {
+		if _, err := s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET allow_login = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, boolToInt(allowLogin), id); err != nil {
+			return nil, err
+		}
+		if progress != nil {
+			progress.step(ctx, "更新登录权限", id)
+		}
+	}
+	return s.dsmAccountRows(ctx, ids)
 }
 
 func (s *Server) dsmAccountRows(ctx context.Context, ids []string) ([]map[string]any, error) {
@@ -148,7 +211,11 @@ func (s *Server) dsmAccountRows(ctx context.Context, ids []string) ([]map[string
 	}
 	return queryJSON(ctx, s.store, `
 SELECT a.id,
-       COALESCE((SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1), '') AS provider_slug,
+	       COALESCE(
+	         (SELECT me.provider_slug FROM dsm_mapping_entries me WHERE me.mapping_type = 'user' AND me.active = 1 AND me.dsm_account_id = a.id ORDER BY me.created_at LIMIT 1),
+	         (SELECT e.provider_slug FROM external_accounts e WHERE e.app_identity_id = a.app_identity_id ORDER BY e.created_at LIMIT 1),
+	         ''
+	       ) AS provider_slug,
        a.app_identity_id, a.dsm_username,
        COALESCE(i.display_name, '') AS display_name,
        COALESCE(i.primary_email, '') AS primary_email,
@@ -184,8 +251,20 @@ func (s *Server) setDSMAccountUsername(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 用户名包含不支持的字符，请直接填写最终 DSM 用户名"})
 		return
 	}
+	usernameNorm := identity.Normalize(username)
+	var currentUsernameNorm string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `
+SELECT dsm_username_norm FROM dsm_accounts WHERE id = ?`, id).Scan(&currentUsernameNorm)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "account not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 	var existingID string
-	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_accounts WHERE dsm_username_norm = ? AND id <> ?`, identity.Normalize(username), id).Scan(&existingID)
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_accounts WHERE dsm_username_norm = ? AND id <> ?`, usernameNorm, id).Scan(&existingID)
 	if err == nil {
 		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 用户名已被其他身份占用"})
 		return
@@ -195,9 +274,9 @@ func (s *Server) setDSMAccountUsername(c *gin.Context) {
 		return
 	}
 	result, err := s.store.DBTX().ExecContext(c.Request.Context(), `
-UPDATE dsm_accounts
-SET dsm_username = ?, dsm_username_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP
-WHERE id = ?`, username, identity.Normalize(username), id)
+	UPDATE dsm_accounts
+	SET dsm_username = ?, dsm_username_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP
+	WHERE id = ?`, username, usernameNorm, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
@@ -241,12 +320,15 @@ func (s *Server) dsmGroups(c *gin.Context) {
 	whereParts := []string{}
 	args := []any{}
 	if providerSlug != "" {
-		whereParts = append(whereParts, `EXISTS (
-    SELECT 1 FROM group_links l
-    JOIN provider_groups pg ON pg.id = l.provider_group_id
-    WHERE l.dsm_group_id = g.id AND pg.provider_slug = ?
-)`)
-		args = append(args, providerSlug)
+		whereParts = append(whereParts, `(EXISTS (
+	    SELECT 1 FROM dsm_mapping_entries me
+	    WHERE me.mapping_type = 'group' AND me.active = 1 AND me.dsm_group_id = g.id AND me.provider_slug = ?
+	) OR EXISTS (
+	    SELECT 1 FROM group_links l
+	    JOIN provider_groups pg ON pg.id = l.provider_group_id
+	    WHERE l.dsm_group_id = g.id AND pg.provider_slug = ?
+	))`)
+		args = append(args, providerSlug, providerSlug)
 	}
 	switch status := strings.TrimSpace(c.Query("status")); status {
 	case "", "all":
@@ -291,7 +373,11 @@ FROM dsm_groups g
 	dataArgs := append(append([]any{}, args...), paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
 SELECT g.id,
-       COALESCE((SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_slug,
+	       COALESCE(
+	         (SELECT me.provider_slug FROM dsm_mapping_entries me WHERE me.mapping_type = 'group' AND me.active = 1 AND me.dsm_group_id = g.id ORDER BY me.created_at LIMIT 1),
+	         (SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1),
+	         ''
+	       ) AS provider_slug,
        g.dsm_groupname, g.provision_status, g.conflict_reason,
        COALESCE((SELECT pg.name FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_name,
        COALESCE((SELECT pg.path FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_path
@@ -324,8 +410,23 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名包含不支持的字符，请直接填写最终 DSM 部门组名"})
 		return
 	}
+	var currentGroupnameNorm, currentStatus string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT dsm_groupname_norm, provision_status FROM dsm_groups WHERE id = ?`, id).Scan(&currentGroupnameNorm, &currentStatus)
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "group not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	groupNorm := identity.Normalize(groupname)
+	if currentStatus == "conflict" && currentGroupnameNorm == groupNorm {
+		c.JSON(http.StatusConflict, gin.H{"detail": "部门冲突必须修改 DSM 部门组名后才能保存"})
+		return
+	}
 	var existingID string
-	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE dsm_groupname_norm = ? AND id <> ?`, identity.Normalize(groupname), id).Scan(&existingID)
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE dsm_groupname_norm = ? AND id <> ?`, groupNorm, id).Scan(&existingID)
 	if err == nil {
 		c.JSON(http.StatusConflict, gin.H{"detail": "DSM 部门组名已被其他部门占用"})
 		return
@@ -337,7 +438,7 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 	result, err := s.store.DBTX().ExecContext(c.Request.Context(), `
 UPDATE dsm_groups
 SET dsm_groupname = ?, dsm_groupname_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = ?`, groupname, identity.Normalize(groupname), id)
+WHERE id = ?`, groupname, groupNorm, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
@@ -361,7 +462,11 @@ func (s *Server) dsmGroupRows(ctx context.Context, ids []string) ([]map[string]a
 	}
 	return queryJSON(ctx, s.store, `
 SELECT g.id,
-       COALESCE((SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_slug,
+	       COALESCE(
+	         (SELECT me.provider_slug FROM dsm_mapping_entries me WHERE me.mapping_type = 'group' AND me.active = 1 AND me.dsm_group_id = g.id ORDER BY me.created_at LIMIT 1),
+	         (SELECT pg.provider_slug FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1),
+	         ''
+	       ) AS provider_slug,
        g.dsm_groupname, g.provision_status, g.conflict_reason,
        COALESCE((SELECT pg.name FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_name,
        COALESCE((SELECT pg.path FROM group_links l JOIN provider_groups pg ON pg.id = l.provider_group_id WHERE l.dsm_group_id = g.id ORDER BY pg.created_at LIMIT 1), '') AS provider_group_path
@@ -375,20 +480,21 @@ func (s *Server) groupMembers(c *gin.Context) {
 	where := ""
 	args := []any{}
 	if providerSlug != "" {
-		where = `WHERE pg.provider_slug = ? AND m.active = 1`
+		where = `WHERE me.provider_slug = ? AND me.active = 1 AND m.active = 1`
 		args = append(args, providerSlug)
 	} else {
 		where = `WHERE m.active = 1`
 	}
 	rows, err := queryJSON(c.Request.Context(), s.store, `
-SELECT m.id, pg.provider_slug, g.id AS dsm_group_id, a.id AS dsm_account_id, g.dsm_groupname, a.dsm_username, m.provision_status
-FROM group_members m
-JOIN dsm_groups g ON g.id = m.dsm_group_id
-JOIN dsm_accounts a ON a.id = m.dsm_account_id
-JOIN group_links l ON l.dsm_group_id = g.id
-JOIN provider_groups pg ON pg.id = l.provider_group_id
-`+where+`
-ORDER BY m.created_at`, args...)
+	SELECT DISTINCT m.id, me.provider_slug, g.id AS dsm_group_id, a.id AS dsm_account_id, g.dsm_groupname, a.dsm_username, m.provision_status
+	FROM group_members m
+	JOIN dsm_groups g ON g.id = m.dsm_group_id
+	JOIN dsm_accounts a ON a.id = m.dsm_account_id
+	JOIN dsm_mapping_entries me ON me.mapping_type = 'member'
+		AND me.dsm_group_id = m.dsm_group_id
+		AND me.dsm_account_id = m.dsm_account_id
+	`+where+`
+	ORDER BY m.created_at`, args...)
 	writeItems(c, rows, err)
 }
 

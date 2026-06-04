@@ -107,6 +107,20 @@ CREATE TABLE IF NOT EXISTS group_members (
     UNIQUE(dsm_group_id, dsm_account_id)
 );
 
+CREATE TABLE IF NOT EXISTS dsm_mapping_entries (
+    id TEXT PRIMARY KEY,
+    mapping_type TEXT NOT NULL,
+    provider_slug TEXT NOT NULL,
+    external_account_id TEXT NOT NULL DEFAULT '',
+    provider_group_id TEXT NOT NULL DEFAULT '',
+    dsm_account_id TEXT,
+    dsm_group_id TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(mapping_type, provider_slug, external_account_id, provider_group_id)
+);
+
 CREATE TABLE IF NOT EXISTS sync_runs (
     id TEXT PRIMARY KEY,
     source_slug TEXT NOT NULL,
@@ -148,6 +162,35 @@ CREATE TABLE IF NOT EXISTS login_audit_logs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS operation_runs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    source_slug TEXT,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    current INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS operation_events (
+    id TEXT PRIMARY KEY,
+    operation_run_id TEXT NOT NULL,
+    source_slug TEXT,
+    kind TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    current INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_identity_sources_sync_enabled
     ON identity_sources(enabled, directory_sync_enabled);
 
@@ -178,6 +221,12 @@ CREATE INDEX IF NOT EXISTS idx_group_members_account
 CREATE INDEX IF NOT EXISTS idx_group_members_active_status_updated
     ON group_members(active, provision_status, updated_at);
 
+CREATE INDEX IF NOT EXISTS idx_dsm_mapping_entries_target
+    ON dsm_mapping_entries(mapping_type, active, dsm_account_id, dsm_group_id);
+
+CREATE INDEX IF NOT EXISTS idx_dsm_mapping_entries_source_updated
+    ON dsm_mapping_entries(provider_slug, active, updated_at);
+
 CREATE INDEX IF NOT EXISTS idx_sync_runs_source_started
     ON sync_runs(source_slug, started_at DESC);
 
@@ -189,3 +238,9 @@ CREATE INDEX IF NOT EXISTS idx_login_audit_logs_provider_created
 
 CREATE INDEX IF NOT EXISTS idx_login_audit_logs_created
     ON login_audit_logs(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_operation_runs_source_started
+    ON operation_runs(source_slug, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_operation_events_run_created
+    ON operation_events(operation_run_id, created_at DESC);

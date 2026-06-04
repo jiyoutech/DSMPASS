@@ -4,6 +4,8 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 GO_DIR="$ROOT_DIR/go"
 DIST_DIR="$GO_DIR/dist/dsm"
+export GOCACHE="${GOCACHE:-$GO_DIR/.gocache}"
+export GOMODCACHE="${GOMODCACHE:-$GO_DIR/.gomodcache}"
 VERSION=${DSMPASS_VERSION:-}
 if [ -z "$VERSION" ]; then
   VERSION=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT_DIR/frontend/package.json" | sed -n '1p')
@@ -23,6 +25,7 @@ MAINTAINER=${DSMPASS_SPK_MAINTAINER:-"dsm-pass"}
 DESCRIPTION=${DSMPASS_SPK_DESCRIPTION:-"Enterprise identity login gateway for Synology DSM."}
 SUPPORT_URL=${DSMPASS_SPK_SUPPORT_URL:-"https://github.com/dsm-pass/dsm-pass"}
 DEFAULT_MANAGEMENT_PORT=${DSMPASS_DEFAULT_MANAGEMENT_PORT:-25000}
+DESKTOP_APP_ID=${DSMPASS_DESKTOP_APP_ID:-"com.dsmpass.DSMPASS"}
 
 case "$DEFAULT_MANAGEMENT_PORT" in
   ''|*[!0-9]*)
@@ -38,7 +41,7 @@ fi
 export DSMPASS_VERSION="$VERSION"
 "$GO_DIR/scripts/dsm/package-dsm.sh"
 cd "$GO_DIR"
-GOCACHE="${DSMPASS_ICON_GOCACHE:-$GO_DIR/.gocache}" go run scripts/dsm/icon-gen.go -out "$DIST_DIR/icons"
+GOCACHE="${DSMPASS_ICON_GOCACHE:-$GOCACHE}" go run scripts/dsm/icon-gen.go -out "$DIST_DIR/icons"
 
 checksum_file() {
   if command -v md5sum >/dev/null 2>&1; then
@@ -56,12 +59,51 @@ build_spk() {
   spk_file="$DIST_DIR/${PACKAGE_NAME}-${VERSION}-${suffix}.spk"
 
   rm -rf "$work_dir" "$spk_file"
-  mkdir -p "$work_dir/scripts" "$work_dir/conf" "$work_dir/package" "$work_dir/WIZARD_UIFILES"
+  mkdir -p "$work_dir/scripts" "$work_dir/conf" "$work_dir/package/ui/images" "$work_dir/WIZARD_UIFILES"
 
   cp -R "$src_dir/." "$work_dir/package/"
+  mkdir -p "$work_dir/package/ui/images"
   cp "$DIST_DIR/icons/PACKAGE_ICON.PNG" "$work_dir/PACKAGE_ICON.PNG"
   cp "$DIST_DIR/icons/PACKAGE_ICON_256.PNG" "$work_dir/PACKAGE_ICON_256.PNG"
+  for icon_size in 16 24 32 48 64 72 256; do
+    cp "$DIST_DIR/icons/dsmpass_${icon_size}.png" "$work_dir/package/ui/images/dsmpass_${icon_size}.png"
+  done
   cp "$ROOT_DIR/LICENSE" "$work_dir/LICENSE"
+
+  cat > "$work_dir/package/ui/config" <<EOF
+{
+  ".url": {
+    "$DESKTOP_APP_ID": {
+      "type": "url",
+      "icon": "images/dsmpass_{0}.png",
+      "title": "$DISPLAY_NAME",
+      "desc": "$DESCRIPTION",
+      "url": "/webman/3rdparty/$PACKAGE_NAME/index.html"
+    }
+  }
+}
+EOF
+
+  cat > "$work_dir/package/ui/index.html" <<EOF
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>$DISPLAY_NAME</title>
+</head>
+<body>
+  <script>
+    (function () {
+      var host = window.location.hostname || "127.0.0.1";
+      if (host.indexOf(":") !== -1 && host.charAt(0) !== "[") {
+        host = "[" + host + "]";
+      }
+      window.location.replace("https://" + host + ":$DEFAULT_MANAGEMENT_PORT/");
+    })();
+  </script>
+</body>
+</html>
+EOF
 
   cat > "$work_dir/conf/privilege" <<'EOF'
 {
@@ -201,6 +243,49 @@ validate_listen_port() {
   fi
 }
 
+render_desktop_launcher() {
+  ui_index="$PKGDEST/ui/index.html"
+  [ -d "$PKGDEST/ui" ] || return 0
+  port=$(printf '%s\n' "${DSMPASS_GO_LISTEN##*:}" | tr -d '[]')
+  case "$port" in
+    ''|*[!0-9]*)
+      return 0
+      ;;
+  esac
+  protocol=https
+  case "${DSMPASS_TLS_ENABLED:-1}" in
+    0|false|FALSE|no|NO)
+      protocol=http
+      ;;
+  esac
+  tmp="$ui_index.tmp.$$"
+  if cat > "$tmp" <<EOF_LAUNCHER
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>DSM PASS</title>
+</head>
+<body>
+  <script>
+    (function () {
+      var host = window.location.hostname || "127.0.0.1";
+      if (host.indexOf(":") !== -1 && host.charAt(0) !== "[") {
+        host = "[" + host + "]";
+      }
+      window.location.replace("$protocol://" + host + ":$port/");
+    })();
+  </script>
+</body>
+</html>
+EOF_LAUNCHER
+  then
+    mv "$tmp" "$ui_index" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+}
+
 case "${1:-}" in
   start)
     mkdir -p "$PKGVAR/data" "$PKGVAR/data/tls" "$RUN_DIR/locks"
@@ -208,6 +293,7 @@ case "${1:-}" in
     chmod 770 "$RUN_DIR" "$RUN_DIR/locks" 2>/dev/null || true
     load_env
     validate_listen_port
+    render_desktop_launcher
     sync_installed_admin_port
     schedule_installed_admin_port_sync
     if is_running; then
@@ -240,6 +326,7 @@ case "${1:-}" in
     ;;
   status)
     load_env
+    render_desktop_launcher
     sync_installed_admin_port
     if is_running; then
       exit 0
@@ -272,6 +359,7 @@ PACKAGE_NAME="$PACKAGE_NAME"
 DEFAULT_MANAGEMENT_PORT="$DEFAULT_MANAGEMENT_PORT"
 EOF
   cat >> "$work_dir/scripts/postinst" <<'EOF'
+PKGDEST=${SYNOPKG_PKGDEST:-"/var/packages/$PACKAGE_NAME/target"}
 PKGVAR=${SYNOPKG_PKGVAR:-"/var/packages/$PACKAGE_NAME/var"}
 ENVFILE="$PKGVAR/dsmpass.env"
 INSTALL_LOG="$PKGVAR/dsmpass-install.log"
@@ -299,13 +387,26 @@ set_env_value() {
   fi
 }
 
+current_management_port() {
+  port=$(printf '%s\n' "${DSMPASS_GO_LISTEN:-}" | awk -F: '{print $NF}' | tr -d '[]')
+  case "$port" in
+    ''|*[!0-9]*)
+      printf '%s\n' "$management_port"
+      ;;
+    *)
+      printf '%s\n' "$port"
+      ;;
+  esac
+}
+
 sync_installed_admin_port() {
+  port=$(current_management_port)
   for info_file in "${SYNOPKG_PKGINFO:-}" "/var/packages/$PACKAGE_NAME/INFO"; do
     [ -n "$info_file" ] || continue
     [ -f "$info_file" ] || continue
     tmp="$info_file.tmp.$$"
     if grep -q '^adminport=' "$info_file"; then
-      sed "s|^adminport=.*|adminport=\"$management_port\"|" "$info_file" > "$tmp" || {
+      sed "s|^adminport=.*|adminport=\"$port\"|" "$info_file" > "$tmp" || {
         rm -f "$tmp"
         continue
       }
@@ -314,14 +415,14 @@ sync_installed_admin_port() {
         rm -f "$tmp"
         continue
       }
-      printf 'adminport="%s"\n' "$management_port" >> "$tmp" || {
+      printf 'adminport="%s"\n' "$port" >> "$tmp" || {
         rm -f "$tmp"
         continue
       }
     fi
     cat "$tmp" > "$info_file" || {
       rm -f "$tmp"
-      log_install_status "warning failed_to_update_adminport info=$info_file management_port=$management_port"
+      log_install_status "warning failed_to_update_adminport info=$info_file management_port=$port"
       continue
     }
     rm -f "$tmp"
@@ -329,6 +430,7 @@ sync_installed_admin_port() {
 }
 
 sync_installed_admin_port_later() {
+  port=$(current_management_port)
   nohup sh -c '
 package_name=$1
 port=$2
@@ -358,7 +460,50 @@ for delay in 1 2 3 5 8 13; do
   }
   rm -f "$tmp"
 done
-' sh "$PACKAGE_NAME" "$management_port" >/dev/null 2>&1 &
+' sh "$PACKAGE_NAME" "$port" >/dev/null 2>&1 &
+}
+
+render_desktop_launcher() {
+  ui_index="$PKGDEST/ui/index.html"
+  [ -d "$PKGDEST/ui" ] || return 0
+  port=$(current_management_port)
+  case "$port" in
+    ''|*[!0-9]*)
+      return 0
+      ;;
+  esac
+  protocol=https
+  case "${DSMPASS_TLS_ENABLED:-1}" in
+    0|false|FALSE|no|NO)
+      protocol=http
+      ;;
+  esac
+  tmp="$ui_index.tmp.$$"
+  if cat > "$tmp" <<EOF_LAUNCHER
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>DSM PASS</title>
+</head>
+<body>
+  <script>
+    (function () {
+      var host = window.location.hostname || "127.0.0.1";
+      if (host.indexOf(":") !== -1 && host.charAt(0) !== "[") {
+        host = "[" + host + "]";
+      }
+      window.location.replace("$protocol://" + host + ":$port/");
+    })();
+  </script>
+</body>
+</html>
+EOF_LAUNCHER
+  then
+    mv "$tmp" "$ui_index" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
 }
 
 case "$management_port" in
@@ -425,6 +570,8 @@ else
   chmod 600 "$ENVFILE"
 fi
 
+[ -f "$ENVFILE" ] && . "$ENVFILE"
+render_desktop_launcher
 sync_installed_admin_port
 sync_installed_admin_port_later
 log_install_status "install_or_upgrade_success management_port=$management_port provided=$management_port_was_provided"
@@ -567,6 +714,8 @@ support_url="$SUPPORT_URL"
 adminprotocol="https"
 adminport="$DEFAULT_MANAGEMENT_PORT"
 adminurl=""
+dsmuidir="ui"
+dsmappname="$DESKTOP_APP_ID"
 checkport="yes"
 precheckstartstop="yes"
 offline_install="yes"
