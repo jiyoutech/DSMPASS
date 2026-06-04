@@ -2,7 +2,7 @@
   "name": "dsmpass-frontend",
   "private": true,
   "description": "React management frontend for DSM Pass.",
-  "version": "0.8.42",
+  "version": "0.8.43",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
