@@ -294,9 +294,6 @@ function providerTypeLabel(providerType?: string | null) {
 const sourceFieldHelp = {
   displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到外部身份平台或 DSM。",
   providerType: "选择这个身份源连接的外部身份平台，用于登录和通讯录同步。",
-  clientID: "身份源应用的 App ID / Client ID，用于发起 OAuth 登录和调用通讯录接口。",
-  agentID: "企业微信自建应用的 Agent ID，用于构造企业微信 OAuth 授权链接。",
-  clientSecret: "身份源应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。",
   initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
   loginEnabled: "控制这个身份源是否允许用户通过外部身份平台登录 DSM。关闭后同步功能仍可单独使用。",
@@ -304,6 +301,87 @@ const sourceFieldHelp = {
   syncInterval: "自动同步间隔。0 表示不自动同步，只能手动点击同步。",
   disableMissingUsers: "同步时如果用户已不在身份源通讯录中，就禁用对应 DSM 用户登录。"
 };
+
+type ProviderCredentialText = {
+  clientIDLabel: string;
+  clientIDHelp: string;
+  clientIDExtra: string;
+  clientIDPlaceholder: string;
+  clientSecretLabel: string;
+  clientSecretHelp: string;
+  clientSecretExtra: string;
+  clientSecretPlaceholder: string;
+  agentIDLabel: string;
+  agentIDHelp: string;
+  agentIDExtra: string;
+  agentIDPlaceholder: string;
+};
+
+function providerCredentialText(providerType?: string | null, providerName?: string): ProviderCredentialText {
+  const label = providerName || providerTypeLabel(providerType);
+  switch (providerType) {
+    case "feishu":
+      return {
+        clientIDLabel: "飞书 App ID",
+        clientIDHelp: "飞书应用的 App ID，用于发起 OAuth 登录和读取通讯录。",
+        clientIDExtra: "位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientIDPlaceholder: "cli_xxx",
+        clientSecretLabel: "飞书 App Secret",
+        clientSecretHelp: "飞书应用的 App Secret，用于后端换取访问 token。留空保存会沿用旧密钥。",
+        clientSecretExtra: "位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientSecretPlaceholder: "请输入飞书 App Secret",
+        agentIDLabel: "飞书 Agent ID",
+        agentIDHelp: "飞书当前不需要 Agent ID。",
+        agentIDExtra: "",
+        agentIDPlaceholder: ""
+      };
+    case "wecom":
+      return {
+        clientIDLabel: "企业微信企业ID / CorpID",
+        clientIDHelp: "企业微信企业ID，用于 OAuth appid 和服务端 gettoken 的 corpid。",
+        clientIDExtra: "位置：企业微信管理后台 -> 我的企业 -> 企业信息 -> 企业ID。",
+        clientIDPlaceholder: "wwxxxxxxxxxxxxxxxx",
+        clientSecretLabel: "企业微信应用 Secret",
+        clientSecretHelp: "企业微信自建应用 Secret，用于后端换取 access_token。留空保存会沿用旧密钥。",
+        clientSecretExtra: "位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> Secret。",
+        clientSecretPlaceholder: "请输入企业微信应用 Secret",
+        agentIDLabel: "企业微信 AgentId",
+        agentIDHelp: "企业微信自建应用的 AgentId，用于构造 OAuth 授权链接。",
+        agentIDExtra: "位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
+        agentIDPlaceholder: "1000002"
+      };
+    case "dingtalk":
+      return {
+        clientIDLabel: "钉钉 AppKey",
+        clientIDHelp: "钉钉应用的 AppKey，用于登录和接口调用。",
+        clientIDExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientIDPlaceholder: "请输入钉钉 AppKey",
+        clientSecretLabel: "钉钉 AppSecret",
+        clientSecretHelp: "钉钉应用的 AppSecret，用于后端换取访问 token。留空保存会沿用旧密钥。",
+        clientSecretExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientSecretPlaceholder: "请输入钉钉 AppSecret",
+        agentIDLabel: "钉钉 AgentId",
+        agentIDHelp: "钉钉应用的 AgentId，用于构造钉钉应用访问入口。",
+        agentIDExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 应用信息。",
+        agentIDPlaceholder: "请输入钉钉 AgentId"
+      };
+    default:
+      return {
+        clientIDLabel: `${label} Client ID`,
+        clientIDHelp: `${label}应用的 Client ID，用于发起 OAuth 登录和调用通讯录接口。`,
+        clientIDExtra: `位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientIDPlaceholder: "请输入 Client ID",
+        clientSecretLabel: `${label} Client Secret`,
+        clientSecretHelp: `${label}应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。`,
+        clientSecretExtra: `位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientSecretPlaceholder: "请输入 Client Secret",
+        agentIDLabel: `${label} Agent ID`,
+        agentIDHelp: `${label}应用的 Agent ID。`,
+        agentIDExtra: `位置：进入${label}开发者后台，打开对应应用的应用信息页面。`,
+        agentIDPlaceholder: "请输入 Agent ID"
+      };
+  }
+}
 
 function helpLabel(label: string, help: string) {
   return <HelpLabel label={label} help={help} />;
@@ -746,6 +824,7 @@ function Providers({
   const providerTypeOptions = useMemo(() => providerTypeItems.map((item) => ({ label: item.display_name, value: item.type })), [providerTypeItems]);
   const selectedProviderType = Form.useWatch("provider_type", form) as string | undefined;
   const selectedProvider = providerTypeItems.find((item) => item.type === selectedProviderType);
+  const selectedProviderCredentialText = providerCredentialText(selectedProviderType, selectedProvider?.display_name);
   const canCreateSource = helperReady && !helperLoading;
 
   useEffect(() => {
@@ -839,7 +918,7 @@ function Providers({
           })}
           columns={[
             { title: "名称", dataIndex: "display_name" },
-            { title: "Provider", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? labelOf(value) },
+            { title: "平台", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? labelOf(value) },
             { title: "状态", dataIndex: "enabled", render: (value) => value ? <Tag color="success">运行中</Tag> : <Tag color="default">已暂停</Tag> },
             { title: "登录", dataIndex: "login_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
             { title: "同步", dataIndex: "directory_sync_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
@@ -874,21 +953,32 @@ function Providers({
             <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}>
               <Input />
             </Form.Item>
-            <Form.Item name={["config", "client_id"]} label={helpLabel("App ID", sourceFieldHelp.clientID)} rules={[{ required: selectedProvider?.requires_client_id }]}>
-              <Input />
+            <Form.Item
+              name={["config", "client_id"]}
+              label={helpLabel(selectedProviderCredentialText.clientIDLabel, selectedProviderCredentialText.clientIDHelp)}
+              extra={selectedProviderCredentialText.clientIDExtra}
+              rules={[{ required: selectedProvider?.requires_client_id }]}
+            >
+              <Input placeholder={selectedProviderCredentialText.clientIDPlaceholder} />
             </Form.Item>
             {selectedProvider?.requires_agent_id && (
               <Form.Item
                 name={["config", "agent_id"]}
-                label={helpLabel(`${selectedProvider.display_name} Agent ID`, sourceFieldHelp.agentID)}
+                label={helpLabel(selectedProviderCredentialText.agentIDLabel, selectedProviderCredentialText.agentIDHelp)}
+                extra={selectedProviderCredentialText.agentIDExtra}
                 preserve={false}
                 rules={[{ required: true }]}
               >
-                <Input />
+                <Input placeholder={selectedProviderCredentialText.agentIDPlaceholder} />
               </Form.Item>
             )}
-            <Form.Item name={["config", "client_secret"]} label={helpLabel("App Secret", sourceFieldHelp.clientSecret)} rules={[{ required: selectedProvider?.requires_secret }]}>
-              <Input.Password />
+            <Form.Item
+              name={["config", "client_secret"]}
+              label={helpLabel(selectedProviderCredentialText.clientSecretLabel, selectedProviderCredentialText.clientSecretHelp)}
+              extra={selectedProviderCredentialText.clientSecretExtra}
+              rules={[{ required: selectedProvider?.requires_secret }]}
+            >
+              <Input.Password placeholder={selectedProviderCredentialText.clientSecretPlaceholder} />
             </Form.Item>
             <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} initialValue="123456" rules={[{ required: true }]}>
               <Input.Password />
@@ -970,6 +1060,7 @@ function SourceDetail({
   const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
   const providerLabel = providerTypeLabel(source.provider_type);
   const sourceRequiresAgentID = source.provider_type === "wecom";
+  const sourceCredentialText = providerCredentialText(source.provider_type, providerLabel);
 
   useEffect(() => {
     setAccountPage(1);
@@ -1854,11 +1945,31 @@ function SourceDetail({
                   <Form form={form} layout="vertical" onFinish={(values) => void save(values)} disabled={saving}>
                     <div className="form-grid">
                       <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}><Input /></Form.Item>
-                      <Form.Item name={["config", "client_id"]} label={helpLabel(`${providerLabel} App ID`, sourceFieldHelp.clientID)} rules={[{ required: true }]}><Input /></Form.Item>
+                      <Form.Item
+                        name={["config", "client_id"]}
+                        label={helpLabel(sourceCredentialText.clientIDLabel, sourceCredentialText.clientIDHelp)}
+                        extra={sourceCredentialText.clientIDExtra}
+                        rules={[{ required: true }]}
+                      >
+                        <Input placeholder={sourceCredentialText.clientIDPlaceholder} />
+                      </Form.Item>
                       {sourceRequiresAgentID && (
-                        <Form.Item name={["config", "agent_id"]} label={helpLabel(`${providerLabel} Agent ID`, sourceFieldHelp.agentID)} rules={[{ required: true }]}><Input /></Form.Item>
+                        <Form.Item
+                          name={["config", "agent_id"]}
+                          label={helpLabel(sourceCredentialText.agentIDLabel, sourceCredentialText.agentIDHelp)}
+                          extra={sourceCredentialText.agentIDExtra}
+                          rules={[{ required: true }]}
+                        >
+                          <Input placeholder={sourceCredentialText.agentIDPlaceholder} />
+                        </Form.Item>
                       )}
-                      <Form.Item name={["config", "client_secret"]} label={helpLabel(`${providerLabel} App Secret`, sourceFieldHelp.clientSecret)}><Input.Password /></Form.Item>
+                      <Form.Item
+                        name={["config", "client_secret"]}
+                        label={helpLabel(sourceCredentialText.clientSecretLabel, sourceCredentialText.clientSecretHelp)}
+                        extra={sourceCredentialText.clientSecretExtra}
+                      >
+                        <Input.Password placeholder={sourceCredentialText.clientSecretPlaceholder} />
+                      </Form.Item>
                       <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} rules={[{ required: true }]}><Input.Password /></Form.Item>
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
