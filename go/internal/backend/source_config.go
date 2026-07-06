@@ -210,6 +210,7 @@ func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
 }
 
 func withSourceDefaultsForType(providerType string, config identitySourceConfig) identitySourceConfig {
+	config = trimSourceConfig(config)
 	config.PublicBaseURL = ""
 	switch providerType {
 	case "wecom":
@@ -291,29 +292,29 @@ func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConf
 
 func mergeSourceConfigForType(providerType string, existing, update identitySourceConfig) identitySourceConfig {
 	existing.PublicBaseURL = ""
-	if update.ClientID != "" {
-		existing.ClientID = update.ClientID
+	if value := strings.TrimSpace(update.ClientID); value != "" {
+		existing.ClientID = value
 	}
-	if update.AgentID != "" {
-		existing.AgentID = update.AgentID
+	if value := strings.TrimSpace(update.AgentID); value != "" {
+		existing.AgentID = value
 	}
-	if update.ClientSecret != "" {
-		existing.ClientSecret = update.ClientSecret
+	if value := strings.TrimSpace(update.ClientSecret); value != "" {
+		existing.ClientSecret = value
 	}
-	if update.AuthorizeURL != "" {
-		existing.AuthorizeURL = update.AuthorizeURL
+	if value := strings.TrimSpace(update.AuthorizeURL); value != "" {
+		existing.AuthorizeURL = value
 	}
-	if update.TokenURL != "" {
-		existing.TokenURL = update.TokenURL
+	if value := strings.TrimSpace(update.TokenURL); value != "" {
+		existing.TokenURL = value
 	}
-	if update.UserInfoURL != "" {
-		existing.UserInfoURL = update.UserInfoURL
+	if value := strings.TrimSpace(update.UserInfoURL); value != "" {
+		existing.UserInfoURL = value
 	}
-	if update.TenantTokenURL != "" {
-		existing.TenantTokenURL = update.TenantTokenURL
+	if value := strings.TrimSpace(update.TenantTokenURL); value != "" {
+		existing.TenantTokenURL = value
 	}
-	if update.ContactBaseURL != "" {
-		existing.ContactBaseURL = update.ContactBaseURL
+	if value := strings.TrimSpace(update.ContactBaseURL); value != "" {
+		existing.ContactBaseURL = value
 	}
 	if update.DirectoryPageSize > 0 {
 		existing.DirectoryPageSize = update.DirectoryPageSize
@@ -331,6 +332,19 @@ func mergeSourceConfigForType(providerType string, existing, update identitySour
 		existing.DeactivateMissingData = update.DeactivateMissingData
 	}
 	return withSourceDefaultsForType(providerType, existing)
+}
+
+func trimSourceConfig(config identitySourceConfig) identitySourceConfig {
+	config.ClientID = strings.TrimSpace(config.ClientID)
+	config.ClientSecret = strings.TrimSpace(config.ClientSecret)
+	config.AgentID = strings.TrimSpace(config.AgentID)
+	config.AuthorizeURL = strings.TrimSpace(config.AuthorizeURL)
+	config.TokenURL = strings.TrimSpace(config.TokenURL)
+	config.UserInfoURL = strings.TrimSpace(config.UserInfoURL)
+	config.TenantTokenURL = strings.TrimSpace(config.TenantTokenURL)
+	config.ContactBaseURL = strings.TrimSpace(config.ContactBaseURL)
+	config.InitialPassword = strings.TrimSpace(config.InitialPassword)
+	return config
 }
 
 func credentialsConfigured(providerType string, config identitySourceConfig) bool {
