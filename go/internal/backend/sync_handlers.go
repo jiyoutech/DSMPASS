@@ -185,7 +185,7 @@ func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) source
 	if err != nil {
 		return sourceSyncPolicy{DisableMissingUsers: false, DeactivateMissingData: true}
 	}
-	cfg := decodeSourceConfig(source.ConfigJSON)
+	cfg := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	return sourceSyncPolicy{
 		DisableMissingUsers:   boolValue(cfg.DisableMissingUsers, false),
 		DeactivateMissingData: boolValue(cfg.DeactivateMissingData, true),

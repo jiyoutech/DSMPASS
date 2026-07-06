@@ -69,10 +69,12 @@ export interface ProviderItem {
   login_url?: string;
   callback_url?: string;
   feishu_authorize_url?: string;
+  wecom_authorize_url?: string;
   builtin?: boolean;
   config?: {
     public_base_url?: string;
     client_id?: string;
+    agent_id?: string;
     client_secret_configured?: boolean;
     authorize_url?: string;
     token_url?: string;
@@ -94,6 +96,7 @@ export interface ProviderTypeItem {
   supports_sync: boolean;
   requires_client_id?: boolean;
   requires_secret?: boolean;
+  requires_agent_id?: boolean;
   supports_authorize?: boolean;
   supports_contact_api?: boolean;
 }
@@ -108,6 +111,7 @@ export interface ProviderUpsert {
   config?: {
     public_base_url?: string;
     client_id?: string;
+    agent_id?: string;
     client_secret?: string;
     authorize_url?: string;
     token_url?: string;

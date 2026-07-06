@@ -513,7 +513,7 @@ func (s *Server) initialPasswordForSource(ctx context.Context, sourceSlug string
 	if err != nil {
 		return defaultInitialPassword
 	}
-	password := strings.TrimSpace(decodeSourceConfig(source.ConfigJSON).InitialPassword)
+	password := strings.TrimSpace(decodeSourceConfigForType(source.ProviderType, source.ConfigJSON).InitialPassword)
 	if password == "" {
 		return defaultInitialPassword
 	}

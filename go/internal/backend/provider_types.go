@@ -31,6 +31,17 @@ func supportedProviderTypes() []gin.H {
 			"supports_authorize":   true,
 			"supports_contact_api": true,
 		},
+		{
+			"type":                 "wecom",
+			"display_name":         providerTypeDisplayName("wecom"),
+			"supports_login":       true,
+			"supports_sync":        true,
+			"requires_client_id":   true,
+			"requires_secret":      true,
+			"requires_agent_id":    true,
+			"supports_authorize":   true,
+			"supports_contact_api": true,
+		},
 	}
 }
 

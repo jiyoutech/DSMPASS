@@ -295,6 +295,7 @@ const sourceFieldHelp = {
   displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到外部身份平台或 DSM。",
   providerType: "选择这个身份源连接的外部身份平台，用于登录和通讯录同步。",
   clientID: "身份源应用的 App ID / Client ID，用于发起 OAuth 登录和调用通讯录接口。",
+  agentID: "企业微信自建应用的 Agent ID，用于构造企业微信 OAuth 授权链接。",
   clientSecret: "身份源应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。",
   initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
@@ -876,6 +877,16 @@ function Providers({
             <Form.Item name={["config", "client_id"]} label={helpLabel("App ID", sourceFieldHelp.clientID)} rules={[{ required: selectedProvider?.requires_client_id }]}>
               <Input />
             </Form.Item>
+            {selectedProvider?.requires_agent_id && (
+              <Form.Item
+                name={["config", "agent_id"]}
+                label={helpLabel(`${selectedProvider.display_name} Agent ID`, sourceFieldHelp.agentID)}
+                preserve={false}
+                rules={[{ required: true }]}
+              >
+                <Input />
+              </Form.Item>
+            )}
             <Form.Item name={["config", "client_secret"]} label={helpLabel("App Secret", sourceFieldHelp.clientSecret)} rules={[{ required: selectedProvider?.requires_secret }]}>
               <Input.Password />
             </Form.Item>
@@ -958,6 +969,7 @@ function SourceDetail({
   const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug, { q: syncLogQuery, status: syncStatusFilter, page: syncLogPage, limit: sourceTablePageSize }), [source.slug, syncLogQuery, syncStatusFilter, syncLogPage]);
   const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
   const providerLabel = providerTypeLabel(source.provider_type);
+  const sourceRequiresAgentID = source.provider_type === "wecom";
 
   useEffect(() => {
     setAccountPage(1);
@@ -983,6 +995,7 @@ function SourceDetail({
       directory_sync_enabled: source.directory_sync_enabled,
       config: {
         client_id: source.config?.client_id,
+        agent_id: source.config?.agent_id,
         sync_interval_minutes: source.config?.sync_interval_minutes ?? 0,
         disable_missing_users: source.config?.disable_missing_users ?? true,
         deactivate_missing_data: source.config?.deactivate_missing_data ?? true,
@@ -1842,6 +1855,9 @@ function SourceDetail({
                     <div className="form-grid">
                       <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}><Input /></Form.Item>
                       <Form.Item name={["config", "client_id"]} label={helpLabel(`${providerLabel} App ID`, sourceFieldHelp.clientID)} rules={[{ required: true }]}><Input /></Form.Item>
+                      {sourceRequiresAgentID && (
+                        <Form.Item name={["config", "agent_id"]} label={helpLabel(`${providerLabel} Agent ID`, sourceFieldHelp.agentID)} rules={[{ required: true }]}><Input /></Form.Item>
+                      )}
                       <Form.Item name={["config", "client_secret"]} label={helpLabel(`${providerLabel} App Secret`, sourceFieldHelp.clientSecret)}><Input.Password /></Form.Item>
                       <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} rules={[{ required: true }]}><Input.Password /></Form.Item>
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>

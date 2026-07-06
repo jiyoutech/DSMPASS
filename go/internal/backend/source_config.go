@@ -17,6 +17,7 @@ type identitySourceConfig struct {
 	PublicBaseURL         string `json:"public_base_url"`
 	ClientID              string `json:"client_id"`
 	ClientSecret          string `json:"client_secret,omitempty"`
+	AgentID               string `json:"agent_id"`
 	AuthorizeURL          string `json:"authorize_url"`
 	TokenURL              string `json:"token_url"`
 	UserInfoURL           string `json:"user_info_url"`
@@ -47,7 +48,9 @@ func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
 func (s *Server) directoryProviderForSource(source db.IdentitySource) (provider.Directory, bool) {
 	switch source.ProviderType {
 	case "feishu":
-		return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
+		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
+	case "wecom":
+		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
 	default:
 		return nil, false
 	}
@@ -56,7 +59,9 @@ func (s *Server) directoryProviderForSource(source db.IdentitySource) (provider.
 func (s *Server) oauthProviderForSource(source db.IdentitySource) (provider.OAuth, bool) {
 	switch source.ProviderType {
 	case "feishu":
-		return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
+		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
+	case "wecom":
+		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
 	default:
 		return nil, false
 	}
@@ -80,9 +85,9 @@ WHERE slug = ?`, slug)
 	return source, err
 }
 
-func (s *Server) configForSource(source db.IdentitySource) config.BackendConfig {
+func (s *Server) feishuConfigForSource(source db.IdentitySource) config.BackendConfig {
 	cfg := s.cfg
-	sourceConfig := withSourceDefaults(decodeSourceConfig(source.ConfigJSON))
+	sourceConfig := decodeSourceConfigForType("feishu", source.ConfigJSON)
 	cfg.FeishuEnabled = source.Enabled == 1
 	cfg.PublicBaseURL = strings.TrimRight(s.cfg.PublicBaseURL, "/")
 	cfg.FeishuClientID = sourceConfig.ClientID
@@ -96,6 +101,20 @@ func (s *Server) configForSource(source db.IdentitySource) config.BackendConfig 
 	return cfg
 }
 
+func (s *Server) weComConfigForSource(source db.IdentitySource) provider.WeComConfig {
+	sourceConfig := decodeSourceConfigForType("wecom", source.ConfigJSON)
+	return provider.WeComConfig{
+		CorpID:            sourceConfig.ClientID,
+		CorpSecret:        sourceConfig.ClientSecret,
+		AgentID:           sourceConfig.AgentID,
+		AuthorizeURL:      sourceConfig.AuthorizeURL,
+		TokenURL:          sourceConfig.TokenURL,
+		UserInfoURL:       sourceConfig.UserInfoURL,
+		ContactBaseURL:    sourceConfig.ContactBaseURL,
+		DirectoryPageSize: sourceConfig.DirectoryPageSize,
+	}
+}
+
 func feishuAuthorizePreviewURL(clientID, redirectURI string) string {
 	values := url.Values{}
 	values.Set("client_id", clientID)
@@ -104,27 +123,45 @@ func feishuAuthorizePreviewURL(clientID, redirectURI string) string {
 	return "https://accounts.feishu.cn/open-apis/authen/v1/authorize?" + values.Encode()
 }
 
+func weComAuthorizePreviewURL(corpID, agentID, redirectURI string) string {
+	values := url.Values{}
+	values.Set("appid", corpID)
+	values.Set("redirect_uri", redirectURI)
+	values.Set("response_type", "code")
+	values.Set("scope", "snsapi_base")
+	if strings.TrimSpace(agentID) != "" {
+		values.Set("agentid", agentID)
+	}
+	return "https://open.weixin.qq.com/connect/oauth2/authorize?" + values.Encode() + "#wechat_redirect"
+}
+
 func sourceResponse(source db.IdentitySource, config identitySourceConfig, publicBaseURL string) gin.H {
 	publicBaseURL = strings.TrimRight(publicBaseURL, "/")
 	config.PublicBaseURL = ""
 	loginPath := "/idp/" + source.Slug + "/launch"
 	callbackPath := "/idp/" + source.Slug + "/callback"
 	callbackURL := strings.TrimRight(publicBaseURL, "/") + callbackPath
-	return gin.H{
+	response := gin.H{
 		"slug":                   source.Slug,
 		"provider_type":          source.ProviderType,
 		"display_name":           source.DisplayName,
 		"enabled":                source.Enabled == 1,
 		"login_enabled":          source.LoginEnabled == 1,
 		"directory_sync_enabled": source.DirectorySyncEnabled == 1,
-		"credentials_configured": config.ClientID != "" && config.ClientSecret != "",
+		"credentials_configured": credentialsConfigured(source.ProviderType, config),
 		"config":                 publicSourceConfig(config),
 		"created_at":             source.CreatedAt,
 		"updated_at":             source.UpdatedAt,
 		"login_url":              publicBaseURL + loginPath,
 		"callback_url":           callbackURL,
-		"feishu_authorize_url":   feishuAuthorizePreviewURL(config.ClientID, callbackURL),
 	}
+	switch source.ProviderType {
+	case "feishu":
+		response["feishu_authorize_url"] = feishuAuthorizePreviewURL(config.ClientID, callbackURL)
+	case "wecom":
+		response["wecom_authorize_url"] = weComAuthorizePreviewURL(config.ClientID, config.AgentID, callbackURL)
+	}
+	return response
 }
 
 func (s *Server) CleanupIdentitySourcePublicBaseURLs(ctx context.Context) error {
@@ -169,21 +206,41 @@ func (s *Server) CleanupIdentitySourcePublicBaseURLs(ctx context.Context) error 
 }
 
 func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
+	return withSourceDefaultsForType("feishu", config)
+}
+
+func withSourceDefaultsForType(providerType string, config identitySourceConfig) identitySourceConfig {
 	config.PublicBaseURL = ""
-	if config.AuthorizeURL == "" || config.AuthorizeURL == "https://open.feishu.cn/open-apis/authen/v1/index" {
-		config.AuthorizeURL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-	}
-	if config.TokenURL == "" {
-		config.TokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-	}
-	if config.UserInfoURL == "" {
-		config.UserInfoURL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
-	}
-	if config.TenantTokenURL == "" {
-		config.TenantTokenURL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-	}
-	if config.ContactBaseURL == "" {
-		config.ContactBaseURL = "https://open.feishu.cn/open-apis/contact/v3"
+	switch providerType {
+	case "wecom":
+		if config.AuthorizeURL == "" {
+			config.AuthorizeURL = "https://open.weixin.qq.com/connect/oauth2/authorize"
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo"
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = "https://qyapi.weixin.qq.com/cgi-bin"
+		}
+	default:
+		if config.AuthorizeURL == "" || config.AuthorizeURL == "https://open.feishu.cn/open-apis/authen/v1/index" {
+			config.AuthorizeURL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
+		}
+		if config.TenantTokenURL == "" {
+			config.TenantTokenURL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = "https://open.feishu.cn/open-apis/contact/v3"
+		}
 	}
 	if config.DirectoryPageSize <= 0 {
 		config.DirectoryPageSize = 50
@@ -201,14 +258,19 @@ func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
 }
 
 func decodeSourceConfig(raw string) identitySourceConfig {
+	return decodeSourceConfigForType("feishu", raw)
+}
+
+func decodeSourceConfigForType(providerType, raw string) identitySourceConfig {
 	var config identitySourceConfig
 	_ = json.Unmarshal([]byte(raw), &config)
-	return withSourceDefaults(config)
+	return withSourceDefaultsForType(providerType, config)
 }
 
 func publicSourceConfig(config identitySourceConfig) gin.H {
 	return gin.H{
 		"client_id":                config.ClientID,
+		"agent_id":                 config.AgentID,
 		"client_secret_configured": config.ClientSecret != "",
 		"authorize_url":            config.AuthorizeURL,
 		"token_url":                config.TokenURL,
@@ -224,9 +286,16 @@ func publicSourceConfig(config identitySourceConfig) gin.H {
 }
 
 func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConfig {
+	return mergeSourceConfigForType("feishu", existing, update)
+}
+
+func mergeSourceConfigForType(providerType string, existing, update identitySourceConfig) identitySourceConfig {
 	existing.PublicBaseURL = ""
 	if update.ClientID != "" {
 		existing.ClientID = update.ClientID
+	}
+	if update.AgentID != "" {
+		existing.AgentID = update.AgentID
 	}
 	if update.ClientSecret != "" {
 		existing.ClientSecret = update.ClientSecret
@@ -261,7 +330,17 @@ func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConf
 	if update.DeactivateMissingData != nil {
 		existing.DeactivateMissingData = update.DeactivateMissingData
 	}
-	return withSourceDefaults(existing)
+	return withSourceDefaultsForType(providerType, existing)
+}
+
+func credentialsConfigured(providerType string, config identitySourceConfig) bool {
+	if strings.TrimSpace(config.ClientID) == "" || strings.TrimSpace(config.ClientSecret) == "" {
+		return false
+	}
+	if providerType == "wecom" {
+		return strings.TrimSpace(config.AgentID) != ""
+	}
+	return true
 }
 
 func boolPointer(value bool) *bool {

@@ -670,6 +670,72 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"wecom","display_name":"企业微信","config":{"client_id":"wwcorp","client_secret":"secret"}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		Slug                  string `json:"slug"`
+		ProviderType          string `json:"provider_type"`
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		WeComAuthorizeURL     string `json:"wecom_authorize_url"`
+		Config                struct {
+			AgentID  string `json:"agent_id"`
+			TokenURL string `json:"token_url"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ProviderType != "wecom" || created.CredentialsConfigured {
+		t.Fatalf("wecom without agent_id should not be fully configured: %#v", created)
+	}
+	if created.Config.TokenURL != "https://qyapi.weixin.qq.com/cgi-bin/gettoken" {
+		t.Fatalf("unexpected wecom token URL: %s", created.Config.TokenURL)
+	}
+	if !strings.Contains(created.WeComAuthorizeURL, "appid=wwcorp") || strings.Contains(created.WeComAuthorizeURL, "agentid=") {
+		t.Fatalf("unexpected authorize URL without agent_id: %s", created.WeComAuthorizeURL)
+	}
+
+	updateResponse := httptest.NewRecorder()
+	updateRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"agent_id":"1000002"}}`))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(updateResponse, updateRequest)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update provider got %d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+	var updated struct {
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		WeComAuthorizeURL     string `json:"wecom_authorize_url"`
+		Config                struct {
+			AgentID string `json:"agent_id"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(updateResponse.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.CredentialsConfigured || updated.Config.AgentID != "1000002" || !strings.Contains(updated.WeComAuthorizeURL, "agentid=1000002") {
+		t.Fatalf("wecom with agent_id should be fully configured: %#v", updated)
+	}
+}
+
 func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	cfg := config.BackendConfig{
 		Listen:            "0.0.0.0:25000",

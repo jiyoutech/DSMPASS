@@ -238,6 +238,14 @@ docs: add wecom and dingtalk setup guides
 scripts/test.sh docs
 ```
 
+## 当前进展
+
+- PR 1 泛化 OAuth 身份源框架已完成，当前分支提交为 `9c1409b refactor: generalize oauth identity providers`。
+- PR 2 企业微信 provider 已进入实现阶段：后端已新增 `wecom` provider、provider-aware 配置默认值、企业微信凭据完整性判断、OAuth 登录、部门/用户/成员同步和错误提示；前端已支持企业微信 `Agent ID` 配置项。
+- 企业微信真实联调需要管理员在企业微信后台准备 `CorpID`、自建应用 `Agent ID`、应用 Secret、可信域名/OAuth 回调域名，以及 DSMPASS 后端出口公网 IP 的可信 IP 配置。
+- mock 单元测试覆盖授权 URL、code 换 UserId、部门路径、用户多部门合并和可信 IP 错误提示。真实联调通过前，不应宣称企业微信生产配置已验证完成。
+- 钉钉 provider 尚未开始实现。
+
 ## 执行顺序
 
 1. 先做 PR 1，确保飞书行为不变，并降低后续 provider 复制登录中继逻辑的风险。

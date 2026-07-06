@@ -28,7 +28,7 @@ ORDER BY created_at`)
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 			return
 		}
-		config := decodeSourceConfig(source.ConfigJSON)
+		config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 		items = append(items, sourceResponse(source, config, s.trustedPublicBaseURL()))
 	}
 	if rows.Err() != nil {
@@ -72,7 +72,7 @@ func (s *Server) createProvider(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "unsupported provider type"})
 		return
 	}
-	config := withSourceDefaults(payload.Config)
+	config := withSourceDefaultsForType(payload.ProviderType, payload.Config)
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
@@ -115,9 +115,9 @@ func (s *Server) updateProvider(c *gin.Context) {
 	if payload.DisplayName != nil && strings.TrimSpace(*payload.DisplayName) != "" {
 		displayName = strings.TrimSpace(*payload.DisplayName)
 	}
-	config := decodeSourceConfig(source.ConfigJSON)
+	config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	if payload.Config != nil {
-		config = mergeSourceConfig(config, *payload.Config)
+		config = mergeSourceConfigForType(source.ProviderType, config, *payload.Config)
 	}
 	configJSON, _ := json.Marshal(config)
 	_, err = s.store.DBTX().ExecContext(c.Request.Context(), `
@@ -261,5 +261,5 @@ func (s *Server) getProvider(c *gin.Context, slug string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, sourceResponse(source, decodeSourceConfig(source.ConfigJSON), s.trustedPublicBaseURL()))
+	c.JSON(http.StatusOK, sourceResponse(source, decodeSourceConfigForType(source.ProviderType, source.ConfigJSON), s.trustedPublicBaseURL()))
 }
