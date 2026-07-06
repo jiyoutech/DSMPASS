@@ -44,7 +44,8 @@ const actionLabels: Record<string, string> = {
   ensure_group_member: "准备成员关系",
   update_external_account: "更新外部账号",
   update_provider_group: "更新部门",
-  resolve_group_conflicts: "处理部门冲突"
+  resolve_group_conflicts: "处理部门冲突",
+  directory_warning: "同步提示"
 };
 
 export function labelOf(value: unknown) {
@@ -57,9 +58,11 @@ export function statusTag(status: ProvisionStatus) {
     status === "created" || status === "linked_existing"
       ? "success"
       : status === "pending"
-        ? "processing"
-        : status === "conflict"
-          ? "error"
+      ? "processing"
+      : status === "conflict"
+        ? "error"
+        : status === "warning"
+          ? "warning"
           : "default";
   return <Tag color={color}>{labelOf(status)}</Tag>;
 }

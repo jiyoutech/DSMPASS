@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -150,6 +151,82 @@ func TestWeComListUsersMergesDepartmentIDs(t *testing.T) {
 	}
 	if got := strings.Join(user.DepartmentSubjects, ","); got != "1,2" {
 		t.Fatalf("DepartmentSubjects got %q", got)
+	}
+}
+
+func TestWeComListUsersFallsBackToVisibleUserIDsWhenDepartmentsEmpty(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	var listIDCalled bool
+	getCalls := map[string]int{}
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 0, "department": []map[string]any{}}, http.StatusOK
+		case "/cgi-bin/user/list_id":
+			if r.Method != http.MethodPost {
+				t.Fatalf("list_id method got %s", r.Method)
+			}
+			if r.URL.Query().Get("access_token") != "access-token" {
+				t.Fatalf("unexpected list_id query: %s", r.URL.RawQuery)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["limit"] != float64(50) {
+				t.Fatalf("list_id limit got %#v", body["limit"])
+			}
+			listIDCalled = true
+			return map[string]any{"errcode": 0, "dept_user": []map[string]any{
+				{"userid": "mas", "department": 1},
+				{"userid": "meikle", "department": 2},
+			}}, http.StatusOK
+		case "/cgi-bin/user/get":
+			userID := r.URL.Query().Get("userid")
+			getCalls[userID]++
+			switch userID {
+			case "mas":
+				return map[string]any{"errcode": 0, "userid": "mas", "name": "马少云", "email": "ma@example.com", "status": float64(1)}, http.StatusOK
+			case "meikle":
+				return map[string]any{"errcode": 0, "userid": "meikle", "name": "Meikle Hong", "mobile": "13800000000", "status": float64(1)}, http.StatusOK
+			default:
+				return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+			}
+		case "/cgi-bin/user/list":
+			t.Fatal("department user list should not be called when departments are empty")
+		}
+		return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+	})}
+
+	users, err := wecom.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listIDCalled {
+		t.Fatal("expected list_id fallback")
+	}
+	if len(users) != 2 {
+		t.Fatalf("users length got %d", len(users))
+	}
+	bySubject := map[string]User{}
+	for _, user := range users {
+		bySubject[user.Subject] = user
+	}
+	if bySubject["mas"].DisplayName != "马少云" || strings.Join(bySubject["mas"].DepartmentSubjects, ",") != "1" {
+		t.Fatalf("unexpected mas user: %#v", bySubject["mas"])
+	}
+	if bySubject["meikle"].DisplayName != "Meikle Hong" || strings.Join(bySubject["meikle"].DepartmentSubjects, ",") != "2" {
+		t.Fatalf("unexpected meikle user: %#v", bySubject["meikle"])
+	}
+	if getCalls["mas"] != 1 || getCalls["meikle"] != 1 {
+		t.Fatalf("unexpected get calls: %#v", getCalls)
 	}
 }
 

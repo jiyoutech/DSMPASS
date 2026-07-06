@@ -1183,6 +1183,10 @@ function SourceDetail({
     return !activeOperation || activeOperation.run.status === "running";
   }
 
+  function operationDisplaysError() {
+    return (operationModalOpen || conflictModalOpen) && (activeOperation?.run.status === "failed" || activeOperation?.run.status === "fail");
+  }
+
   function operationOkText() {
     if (!operationStarted && operationModalAction === "sync") {
       return "同步";
@@ -1728,7 +1732,7 @@ function SourceDetail({
           </Space>
         }
       />
-      {syncError && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
       <Modal
         title={operationModalTitle}
         open={operationModalOpen}
@@ -2184,6 +2188,7 @@ function SourceDetail({
                         { label: "成功", value: "success" },
                         { label: "失败", value: "failed" },
                         { label: "阻断", value: "blocked" },
+                        { label: "提示", value: "warning" },
                         { label: "待处理", value: "pending" }
                       ]}
                     />
@@ -2202,7 +2207,12 @@ function SourceDetail({
                             <span>同步批次</span><strong>{record.sync_run_id}</strong>
                             <span>结果</span><strong>{record.status}</strong>
                           </div>
-                          <LogBlock title="错误内容" value={record.error} empty="无错误" tone="danger" />
+                          <LogBlock
+                            title={record.status === "warning" ? "提示内容" : "错误内容"}
+                            value={record.error}
+                            empty={record.status === "warning" ? "无提示" : "无错误"}
+                            tone={record.status === "warning" ? undefined : "danger"}
+                          />
                         </div>
                       )
                     }}

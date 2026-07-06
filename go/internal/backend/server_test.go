@@ -1877,17 +1877,21 @@ func TestLogDirectoryLinkPlanRecordsCrossSourceLinks(t *testing.T) {
 	server.logDirectoryLinkPlan(ctx, "sync-a", "source-b", []syncsvc.PlanItem{
 		{Action: "link_existing_dsm_user", Subject: "user-b", DSMUsername: "alice"},
 		{Action: "link_existing_dsm_group", Subject: "group-b", DSMGroupname: "engineering"},
+		{Action: "directory_warning", Subject: "source-b", DisplayName: "只同步用户，没有部门组"},
 	})
 
-	var userLinks, groupLinks int
+	var userLinks, groupLinks, warnings int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_user' AND status = 'success' AND error LIKE '%跨身份源同名用户%'`).Scan(&userLinks); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_group' AND status = 'success' AND error LIKE '%跨身份源同名部门%'`).Scan(&groupLinks); err != nil {
 		t.Fatal(err)
 	}
-	if userLinks != 1 || groupLinks != 1 {
-		t.Fatalf("expected cross-source link logs, got user=%d group=%d", userLinks, groupLinks)
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'directory_warning' AND status = 'warning' AND object_type = 'identity_source' AND error LIKE '%只同步用户%'`).Scan(&warnings); err != nil {
+		t.Fatal(err)
+	}
+	if userLinks != 1 || groupLinks != 1 || warnings != 1 {
+		t.Fatalf("expected link and warning logs, got user=%d group=%d warning=%d", userLinks, groupLinks, warnings)
 	}
 }
 

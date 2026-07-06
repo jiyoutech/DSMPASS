@@ -55,6 +55,35 @@ func TestSyncProviderReturnsWeComHintWhenDirectoryIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSyncProviderAddsWarningWhenOnlyUsersReturned(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	result, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+		slug:  "wecom-main",
+		name:  "企业微信",
+		users: []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warning string
+	for _, item := range result.Items {
+		if item.Action == "directory_warning" {
+			warning = item.DisplayName
+			break
+		}
+	}
+	for _, want := range []string{"成员 ID 列表", "已同步用户", "不会创建 DSM 部门组"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("warning %q missing %q", warning, want)
+		}
+	}
+	assertTableCount(t, ctx, database, "external_accounts", 1)
+	assertTableCount(t, ctx, database, "provider_groups", 0)
+}
+
 func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)

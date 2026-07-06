@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -152,6 +153,12 @@ func (s *Server) logDirectoryLinkPlanWithBuffer(buffer *syncLogBuffer, runID, so
 			s.writeSyncOperation(buffer, runID, sourceSlug, "user", item.Subject, item.DSMUsername, item.Action, "success", "unlinked", "linked_existing", "跨身份源同名用户，自动按同一人关联")
 		case "link_existing_dsm_group":
 			s.writeSyncOperation(buffer, runID, sourceSlug, "group", item.Subject, item.DSMGroupname, item.Action, "success", "unlinked", "linked_existing", "跨身份源同名部门，自动按同一部门关联")
+		case "directory_warning":
+			message := strings.TrimSpace(item.DisplayName)
+			if message == "" {
+				message = "身份源同步提示"
+			}
+			s.writeSyncOperation(buffer, runID, sourceSlug, "identity_source", item.Subject, "", item.Action, "warning", "", "warning", message)
 		}
 	}
 }

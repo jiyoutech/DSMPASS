@@ -120,6 +120,15 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if len(users) == 0 && len(groups) == 0 {
 		return result, emptyDirectoryError(providerName)
 	}
+	if len(users) > 0 && len(groups) == 0 {
+		result.Items = append(result.Items, PlanItem{
+			Action:          "directory_warning",
+			ProviderSlug:    directory.Slug(),
+			Subject:         directory.Slug(),
+			DisplayName:     userOnlyDirectoryWarning(providerName),
+			ProvisionStatus: "warning",
+		})
+	}
 	e.report("写入部门映射", 0, len(groups), "正在写入部门映射")
 	duplicateGroupSubjects := duplicateGroupSubjects(groups)
 	groups = disambiguateDuplicateGroupNames(groups)
@@ -255,6 +264,13 @@ func emptyDirectoryError(providerName string) error {
 		return fmt.Errorf("%s通讯录没有返回任何部门或用户。请确认企业微信自建应用的可见范围包含至少一个有成员的部门；如果只在可见范围里单独指定成员，当前通讯录同步无法通过部门接口读取这些成员。还需确认应用具备读取通讯录的接口权限", providerName)
 	}
 	return fmt.Errorf("%s通讯录没有返回任何用户或部门，请检查应用可见范围、通讯录权限和同步配置", providerName)
+}
+
+func userOnlyDirectoryWarning(providerName string) string {
+	if providerName == "企业微信" {
+		return "企业微信通讯录没有返回部门，但通过成员 ID 列表读取到用户；已同步用户，不会创建 DSM 部门组或部门成员关系。如需同步部门组，请在企业微信自建应用可见范围加入至少一个有成员的部门"
+	}
+	return fmt.Sprintf("%s通讯录只返回用户，没有返回部门；已同步用户，不会创建 DSM 部门组或部门成员关系", providerName)
 }
 
 func (e *Engine) report(phase string, current, total int, message string) {

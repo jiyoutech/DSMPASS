@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,6 +140,13 @@ func (w WeCom) ListUsers() ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(groups) == 0 {
+		return w.visibleUsers(token)
+	}
+	return w.usersFromGroups(token, groups)
+}
+
+func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
 	for _, group := range groups {
 		items, err := w.departmentUsers(token, group.Subject)
@@ -146,42 +154,87 @@ func (w WeCom) ListUsers() ([]User, error) {
 			return nil, err
 		}
 		for _, raw := range items {
-			subject, subjectType := weComUserSubject(raw)
-			if subject == "" {
-				continue
-			}
-			displayName := userDisplayName(raw)
-			if displayName == "" {
-				displayName = subject
-			}
-			departmentSubjects := uniqueStrings(firstStringishSlice(raw, "department", "department_ids", "departments"))
-			if len(departmentSubjects) == 0 {
-				departmentSubjects = []string{group.Subject}
-			}
-			existing := usersBySubject[subject]
-			user := User{
-				ProviderSlug: w.slug,
-				Subject:      subject,
-				SubjectType:  subjectType,
-				DisplayName:  displayName,
-				Email:        firstString(raw, "email", "biz_mail"),
-				Mobile:       firstString(raw, "mobile"),
-				Active:       weComUserActive(raw),
-			}
-			if existing.Subject != "" {
-				user.DepartmentSubjects = uniqueStrings(append(existing.DepartmentSubjects, departmentSubjects...))
-				user.Active = existing.Active || user.Active
-			} else {
-				user.DepartmentSubjects = departmentSubjects
-			}
-			usersBySubject[subject] = user
+			w.upsertUserFromRaw(usersBySubject, raw, []string{group.Subject})
 		}
 	}
+	return usersFromMap(usersBySubject), nil
+}
+
+func (w WeCom) visibleUsers(token string) ([]User, error) {
+	items, err := w.visibleUserIDs(token)
+	if err != nil {
+		return nil, err
+	}
+	departmentsByUser := map[string][]string{}
+	userIDs := make([]string, 0, len(items))
+	for _, raw := range items {
+		userID := firstStringish(raw, "userid", "UserId", "user_id")
+		if userID == "" {
+			continue
+		}
+		if _, ok := departmentsByUser[userID]; !ok {
+			userIDs = append(userIDs, userID)
+		}
+		departments := uniqueStrings(firstStringishSlice(raw, "department", "department_id", "department_ids", "departments"))
+		if len(departments) == 0 {
+			if department := firstStringish(raw, "department", "department_id"); department != "" {
+				departments = []string{department}
+			}
+		}
+		departmentsByUser[userID] = uniqueStrings(append(departmentsByUser[userID], departments...))
+	}
+	usersBySubject := map[string]User{}
+	for _, userID := range userIDs {
+		raw, err := w.user(token, userID)
+		if err != nil {
+			return nil, err
+		}
+		if firstStringish(raw, "userid", "UserId", "user_id") == "" {
+			raw["userid"] = userID
+		}
+		w.upsertUserFromRaw(usersBySubject, raw, departmentsByUser[userID])
+	}
+	return usersFromMap(usersBySubject), nil
+}
+
+func (w WeCom) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string) {
+	subject, subjectType := weComUserSubject(raw)
+	if subject == "" {
+		return
+	}
+	displayName := userDisplayName(raw)
+	if displayName == "" {
+		displayName = subject
+	}
+	departmentSubjects := uniqueStrings(firstStringishSlice(raw, "department", "department_ids", "departments"))
+	if len(departmentSubjects) == 0 {
+		departmentSubjects = uniqueStrings(fallbackDepartments)
+	}
+	existing := usersBySubject[subject]
+	user := User{
+		ProviderSlug: w.slug,
+		Subject:      subject,
+		SubjectType:  subjectType,
+		DisplayName:  displayName,
+		Email:        firstString(raw, "email", "biz_mail"),
+		Mobile:       firstString(raw, "mobile"),
+		Active:       weComUserActive(raw),
+	}
+	if existing.Subject != "" {
+		user.DepartmentSubjects = uniqueStrings(append(existing.DepartmentSubjects, departmentSubjects...))
+		user.Active = existing.Active || user.Active
+	} else {
+		user.DepartmentSubjects = departmentSubjects
+	}
+	usersBySubject[subject] = user
+}
+
+func usersFromMap(usersBySubject map[string]User) []User {
 	users := make([]User, 0, len(usersBySubject))
 	for _, user := range usersBySubject {
 		users = append(users, user)
 	}
-	return users, nil
+	return users
 }
 
 func (w WeCom) ListGroups() ([]Group, error) {
@@ -291,6 +344,57 @@ func (w WeCom) departmentUsers(token, departmentID string) ([]map[string]any, er
 	return mapItems(out, "userlist"), nil
 }
 
+func (w WeCom) visibleUserIDs(token string) ([]map[string]any, error) {
+	endpoint := withQuery(strings.TrimRight(w.cfg.ContactBaseURL, "/")+"/user/list_id", map[string]string{
+		"access_token": token,
+	})
+	var all []map[string]any
+	seenCursors := map[string]bool{}
+	cursor := ""
+	for {
+		body := map[string]any{"limit": w.pageLimit()}
+		if cursor != "" {
+			body["cursor"] = cursor
+		}
+		var out map[string]any
+		if err := w.postJSON(endpoint, body, &out); err != nil {
+			return nil, err
+		}
+		all = append(all, mapItems(out, "dept_user")...)
+		nextCursor := strings.TrimSpace(firstStringish(out, "next_cursor"))
+		if nextCursor == "" {
+			return all, nil
+		}
+		if seenCursors[nextCursor] {
+			return nil, errors.New("企业微信成员 ID 列表分页游标重复，请稍后重试")
+		}
+		seenCursors[nextCursor] = true
+		cursor = nextCursor
+	}
+}
+
+func (w WeCom) user(token, userID string) (map[string]any, error) {
+	endpoint := withQuery(strings.TrimRight(w.cfg.ContactBaseURL, "/")+"/user/get", map[string]string{
+		"access_token": token,
+		"userid":       userID,
+	})
+	var out map[string]any
+	if err := w.getJSON(endpoint, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (w WeCom) pageLimit() int {
+	if w.cfg.DirectoryPageSize <= 0 {
+		return 50
+	}
+	if w.cfg.DirectoryPageSize > 10000 {
+		return 10000
+	}
+	return w.cfg.DirectoryPageSize
+}
+
 func (w WeCom) accessToken() (string, error) {
 	endpoint := withQuery(w.cfg.TokenURL, map[string]string{
 		"corpid":     w.cfg.CorpID,
@@ -311,6 +415,24 @@ func (w WeCom) getJSON(endpoint string, out any) error {
 	if err != nil {
 		return err
 	}
+	response, err := w.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	return decodeWeComResponse(response, out)
+}
+
+func (w WeCom) postJSON(endpoint string, body any, out any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
 	response, err := w.client.Do(request)
 	if err != nil {
 		return err
