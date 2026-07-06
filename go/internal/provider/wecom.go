@@ -161,6 +161,12 @@ func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
 }
 
 func (w WeCom) visibleUsers(token string) ([]User, error) {
+	if strings.TrimSpace(w.cfg.AgentID) != "" {
+		userIDs, err := w.agentVisibleUserIDs(token)
+		if err == nil && len(userIDs) > 0 {
+			return w.usersByIDs(token, userIDs, nil)
+		}
+	}
 	items, err := w.visibleUserIDs(token)
 	if err != nil {
 		return nil, err
@@ -183,8 +189,12 @@ func (w WeCom) visibleUsers(token string) ([]User, error) {
 		}
 		departmentsByUser[userID] = uniqueStrings(append(departmentsByUser[userID], departments...))
 	}
+	return w.usersByIDs(token, userIDs, departmentsByUser)
+}
+
+func (w WeCom) usersByIDs(token string, userIDs []string, departmentsByUser map[string][]string) ([]User, error) {
 	usersBySubject := map[string]User{}
-	for _, userID := range userIDs {
+	for _, userID := range uniqueStrings(userIDs) {
 		raw, err := w.user(token, userID)
 		if err != nil {
 			return nil, err
@@ -344,6 +354,25 @@ func (w WeCom) departmentUsers(token, departmentID string) ([]map[string]any, er
 	return mapItems(out, "userlist"), nil
 }
 
+func (w WeCom) agentVisibleUserIDs(token string) ([]string, error) {
+	endpoint := withQuery(strings.TrimRight(w.cfg.ContactBaseURL, "/")+"/agent/get", map[string]string{
+		"access_token": token,
+		"agentid":      strings.TrimSpace(w.cfg.AgentID),
+	})
+	var out map[string]any
+	if err := w.getJSON(endpoint, &out); err != nil {
+		return nil, err
+	}
+	items := nestedMapItems(out, "allow_userinfos", "user")
+	userIDs := make([]string, 0, len(items))
+	for _, raw := range items {
+		if userID := firstStringish(raw, "userid", "UserId", "user_id"); userID != "" {
+			userIDs = append(userIDs, userID)
+		}
+	}
+	return uniqueStrings(userIDs), nil
+}
+
 func (w WeCom) visibleUserIDs(token string) ([]map[string]any, error) {
 	endpoint := withQuery(strings.TrimRight(w.cfg.ContactBaseURL, "/")+"/user/list_id", map[string]string{
 		"access_token": token,
@@ -472,7 +501,10 @@ func formatWeComHTTPError(statusCode int, body []byte) error {
 		return fmt.Errorf("企业微信接口请求失败：HTTP %d，响应内容：%s", statusCode, strings.TrimSpace(string(body)))
 	}
 	message := firstNonEmpty(parsed.ErrMsg, strings.TrimSpace(string(body)))
-	if parsed.ErrCode == 60020 || strings.Contains(strings.ToLower(message), "ip") {
+	if parsed.ErrCode == 48002 {
+		return fmt.Errorf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。当前 Secret 无权调用本次同步所需的通讯录接口。请在企业微信管理后台确认 DSMPASS 使用的 Secret 具备读取通讯录/读取成员接口权限，并确认自建应用可见范围包含要同步的成员或部门。", statusCode, parsed.ErrCode, message)
+	}
+	if parsed.ErrCode == 60020 {
 		return fmt.Errorf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。请确认 DSMPASS 后端公网出口 IP 已加入企业微信应用的可信 IP，并检查 CorpID/Secret。", statusCode, parsed.ErrCode, message)
 	}
 	if parsed.ErrCode != 0 {
@@ -557,6 +589,14 @@ func mapItems(raw map[string]any, key string) []map[string]any {
 		}
 	}
 	return result
+}
+
+func nestedMapItems(raw map[string]any, parentKey, childKey string) []map[string]any {
+	parent, _ := raw[parentKey].(map[string]any)
+	if parent == nil {
+		return nil
+	}
+	return mapItems(parent, childKey)
 }
 
 func firstStringish(raw map[string]any, keys ...string) string {

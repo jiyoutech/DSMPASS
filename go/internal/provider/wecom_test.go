@@ -230,6 +230,59 @@ func TestWeComListUsersFallsBackToVisibleUserIDsWhenDepartmentsEmpty(t *testing.
 	}
 }
 
+func TestWeComListUsersPrefersAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		AgentID:        "1000016",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 0, "department": []map[string]any{}}, http.StatusOK
+		case "/cgi-bin/agent/get":
+			if r.URL.Query().Get("agentid") != "1000016" {
+				t.Fatalf("unexpected agent query: %s", r.URL.RawQuery)
+			}
+			return map[string]any{"errcode": 0, "allow_userinfos": map[string]any{"user": []map[string]any{
+				{"userid": "mas"},
+				{"userid": "meikle"},
+			}}}, http.StatusOK
+		case "/cgi-bin/user/get":
+			switch r.URL.Query().Get("userid") {
+			case "mas":
+				return map[string]any{"errcode": 0, "userid": "mas", "name": "马少云", "status": float64(1)}, http.StatusOK
+			case "meikle":
+				return map[string]any{"errcode": 0, "userid": "meikle", "name": "Meikle Hong", "status": float64(1)}, http.StatusOK
+			default:
+				return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+			}
+		case "/cgi-bin/user/list_id":
+			t.Fatal("list_id should not be called when agent visible users are available")
+		}
+		return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+	})}
+
+	users, err := wecom.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("users length got %d", len(users))
+	}
+	bySubject := map[string]User{}
+	for _, user := range users {
+		bySubject[user.Subject] = user
+	}
+	if bySubject["mas"].DisplayName != "马少云" || bySubject["meikle"].DisplayName != "Meikle Hong" {
+		t.Fatalf("unexpected users: %#v", bySubject)
+	}
+}
+
 func TestWeComTrustedIPErrorIsActionable(t *testing.T) {
 	err := formatWeComHTTPError(http.StatusOK, []byte(`{"errcode":60020,"errmsg":"not allow to access from your ip"}`))
 	if err == nil {
@@ -245,5 +298,26 @@ func TestWeComTrustedIPErrorIsActionable(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message missing %q: %s", want, message)
 		}
+	}
+}
+
+func TestWeComAPIPermissionErrorIsActionable(t *testing.T) {
+	err := formatWeComHTTPError(http.StatusOK, []byte(`{"errcode":48002,"errmsg":"api forbidden, hint: [1], from ip: 220.196.13.125"}`))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"48002",
+		"api forbidden",
+		"读取通讯录/读取成员接口权限",
+		"自建应用可见范围",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message missing %q: %s", want, message)
+		}
+	}
+	if strings.Contains(message, "可信 IP") {
+		t.Fatalf("48002 should not be classified as trusted IP error: %s", message)
 	}
 }
