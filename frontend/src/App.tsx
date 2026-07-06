@@ -305,15 +305,12 @@ const sourceFieldHelp = {
 type ProviderCredentialText = {
   clientIDLabel: string;
   clientIDHelp: string;
-  clientIDExtra: string;
   clientIDPlaceholder: string;
   clientSecretLabel: string;
   clientSecretHelp: string;
-  clientSecretExtra: string;
   clientSecretPlaceholder: string;
   agentIDLabel: string;
   agentIDHelp: string;
-  agentIDExtra: string;
   agentIDPlaceholder: string;
 };
 
@@ -323,61 +320,49 @@ function providerCredentialText(providerType?: string | null, providerName?: str
     case "feishu":
       return {
         clientIDLabel: "飞书 App ID",
-        clientIDHelp: "飞书应用的 App ID，用于发起 OAuth 登录和读取通讯录。",
-        clientIDExtra: "位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientIDHelp: "飞书应用的 App ID，用于发起 OAuth 登录和读取通讯录。位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
         clientIDPlaceholder: "cli_xxx",
         clientSecretLabel: "飞书 App Secret",
-        clientSecretHelp: "飞书应用的 App Secret，用于后端换取访问 token。留空保存会沿用旧密钥。",
-        clientSecretExtra: "位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientSecretHelp: "飞书应用的 App Secret，用于后端换取访问 token。留空保存会沿用旧密钥。位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
         clientSecretPlaceholder: "请输入飞书 App Secret",
         agentIDLabel: "飞书 Agent ID",
         agentIDHelp: "飞书当前不需要 Agent ID。",
-        agentIDExtra: "",
         agentIDPlaceholder: ""
       };
     case "wecom":
       return {
         clientIDLabel: "企业微信企业ID / CorpID",
-        clientIDHelp: "企业微信企业ID，用于 OAuth appid 和服务端 gettoken 的 corpid。",
-        clientIDExtra: "位置：企业微信管理后台 -> 我的企业 -> 企业信息 -> 企业ID。",
+        clientIDHelp: "企业微信企业ID，用于 OAuth appid 和服务端 gettoken 的 corpid。位置：企业微信管理后台 -> 我的企业 -> 企业信息 -> 企业ID。",
         clientIDPlaceholder: "wwxxxxxxxxxxxxxxxx",
         clientSecretLabel: "企业微信应用 Secret",
-        clientSecretHelp: "企业微信自建应用 Secret，用于后端换取 access_token。留空保存会沿用旧密钥。",
-        clientSecretExtra: "位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> Secret。",
+        clientSecretHelp: "企业微信自建应用 Secret，用于后端换取 access_token。留空保存会沿用旧密钥。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> Secret。",
         clientSecretPlaceholder: "请输入企业微信应用 Secret",
         agentIDLabel: "企业微信 AgentId",
-        agentIDHelp: "企业微信自建应用的 AgentId，用于构造 OAuth 授权链接。",
-        agentIDExtra: "位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
+        agentIDHelp: "企业微信自建应用的 AgentId，用于构造 OAuth 授权链接。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
         agentIDPlaceholder: "1000002"
       };
     case "dingtalk":
       return {
         clientIDLabel: "钉钉 AppKey",
-        clientIDHelp: "钉钉应用的 AppKey，用于登录和接口调用。",
-        clientIDExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientIDHelp: "钉钉应用的 AppKey，用于登录和接口调用。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
         clientIDPlaceholder: "请输入钉钉 AppKey",
         clientSecretLabel: "钉钉 AppSecret",
-        clientSecretHelp: "钉钉应用的 AppSecret，用于后端换取访问 token。留空保存会沿用旧密钥。",
-        clientSecretExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientSecretHelp: "钉钉应用的 AppSecret，用于后端换取访问 token。留空保存会沿用旧密钥。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
         clientSecretPlaceholder: "请输入钉钉 AppSecret",
         agentIDLabel: "钉钉 AgentId",
-        agentIDHelp: "钉钉应用的 AgentId，用于构造钉钉应用访问入口。",
-        agentIDExtra: "位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 应用信息。",
+        agentIDHelp: "钉钉应用的 AgentId，用于构造钉钉应用访问入口。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 应用信息。",
         agentIDPlaceholder: "请输入钉钉 AgentId"
       };
     default:
       return {
         clientIDLabel: `${label} Client ID`,
-        clientIDHelp: `${label}应用的 Client ID，用于发起 OAuth 登录和调用通讯录接口。`,
-        clientIDExtra: `位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientIDHelp: `${label}应用的 Client ID，用于发起 OAuth 登录和调用通讯录接口。位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
         clientIDPlaceholder: "请输入 Client ID",
         clientSecretLabel: `${label} Client Secret`,
-        clientSecretHelp: `${label}应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。`,
-        clientSecretExtra: `位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientSecretHelp: `${label}应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
         clientSecretPlaceholder: "请输入 Client Secret",
         agentIDLabel: `${label} Agent ID`,
-        agentIDHelp: `${label}应用的 Agent ID。`,
-        agentIDExtra: `位置：进入${label}开发者后台，打开对应应用的应用信息页面。`,
+        agentIDHelp: `${label}应用的 Agent ID。位置：进入${label}开发者后台，打开对应应用的应用信息页面。`,
         agentIDPlaceholder: "请输入 Agent ID"
       };
   }
@@ -956,7 +941,6 @@ function Providers({
             <Form.Item
               name={["config", "client_id"]}
               label={helpLabel(selectedProviderCredentialText.clientIDLabel, selectedProviderCredentialText.clientIDHelp)}
-              extra={selectedProviderCredentialText.clientIDExtra}
               rules={[{ required: selectedProvider?.requires_client_id }]}
             >
               <Input placeholder={selectedProviderCredentialText.clientIDPlaceholder} />
@@ -965,7 +949,6 @@ function Providers({
               <Form.Item
                 name={["config", "agent_id"]}
                 label={helpLabel(selectedProviderCredentialText.agentIDLabel, selectedProviderCredentialText.agentIDHelp)}
-                extra={selectedProviderCredentialText.agentIDExtra}
                 preserve={false}
                 rules={[{ required: true }]}
               >
@@ -975,7 +958,6 @@ function Providers({
             <Form.Item
               name={["config", "client_secret"]}
               label={helpLabel(selectedProviderCredentialText.clientSecretLabel, selectedProviderCredentialText.clientSecretHelp)}
-              extra={selectedProviderCredentialText.clientSecretExtra}
               rules={[{ required: selectedProvider?.requires_secret }]}
             >
               <Input.Password placeholder={selectedProviderCredentialText.clientSecretPlaceholder} />
@@ -1948,7 +1930,6 @@ function SourceDetail({
                       <Form.Item
                         name={["config", "client_id"]}
                         label={helpLabel(sourceCredentialText.clientIDLabel, sourceCredentialText.clientIDHelp)}
-                        extra={sourceCredentialText.clientIDExtra}
                         rules={[{ required: true }]}
                       >
                         <Input placeholder={sourceCredentialText.clientIDPlaceholder} />
@@ -1957,7 +1938,6 @@ function SourceDetail({
                         <Form.Item
                           name={["config", "agent_id"]}
                           label={helpLabel(sourceCredentialText.agentIDLabel, sourceCredentialText.agentIDHelp)}
-                          extra={sourceCredentialText.agentIDExtra}
                           rules={[{ required: true }]}
                         >
                           <Input placeholder={sourceCredentialText.agentIDPlaceholder} />
@@ -1966,7 +1946,6 @@ function SourceDetail({
                       <Form.Item
                         name={["config", "client_secret"]}
                         label={helpLabel(sourceCredentialText.clientSecretLabel, sourceCredentialText.clientSecretHelp)}
-                        extra={sourceCredentialText.clientSecretExtra}
                       >
                         <Input.Password placeholder={sourceCredentialText.clientSecretPlaceholder} />
                       </Form.Item>
