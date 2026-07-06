@@ -222,8 +222,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'`, sourceSlug).Scan(&accountConflicts); err != nil {
 		return operations, err
 	}
+	providerName := s.providerDisplayNameForSourceSlug(ctx, sourceSlug)
 	if groupConflicts > 0 {
-		err := errors.New("存在飞书部门名冲突，请先由管理员处理部门组名后再同步 DSM")
+		err := errors.New("存在" + providerName + "部门名冲突，请先由管理员处理部门组名后再同步 DSM")
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", sourceSlug, "", "resolve_group_conflicts", "blocked", "conflict", "conflict", err.Error())
 		if progress != nil {
 			progress.message(ctx, "等待冲突处理", err.Error())
@@ -231,7 +232,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		return operations, err
 	}
 	if accountConflicts > 0 {
-		err := errors.New("存在飞书用户冲突，请先由管理员处理 DSM 用户名后再同步 DSM")
+		err := errors.New("存在" + providerName + "用户冲突，请先由管理员处理 DSM 用户名后再同步 DSM")
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", sourceSlug, "", "resolve_user_conflicts", "blocked", "conflict", "conflict", err.Error())
 		if progress != nil {
 			progress.message(ctx, "等待冲突处理", err.Error())

@@ -60,6 +60,10 @@ func (f Feishu) Slug() string {
 	return f.slug
 }
 
+func (f Feishu) ProviderDisplayName() string {
+	return "飞书"
+}
+
 func (f Feishu) BuildAuthorizeURL(state, redirectURI string) string {
 	values := url.Values{}
 	values.Set("client_id", f.cfg.FeishuClientID)
@@ -115,6 +119,10 @@ func (f Feishu) FetchProfile(token map[string]any) (map[string]any, error) {
 		return data, nil
 	}
 	return out, nil
+}
+
+func (f Feishu) ProfileSubject(profile map[string]any) (string, string) {
+	return feishuUserSubject(profile)
 }
 
 func (f Feishu) ListUsers() ([]User, error) {

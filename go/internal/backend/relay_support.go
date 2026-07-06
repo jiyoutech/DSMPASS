@@ -357,7 +357,7 @@ func (s *Server) validateCallbackState(c *gin.Context, source db.IdentitySource,
 	if !ok || entry.ProviderSlug != source.Slug || time.Now().After(entry.ExpiresAt) {
 		s.failRelayCallback(c, source, requestID, start, relayFailure{
 			Status:    http.StatusBadRequest,
-			Detail:    "无效状态：请重新从身份源登录入口发起登录，或确认飞书回调地址直接指向 callback。",
+			Detail:    "无效状态：请重新从身份源登录入口发起登录，或确认身份源回调地址直接指向 callback。",
 			ErrorCode: "invalid_state",
 			EventName: "backend.callback.state.invalid",
 			Event: diaglog.Event{

@@ -156,9 +156,10 @@ func (s *Service) EnsureDSMAccountWithCreated(ctx context.Context, identity db.A
 	allowLogin := 1
 	conflictReason := sql.NullString{}
 	if existing, existingErr := s.getDSMAccountByNorm(ctx, Normalize(username)); existingErr == nil && existing.AppIdentityID != identity.ID {
+		providerName := s.providerDisplayNameForIdentity(ctx, identity.ID)
 		status = "conflict"
 		allowLogin = 0
-		conflictReason = sql.NullString{String: fmt.Sprintf("冲突类型：DSM Pass 内已有身份占用 DSM 用户名 %q。请根据飞书信息手动指定最终 DSM 用户名", username), Valid: true}
+		conflictReason = sql.NullString{String: fmt.Sprintf("冲突类型：DSM Pass 内已有身份占用 DSM 用户名 %q。请根据%s身份信息手动指定最终 DSM 用户名", username, providerName), Valid: true}
 		username = conflictUsername(username, identity.ID)
 	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
 		return db.DSMAccount{}, false, existingErr
@@ -549,9 +550,51 @@ func (s *Service) allocateUsername(ctx context.Context, identity db.AppIdentity)
 		if identity.DisplayName.Valid {
 			displayName = identity.DisplayName.String
 		}
-		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认飞书返回真实姓名并且姓名包含 DSM 支持的字符", displayName)
+		providerName := s.providerDisplayNameForIdentity(ctx, identity.ID)
+		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认%s返回真实姓名并且姓名包含 DSM 支持的字符", displayName, providerName)
 	}
 	return username, nil
+}
+
+func (s *Service) providerDisplayNameForIdentity(ctx context.Context, identityID string) string {
+	var providerType, providerSlug string
+	err := s.q.DBTX().QueryRowContext(ctx, `
+SELECT COALESCE(i.provider_type, ''), e.provider_slug
+FROM external_accounts e
+LEFT JOIN identity_sources i ON i.slug = e.provider_slug
+WHERE e.app_identity_id = ?
+ORDER BY e.created_at
+LIMIT 1`, identityID).Scan(&providerType, &providerSlug)
+	if err != nil {
+		return "身份源"
+	}
+	if strings.TrimSpace(providerType) == "" {
+		providerType = providerSlug
+	}
+	return providerDisplayName(providerType)
+}
+
+func providerDisplayName(providerType string) string {
+	providerType = strings.TrimSpace(providerType)
+	switch providerType {
+	case "feishu":
+		return "飞书"
+	case "wecom":
+		return "企业微信"
+	case "dingtalk":
+		return "钉钉"
+	default:
+		if strings.HasPrefix(providerType, "feishu") {
+			return "飞书"
+		}
+		if strings.HasPrefix(providerType, "wecom") {
+			return "企业微信"
+		}
+		if strings.HasPrefix(providerType, "dingtalk") {
+			return "钉钉"
+		}
+		return "身份源"
+	}
 }
 
 func (s *Service) allocateUsernameForDisplayName(displayName sql.NullString) (string, error) {

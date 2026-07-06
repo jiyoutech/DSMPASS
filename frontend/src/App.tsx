@@ -249,8 +249,8 @@ type EnrichedDSMAccount = DSMAccount & { groups: string[]; member_records: Group
 
 function accountConflictKind(record: DSMAccount) {
   const reason = record.conflict_reason || "";
-  if (reason.includes("飞书用户姓名重名") || reason.includes("飞书通讯录内用户姓名重名")) {
-    return "feishu_duplicate";
+  if (reason.includes("通讯录内用户姓名重名") || reason.includes("飞书用户姓名重名")) {
+    return "provider_duplicate";
   }
   if (reason.includes("DSM 用户名已存在") || reason.includes("DSM 本地已存在同名用户")) {
     return "dsm_existing";
@@ -261,10 +261,10 @@ function accountConflictKind(record: DSMAccount) {
   return "other";
 }
 
-function accountConflictLabel(record: DSMAccount) {
+function accountConflictLabel(record: DSMAccount, providerLabel: string) {
   switch (accountConflictKind(record)) {
-    case "feishu_duplicate":
-      return "飞书内重名";
+    case "provider_duplicate":
+      return `${providerLabel}内重名`;
     case "dsm_existing":
       return "DSM 已有同名旧记录";
     case "dsmpass_existing":
@@ -278,17 +278,30 @@ function BridgeLogo() {
   return <img src="/favicon.svg" alt={appName} />;
 }
 
+function providerTypeLabel(providerType?: string | null) {
+  switch (providerType) {
+    case "feishu":
+      return "飞书";
+    case "wecom":
+      return "企业微信";
+    case "dingtalk":
+      return "钉钉";
+    default:
+      return "身份源";
+  }
+}
+
 const sourceFieldHelp = {
-  displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到飞书或 DSM。",
-  providerType: "选择这个身份源连接的上游系统。当前用于飞书登录和通讯录同步。",
-  clientID: "飞书开放平台应用的 App ID，用于发起飞书 OAuth 登录和调用通讯录接口。",
-  clientSecret: "飞书应用密钥，用于后端向飞书换取访问 token。留空保存会沿用旧密钥。",
+  displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到外部身份平台或 DSM。",
+  providerType: "选择这个身份源连接的外部身份平台，用于登录和通讯录同步。",
+  clientID: "身份源应用的 App ID / Client ID，用于发起 OAuth 登录和调用通讯录接口。",
+  clientSecret: "身份源应用密钥，用于后端换取访问 token。留空保存会沿用旧密钥。",
   initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
-  loginEnabled: "控制这个身份源是否允许用户通过飞书登录 DSM。关闭后同步功能仍可单独使用。",
-  syncEnabled: "控制是否允许从飞书通讯录同步用户、部门和成员关系到本地映射/DSM。",
+  loginEnabled: "控制这个身份源是否允许用户通过外部身份平台登录 DSM。关闭后同步功能仍可单独使用。",
+  syncEnabled: "控制是否允许从身份源通讯录同步用户、部门和成员关系到本地映射/DSM。",
   syncInterval: "自动同步间隔。0 表示不自动同步，只能手动点击同步。",
-  disableMissingUsers: "同步时如果用户已不在飞书通讯录中，就禁用对应 DSM 用户登录。"
+  disableMissingUsers: "同步时如果用户已不在身份源通讯录中，就禁用对应 DSM 用户登录。"
 };
 
 function helpLabel(label: string, help: string) {
@@ -944,6 +957,7 @@ function SourceDetail({
   const members = useAsyncData(() => api.listGroupMembers(source.slug), [source.slug]);
   const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug, { q: syncLogQuery, status: syncStatusFilter, page: syncLogPage, limit: sourceTablePageSize }), [source.slug, syncLogQuery, syncStatusFilter, syncLogPage]);
   const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
+  const providerLabel = providerTypeLabel(source.provider_type);
 
   useEffect(() => {
     setAccountPage(1);
@@ -986,8 +1000,8 @@ function SourceDetail({
       modal.success({
         title: `${label} 地址已复制`,
         content: label === "Launch"
-          ? "请粘贴到飞书开放平台网页应用的入口地址/桌面端主页配置位置。"
-          : "请粘贴到飞书开放平台 OAuth 重定向 URL / 回调地址配置位置。"
+          ? `请粘贴到${providerLabel}应用的入口地址/主页配置位置。`
+          : `请粘贴到${providerLabel}应用的 OAuth 重定向 URL / 回调地址配置位置。`
       });
     } catch {
       message.error("复制失败");
@@ -1245,7 +1259,7 @@ function SourceDetail({
   const feishuDuplicateAccountGroups = useMemo(() => {
     const groupsByName = new Map<string, EnrichedDSMAccount[]>();
     for (const account of conflictAccounts) {
-      if (accountConflictKind(account) !== "feishu_duplicate") {
+      if (accountConflictKind(account) !== "provider_duplicate") {
         continue;
       }
       const name = (account.display_name || account.dsm_username || "未命名用户").trim();
@@ -1258,7 +1272,7 @@ function SourceDetail({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [conflictAccounts]);
   const nonFeishuDuplicateConflictAccounts = useMemo(() => {
-    return conflictAccounts.filter((account) => accountConflictKind(account) !== "feishu_duplicate");
+    return conflictAccounts.filter((account) => accountConflictKind(account) !== "provider_duplicate");
   }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichGroups(conflictGroupData.data?.items ?? []), [conflictGroupData.data?.items, enrichGroups]);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
@@ -1364,7 +1378,7 @@ function SourceDetail({
       cancelText: "取消",
       content: (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <Typography.Text type="secondary">飞书身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
+          <Typography.Text type="secondary">{providerLabel}身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
           {accountContactText(record) && <Typography.Text type="secondary">邮箱 / 手机号：{accountContactText(record)}</Typography.Text>}
           {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
           <Input defaultValue={record.dsm_username} onChange={(event) => { nextUsername = event.target.value; }} />
@@ -1403,7 +1417,7 @@ function SourceDetail({
       cancelText: "取消",
       content: (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <Typography.Text type="secondary">飞书部门：{record.provider_group_path || record.provider_group_name || record.dsm_groupname}</Typography.Text>
+          <Typography.Text type="secondary">{providerLabel}部门：{record.provider_group_path || record.provider_group_name || record.dsm_groupname}</Typography.Text>
           {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
           <Input defaultValue={record.dsm_groupname} onChange={(event) => { nextGroupname = event.target.value; }} />
         </Space>
@@ -1530,11 +1544,11 @@ function SourceDetail({
 
   const accountConflictColumns: ColumnsType<EnrichedDSMAccount> = [
     { title: "冲突类型", width: 130, render: (_, record) => (
-      <Tag color={accountConflictKind(record) === "dsm_existing" ? "volcano" : accountConflictKind(record) === "feishu_duplicate" ? "error" : "warning"}>
-        {accountConflictLabel(record)}
+      <Tag color={accountConflictKind(record) === "dsm_existing" ? "volcano" : accountConflictKind(record) === "provider_duplicate" ? "error" : "warning"}>
+        {accountConflictLabel(record, providerLabel)}
       </Tag>
     ) },
-    { title: "飞书用户", width: 210, render: (_, record) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
+    { title: `${providerLabel}用户`, width: 210, render: (_, record) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
     { title: "邮箱", width: 210, ellipsis: true, render: (_, record) => record.primary_email || record.external_emails || "-" },
     { title: "手机号", width: 130, ellipsis: true, render: (_, record) => record.mobile_masked || "-" },
     { title: "部门", width: 220, render: (_, record) => <EntityList values={record.groups} limit={3} /> },
@@ -1731,7 +1745,7 @@ function SourceDetail({
                 rowClassName="conflict-row"
                 scroll={{ x: 1180 }}
                 columns={[
-                  { title: "飞书部门", width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
+                  { title: `${providerLabel}部门`, width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                   { title: "当前 DSM 部门组名", width: 260, render: (_, record: DSMGroup) => (
                     <Input
                       value={groupConflictDrafts[record.id] ?? record.dsm_groupname}
@@ -1748,14 +1762,14 @@ function SourceDetail({
               className="conflict-step-card"
               title={(
                 <Space>
-                  <span>第 1 / {conflictStepCount} 组：飞书内重名用户</span>
+                  <span>第 1 / {conflictStepCount} 组：{providerLabel}内重名用户</span>
                   <Tag color="error">{currentFeishuDuplicateGroup.items.length} 个同名用户</Tag>
                 </Space>
               )}
             >
               <div className="conflict-user-group">
                 <div className="conflict-user-group-head">
-                  <strong>飞书姓名：{currentFeishuDuplicateGroup.name}</strong>
+                  <strong>{providerLabel}姓名：{currentFeishuDuplicateGroup.name}</strong>
                 </div>
                 <Table
                   size="small"
@@ -1798,7 +1812,7 @@ function SourceDetail({
         items={[
           {
             key: "addresses",
-            label: "飞书",
+            label: providerLabel,
             children: (
               <Space direction="vertical" size={16} className="page">
                 <Card title="地址" className="module-card">
@@ -1827,8 +1841,8 @@ function SourceDetail({
                   <Form form={form} layout="vertical" onFinish={(values) => void save(values)} disabled={saving}>
                     <div className="form-grid">
                       <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}><Input /></Form.Item>
-                      <Form.Item name={["config", "client_id"]} label={helpLabel("飞书 App ID", sourceFieldHelp.clientID)} rules={[{ required: true }]}><Input /></Form.Item>
-                      <Form.Item name={["config", "client_secret"]} label={helpLabel("飞书 App Secret", sourceFieldHelp.clientSecret)}><Input.Password /></Form.Item>
+                      <Form.Item name={["config", "client_id"]} label={helpLabel(`${providerLabel} App ID`, sourceFieldHelp.clientID)} rules={[{ required: true }]}><Input /></Form.Item>
+                      <Form.Item name={["config", "client_secret"]} label={helpLabel(`${providerLabel} App Secret`, sourceFieldHelp.clientSecret)}><Input.Password /></Form.Item>
                       <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} rules={[{ required: true }]}><Input.Password /></Form.Item>
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
@@ -1923,7 +1937,7 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.conflict_reason || record.app_identity_id} /> },
-                      { title: "飞书信息", width: 260, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={accountContactText(record) || record.external_subjects || undefined} /> },
+                      { title: `${providerLabel}信息`, width: 260, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={accountContactText(record) || record.external_subjects || undefined} /> },
                       { title: "部门数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="部门" /> },
                       { title: "所属部门", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
                       { title: "登录", dataIndex: "allow_login", width: 100, render: (value) => value ? <Tag color="success">允许</Tag> : <Tag color="error">禁止</Tag> },
@@ -2019,7 +2033,7 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "部门", dataIndex: "dsm_groupname", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_groupname} secondary={record.conflict_reason ?? undefined} /> },
-                      { title: "飞书部门", width: 240, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
+                      { title: `${providerLabel}部门`, width: 240, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                       { title: "成员数", dataIndex: "members", width: 110, render: (value: string[]) => <RelationCount value={value.length} label="成员" /> },
                       { title: "成员预览", dataIndex: "members", render: (value: string[]) => <EntityList values={value} limit={5} /> },
                       { title: "状态", dataIndex: "provision_status", width: 120, render: statusTag },

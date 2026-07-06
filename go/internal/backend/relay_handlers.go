@@ -14,7 +14,12 @@ import (
 
 func (s *Server) launch(c *gin.Context) {
 	providerSlug := c.Param("provider")
-	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 && source.ProviderType == "feishu" {
+	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 {
+		oauthProvider, ok := s.oauthProviderForSource(source)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"detail": "identity source not found or login disabled"})
+			return
+		}
 		requestID := "go_launch_" + randomHex(12)
 		state := randomHex(16)
 		s.stateMu.Lock()
@@ -26,12 +31,11 @@ func (s *Server) launch(c *gin.Context) {
 		}
 		s.states[state] = oauthState{ProviderSlug: source.Slug, ExpiresAt: now.Add(oauthStateTTL)}
 		s.stateMu.Unlock()
-		sourceCfg := s.configForSource(source)
 		redirectURI := effectivePublicBaseURL(s.trustedPublicBaseURL(), requestPublicBaseURL(c)) + "/idp/" + source.Slug + "/callback"
-		feishu := provider.NewFeishuWithSlug(sourceCfg, source.Slug)
-		authorizeURL := feishu.BuildAuthorizeURL(state, redirectURI)
-		diaglog.Append(s.cfg.DataDir, requestID, "backend.launch.redirect_to_feishu", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
+		authorizeURL := oauthProvider.BuildAuthorizeURL(state, redirectURI)
+		diaglog.Append(s.cfg.DataDir, requestID, "backend.launch.redirect_to_provider", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
 			"provider_slug": source.Slug,
+			"provider_type": source.ProviderType,
 			"request_url":   c.Request.URL.String(),
 			"host":          c.Request.Host,
 			"user_agent":    c.Request.UserAgent(),
@@ -49,8 +53,13 @@ func (s *Server) launch(c *gin.Context) {
 
 func (s *Server) callback(c *gin.Context) {
 	providerSlug := c.Param("provider")
-	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 && source.ProviderType == "feishu" {
-		s.handleFeishuCallback(c, source)
+	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 {
+		oauthProvider, ok := s.oauthProviderForSource(source)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"detail": "identity source not found or login disabled"})
+			return
+		}
+		s.handleOAuthCallback(c, source, oauthProvider)
 		return
 	}
 	c.JSON(http.StatusNotFound, gin.H{"detail": "identity source not found or login disabled"})
@@ -76,11 +85,12 @@ func (s *Server) completeBrowserLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-func (s *Server) handleFeishuCallback(c *gin.Context, source db.IdentitySource) {
+func (s *Server) handleOAuthCallback(c *gin.Context, source db.IdentitySource, oauthProvider provider.OAuth) {
 	start := time.Now()
 	requestID := "go_" + randomHex(12)
 	diaglog.Append(s.cfg.DataDir, requestID, "backend.callback.start", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
 		"provider_slug": source.Slug,
+		"provider_type": source.ProviderType,
 		"request_url":   c.Request.URL.String(),
 		"host":          c.Request.Host,
 		"user_agent":    c.Request.UserAgent(),
@@ -102,55 +112,56 @@ func (s *Server) handleFeishuCallback(c *gin.Context, source db.IdentitySource) 
 		})
 		return
 	}
-	sourceCfg := s.configForSource(source)
-	feishu := provider.NewFeishuWithSlug(sourceCfg, source.Slug)
 	redirectURI := effectivePublicBaseURL(s.trustedPublicBaseURL(), requestPublicBaseURL(c)) + "/idp/" + source.Slug + "/callback"
-	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.exchange_code.request", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
-		"redirect_uri": redirectURI,
-		"code":         code,
+	diaglog.Append(s.cfg.DataDir, requestID, "backend.oauth.exchange_code.request", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
+		"provider_type": source.ProviderType,
+		"redirect_uri":  redirectURI,
+		"code":          code,
 	})
-	token, err := feishu.ExchangeCode(code, redirectURI)
+	token, err := oauthProvider.ExchangeCode(code, redirectURI)
 	if err != nil {
 		s.failRelayCallback(c, source, requestID, start, relayFailure{
 			Status:    http.StatusBadGateway,
 			Detail:    err.Error(),
 			ErrorCode: "exchange_code_failed: " + err.Error(),
-			EventName: "backend.feishu.exchange_code.error",
-			Event:     diaglog.Event{"redirect_uri": redirectURI, "error": err.Error()},
+			EventName: "backend.oauth.exchange_code.error",
+			Event:     diaglog.Event{"provider_type": source.ProviderType, "redirect_uri": redirectURI, "error": err.Error()},
 		})
 		return
 	}
-	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.exchange_code.success", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
-		"redirect_uri": redirectURI,
-		"token":        token,
+	diaglog.Append(s.cfg.DataDir, requestID, "backend.oauth.exchange_code.success", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
+		"provider_type": source.ProviderType,
+		"redirect_uri":  redirectURI,
+		"token":         token,
 	})
-	profile, err := feishu.FetchProfile(token)
+	profile, err := oauthProvider.FetchProfile(token)
 	if err != nil {
 		s.failRelayCallback(c, source, requestID, start, relayFailure{
 			Status:    http.StatusBadGateway,
 			Detail:    err.Error(),
 			ErrorCode: "fetch_profile_failed: " + err.Error(),
-			EventName: "backend.feishu.fetch_profile.error",
-			Event:     diaglog.Event{"error": err.Error()},
+			EventName: "backend.oauth.fetch_profile.error",
+			Event:     diaglog.Event{"provider_type": source.ProviderType, "error": err.Error()},
 		})
 		return
 	}
-	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.fetch_profile.success", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{"profile": profile})
-	subject, subjectType := feishuProfileSubject(profile)
-	diaglog.Append(s.cfg.DataDir, requestID, "backend.feishu.subject.selected", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
-		"subject":      subject,
-		"subject_type": subjectType,
-		"name":         firstProfileString(profile, "name", "en_name", "nickname"),
-		"email":        firstProfileString(profile, "email"),
-		"mobile":       firstProfileString(profile, "mobile"),
+	diaglog.Append(s.cfg.DataDir, requestID, "backend.oauth.fetch_profile.success", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{"provider_type": source.ProviderType, "profile": profile})
+	subject, subjectType := oauthProvider.ProfileSubject(profile)
+	diaglog.Append(s.cfg.DataDir, requestID, "backend.oauth.subject.selected", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
+		"provider_type": source.ProviderType,
+		"subject":       subject,
+		"subject_type":  subjectType,
+		"name":          firstProfileString(profile, "name", "en_name", "nickname"),
+		"email":         firstProfileString(profile, "email"),
+		"mobile":        firstProfileString(profile, "mobile"),
 	})
 	if subject == "" {
 		s.failRelayCallback(c, source, requestID, start, relayFailure{
 			Status:    http.StatusBadGateway,
-			Detail:    "feishu profile missing subject",
+			Detail:    "oauth profile missing subject",
 			ErrorCode: "profile_missing_subject",
-			EventName: "backend.feishu.subject.missing",
-			Event:     diaglog.Event{"profile": profile},
+			EventName: "backend.oauth.subject.missing",
+			Event:     diaglog.Event{"provider_type": source.ProviderType, "profile": profile},
 		})
 		return
 	}
@@ -266,20 +277,4 @@ func (s *Server) handleFeishuCallback(c *gin.Context, source db.IdentitySource) 
 		DurationMs:        time.Since(start).Milliseconds(),
 	})
 	c.Redirect(http.StatusFound, dsmRedirectURL)
-}
-
-func feishuProfileSubject(profile map[string]any) (string, string) {
-	for _, item := range []struct {
-		field       string
-		subjectType string
-	}{
-		{"open_id", "feishu_open_id"},
-		{"user_id", "feishu_user_id"},
-		{"union_id", "feishu_union_id"},
-	} {
-		if value := firstProfileString(profile, item.field); value != "" {
-			return value, item.subjectType
-		}
-	}
-	return "", ""
 }

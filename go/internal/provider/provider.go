@@ -25,3 +25,15 @@ type Directory interface {
 	ListGroups() ([]Group, error)
 	ListGroupMembers(groupSubject string) ([]string, error)
 }
+
+type OAuth interface {
+	Slug() string
+	BuildAuthorizeURL(state, redirectURI string) string
+	ExchangeCode(code, redirectURI string) (map[string]any, error)
+	FetchProfile(token map[string]any) (map[string]any, error)
+	ProfileSubject(profile map[string]any) (string, string)
+}
+
+type Named interface {
+	ProviderDisplayName() string
+}

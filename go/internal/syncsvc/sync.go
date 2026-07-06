@@ -2,6 +2,7 @@ package syncsvc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -47,6 +48,7 @@ func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Optio
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
+	providerName := providerDisplayName(directory)
 	result := Result{ProviderSlug: directory.Slug()}
 	syncStart := e.options.SyncStart
 	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
@@ -85,7 +87,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			return result, err
 		}
 		if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
-			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, "冲突类型：飞书通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名")
+			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名", providerName))
 			if err != nil {
 				return result, err
 			}
@@ -128,7 +130,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			return result, err
 		}
 		if duplicateGroupSubjects[group.Subject] && dsmGroup.Managed == 1 {
-			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, "飞书部门名重名，请管理员根据飞书部门路径手动指定 DSM 部门组名")
+			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, fmt.Sprintf("%s部门名重名，请管理员根据%s部门路径手动指定 DSM 部门组名", providerName, providerName))
 			if err != nil {
 				return result, err
 			}
@@ -224,6 +226,25 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		return result, err
 	}
 	return result, nil
+}
+
+func providerDisplayName(directory provider.Directory) string {
+	if named, ok := directory.(provider.Named); ok {
+		if name := strings.TrimSpace(named.ProviderDisplayName()); name != "" {
+			return name
+		}
+	}
+	slug := strings.TrimSpace(directory.Slug())
+	if strings.HasPrefix(slug, "feishu") {
+		return "飞书"
+	}
+	if strings.HasPrefix(slug, "wecom") {
+		return "企业微信"
+	}
+	if strings.HasPrefix(slug, "dingtalk") {
+		return "钉钉"
+	}
+	return "身份源"
 }
 
 func (e *Engine) report(phase string, current, total int, message string) {

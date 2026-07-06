@@ -393,17 +393,6 @@ func TestServerServesFrontendAndAPI(t *testing.T) {
 	}
 }
 
-func TestFeishuProfileSubjectPrefersOpenID(t *testing.T) {
-	subject, subjectType := feishuProfileSubject(map[string]any{
-		"open_id":  "ou_login",
-		"user_id":  "ca32gc25",
-		"union_id": "on_union",
-	})
-	if subject != "ou_login" || subjectType != "feishu_open_id" {
-		t.Fatalf("expected open_id login subject, got subject=%q type=%q", subject, subjectType)
-	}
-}
-
 func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	cfg := config.BackendConfig{
 		RelayMode:         "socket",

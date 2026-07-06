@@ -129,6 +129,18 @@ func TestBuildAuthorizeURLUsesAccountsEndpointAndClientID(t *testing.T) {
 	}
 }
 
+func TestFeishuProfileSubjectPrefersOpenID(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{})
+	subject, subjectType := feishu.ProfileSubject(map[string]any{
+		"open_id":  "ou_login",
+		"user_id":  "ca32gc25",
+		"union_id": "on_union",
+	})
+	if subject != "ou_login" || subjectType != "feishu_open_id" {
+		t.Fatalf("expected open_id login subject, got subject=%q type=%q", subject, subjectType)
+	}
+}
+
 func TestMissingFeishuFieldErrorIsActionable(t *testing.T) {
 	err := MissingFeishuFieldError{
 		Resource:       "部门",

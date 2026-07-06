@@ -31,9 +31,7 @@ type identitySourceConfig struct {
 
 func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
 	if source, err := s.loadIdentitySource(context.Background(), slug); err == nil && source.Enabled == 1 && source.DirectorySyncEnabled == 1 {
-		if source.ProviderType == "feishu" {
-			return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
-		}
+		return s.directoryProviderForSource(source)
 	}
 	switch slug {
 	case "feishu":
@@ -44,6 +42,32 @@ func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func (s *Server) directoryProviderForSource(source db.IdentitySource) (provider.Directory, bool) {
+	switch source.ProviderType {
+	case "feishu":
+		return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) oauthProviderForSource(source db.IdentitySource) (provider.OAuth, bool) {
+	switch source.ProviderType {
+	case "feishu":
+		return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) providerDisplayNameForSourceSlug(ctx context.Context, slug string) string {
+	source, err := s.loadIdentitySource(ctx, slug)
+	if err == nil {
+		return providerTypeDisplayName(source.ProviderType)
+	}
+	return providerTypeDisplayName(slug)
 }
 
 func (s *Server) loadIdentitySource(ctx context.Context, slug string) (db.IdentitySource, error) {
