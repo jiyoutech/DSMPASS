@@ -117,6 +117,9 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	if len(users) == 0 && len(groups) == 0 {
+		return result, emptyDirectoryError(providerName)
+	}
 	e.report("写入部门映射", 0, len(groups), "正在写入部门映射")
 	duplicateGroupSubjects := duplicateGroupSubjects(groups)
 	groups = disambiguateDuplicateGroupNames(groups)
@@ -245,6 +248,13 @@ func providerDisplayName(directory provider.Directory) string {
 		return "钉钉"
 	}
 	return "身份源"
+}
+
+func emptyDirectoryError(providerName string) error {
+	if providerName == "企业微信" {
+		return fmt.Errorf("%s通讯录没有返回任何部门或用户。请确认企业微信自建应用的可见范围包含至少一个有成员的部门；如果只在可见范围里单独指定成员，当前通讯录同步无法通过部门接口读取这些成员。还需确认应用具备读取通讯录的接口权限", providerName)
+	}
+	return fmt.Errorf("%s通讯录没有返回任何用户或部门，请检查应用可见范围、通讯录权限和同步配置", providerName)
 }
 
 func (e *Engine) report(phase string, current, total int, message string) {

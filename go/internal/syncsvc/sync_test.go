@@ -3,6 +3,7 @@ package syncsvc
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -31,6 +32,26 @@ func TestDisambiguateDuplicateGroupNamesUsesPathOnlyForDuplicates(t *testing.T) 
 	}
 	if groups[0].Name != "sup5" {
 		t.Fatalf("input groups should not be mutated")
+	}
+}
+
+func TestSyncProviderReturnsWeComHintWhenDirectoryIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	_, err := NewEngine(config.BackendConfig{}, queries).SyncProvider(ctx, fakeDirectory{
+		slug: "wecom-main",
+		name: "企业微信",
+	})
+	if err == nil {
+		t.Fatal("expected empty directory error")
+	}
+	message := err.Error()
+	for _, want := range []string{"企业微信通讯录没有返回任何部门或用户", "单独指定成员", "有成员的部门"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("empty directory error %q missing %q", message, want)
+		}
 	}
 }
 
@@ -278,6 +299,7 @@ func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testi
 
 type fakeDirectory struct {
 	slug   string
+	name   string
 	users  []provider.User
 	groups []provider.Group
 }
@@ -288,6 +310,8 @@ func (f fakeDirectory) Slug() string {
 	}
 	return "feishu-main"
 }
+
+func (f fakeDirectory) ProviderDisplayName() string { return f.name }
 
 func (f fakeDirectory) ListUsers() ([]provider.User, error) { return f.users, nil }
 
