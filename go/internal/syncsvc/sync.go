@@ -54,14 +54,15 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
 		_ = e.q.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
 	}
-	users, err := directory.ListUsers()
+	users, groups, err := listDirectorySnapshot(directory)
 	if err != nil {
 		return result, err
 	}
 	e.report("写入用户映射", 0, len(users), "正在写入用户映射")
-	duplicateUserNames := duplicateUserNameCounts(users, e.cfg)
+	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
 	for index, user := range users {
 		verified := true
+		active := user.Active
 		subjectType := strings.TrimSpace(user.SubjectType)
 		if subjectType == "" {
 			subjectType = "directory_subject"
@@ -74,9 +75,21 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			Email:         user.Email,
 			EmailVerified: &verified,
 			Mobile:        user.Mobile,
+			Active:        &active,
 		})
 		if err != nil {
 			return result, err
+		}
+		if !user.Active {
+			result.Items = append(result.Items, PlanItem{
+				Action:          "skip_inactive_user",
+				ProviderSlug:    user.ProviderSlug,
+				Subject:         user.Subject,
+				DisplayName:     user.DisplayName,
+				ProvisionStatus: "inactive",
+			})
+			e.report("写入用户映射", index+1, len(users), user.DisplayName)
+			continue
 		}
 		appIdentity, identityLinkedExisting, err := identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
 		if err != nil {
@@ -113,14 +126,11 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		})
 		e.report("写入用户映射", index+1, len(users), user.DisplayName)
 	}
-	groups, err := directory.ListGroups()
-	if err != nil {
-		return result, err
-	}
 	if len(users) == 0 && len(groups) == 0 {
 		return result, emptyDirectoryError(providerName)
 	}
-	if len(users) > 0 && len(groups) == 0 {
+	userOnlyDirectory := len(users) > 0 && len(groups) == 0
+	if userOnlyDirectory {
 		result.Items = append(result.Items, PlanItem{
 			Action:          "directory_warning",
 			ProviderSlug:    directory.Slug(),
@@ -179,7 +189,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
-	membersByGroup := usersDepartmentMemberships(users, groups)
+	membersByGroup := usersDepartmentMemberships(activeDirectoryUsers(users), groups)
 	memberTotal := 0
 	if len(membersByGroup) > 0 {
 		for _, members := range membersByGroup {
@@ -230,7 +240,11 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		}
 	}
 	if e.options.DeactivateMissingData {
-		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart); err != nil {
+		mappingTypes := []string{}
+		if userOnlyDirectory {
+			mappingTypes = []string{"user"}
+		}
+		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart, mappingTypes...); err != nil {
 			return result, err
 		}
 	}
@@ -238,6 +252,31 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		return result, err
 	}
 	return result, nil
+}
+
+func listDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
+	if snapshot, ok := directory.(provider.SnapshotDirectory); ok {
+		return snapshot.ListUsersAndGroups()
+	}
+	users, err := directory.ListUsers()
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, err := directory.ListGroups()
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, groups, nil
+}
+
+func activeDirectoryUsers(users []provider.User) []provider.User {
+	active := make([]provider.User, 0, len(users))
+	for _, user := range users {
+		if user.Active {
+			active = append(active, user)
+		}
+	}
+	return active
 }
 
 func providerDisplayName(directory provider.Directory) string {

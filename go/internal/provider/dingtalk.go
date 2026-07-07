@@ -151,6 +151,26 @@ func (d DingTalk) ListUsers() ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.listUsers(token, groups)
+}
+
+func (d DingTalk) ListUsersAndGroups() ([]User, []Group, error) {
+	token, err := d.appAccessToken()
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, err := d.listGroups(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := d.listUsers(token, groups)
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, groups, nil
+}
+
+func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
 	for _, group := range groups {
 		items, err := d.departmentUsers(token, group.Subject)
@@ -169,7 +189,9 @@ func (d DingTalk) ListUsers() ([]User, error) {
 			if firstStringish(detail, "userid", "userId", "user_id") == "" {
 				detail["userid"] = userID
 			}
-			d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject})
+			if err := d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return usersFromMap(usersBySubject), nil
@@ -325,10 +347,13 @@ func (d DingTalk) user(token, userID string) (map[string]any, error) {
 	return out, nil
 }
 
-func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string) {
-	subject, subjectType := dingTalkUserSubject(raw)
+func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string) error {
+	subject, subjectType, err := dingTalkDirectoryUserSubject(raw)
+	if err != nil {
+		return err
+	}
 	if subject == "" {
-		return
+		return nil
 	}
 	displayName := userDisplayName(raw)
 	if displayName == "" {
@@ -355,6 +380,7 @@ func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[stri
 		user.DepartmentSubjects = departmentSubjects
 	}
 	usersBySubject[subject] = user
+	return nil
 }
 
 func (d DingTalk) appAccessToken() (string, error) {
@@ -486,6 +512,24 @@ func dingTalkUserSubject(raw map[string]any) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func dingTalkDirectoryUserSubject(raw map[string]any) (string, string, error) {
+	for _, item := range []struct {
+		fields      []string
+		subjectType string
+	}{
+		{[]string{"unionid", "unionId", "union_id"}, "dingtalk_unionid"},
+		{[]string{"openid", "openId", "open_id"}, "dingtalk_openid"},
+	} {
+		if value := firstStringish(raw, item.fields...); value != "" {
+			return value, item.subjectType, nil
+		}
+	}
+	if userID := firstStringish(raw, "userid", "userId", "user_id"); userID != "" {
+		return "", "", fmt.Errorf("钉钉通讯录用户 %s 缺少 unionid/openid，无法和扫码登录身份保持一致；请检查钉钉应用通讯录权限和可见范围", userID)
+	}
+	return "", "", nil
 }
 
 func dingTalkUserActive(raw map[string]any) bool {

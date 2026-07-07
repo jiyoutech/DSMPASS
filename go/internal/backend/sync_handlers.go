@@ -128,6 +128,9 @@ ON CONFLICT(id) DO NOTHING
 		progress.message(ctx, "写入同步日志", "正在记录映射结果")
 	}
 	s.logDirectoryLinkPlanWithBuffer(logBuffer, runID, directory.Slug(), result.Items)
+	if syncResultHasDirectoryWarning(result) {
+		policy.PreserveMissingGroups = true
+	}
 	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
 	if err != nil {
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
@@ -163,6 +166,15 @@ func (s *Server) logDirectoryLinkPlanWithBuffer(buffer *syncLogBuffer, runID, so
 	}
 }
 
+func syncResultHasDirectoryWarning(result syncsvc.Result) bool {
+	for _, item := range result.Items {
+		if item.Action == "directory_warning" {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) beginSourceSync(slug string) bool {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
@@ -185,6 +197,7 @@ func (s *Server) endSourceSync(slug string) {
 type sourceSyncPolicy struct {
 	DisableMissingUsers   bool
 	DeactivateMissingData bool
+	PreserveMissingGroups bool
 }
 
 func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) sourceSyncPolicy {
@@ -209,9 +222,14 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		return operations, err
 	}
 	if policy.DeactivateMissingData {
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		if policy.PreserveMissingGroups {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND mapping_type = 'user' AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		} else {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		}
 	}
 	var groupConflicts, accountConflicts int
 	if err := s.store.DBTX().QueryRowContext(ctx, `

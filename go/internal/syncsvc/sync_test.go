@@ -84,6 +84,49 @@ func TestSyncProviderAddsWarningWhenOnlyUsersReturned(t *testing.T) {
 	assertTableCount(t, ctx, database, "provider_groups", 0)
 }
 
+func TestSyncProviderSkipsInactiveUsers(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	result, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanAction(t, result, "skip_inactive_user")
+	assertTableCount(t, ctx, database, "external_accounts", 1)
+	assertTableCount(t, ctx, database, "app_identities", 0)
+	assertTableCount(t, ctx, database, "dsm_accounts", 0)
+	var active int
+	if err := database.QueryRowContext(ctx, `SELECT active FROM external_accounts WHERE subject = 'u1'`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("inactive external account active=%d, want 0", active)
+	}
+}
+
+func TestSyncProviderUsesDirectorySnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	directory := &snapshotDirectory{
+		fakeDirectory: fakeDirectory{
+			users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true}},
+			groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+		},
+	}
+
+	if _, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	if directory.snapshotCalls != 1 || directory.listUsersCalls != 0 || directory.listGroupsCalls != 0 {
+		t.Fatalf("snapshotCalls=%d listUsersCalls=%d listGroupsCalls=%d", directory.snapshotCalls, directory.listUsersCalls, directory.listGroupsCalls)
+	}
+}
+
 func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
@@ -326,6 +369,36 @@ func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testi
 	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
 }
 
+func TestSyncProviderUserOnlyPreservesMissingGroupMembers(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "wecom-main",
+		name:   "企业微信",
+		users:  []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{{ProviderSlug: "wecom-main", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:  "wecom-main",
+		name:  "企业微信",
+		users: []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
+	assertActiveMemberMappingCount(t, ctx, database, "wecom-main", 1)
+	assertActiveGroupMappingCount(t, ctx, database, "wecom-main", 1)
+}
+
 type fakeDirectory struct {
 	slug   string
 	name   string
@@ -347,6 +420,28 @@ func (f fakeDirectory) ListUsers() ([]provider.User, error) { return f.users, ni
 func (f fakeDirectory) ListGroups() ([]provider.Group, error) { return f.groups, nil }
 
 func (f fakeDirectory) ListGroupMembers(groupSubject string) ([]string, error) { return nil, nil }
+
+type snapshotDirectory struct {
+	fakeDirectory
+	snapshotCalls   int
+	listUsersCalls  int
+	listGroupsCalls int
+}
+
+func (f *snapshotDirectory) ListUsersAndGroups() ([]provider.User, []provider.Group, error) {
+	f.snapshotCalls++
+	return f.users, f.groups, nil
+}
+
+func (f *snapshotDirectory) ListUsers() ([]provider.User, error) {
+	f.listUsersCalls++
+	return f.users, nil
+}
+
+func (f *snapshotDirectory) ListGroups() ([]provider.Group, error) {
+	f.listGroupsCalls++
+	return f.groups, nil
+}
 
 func openSyncTestDB(t *testing.T, ctx context.Context) (*sql.DB, *db.Queries) {
 	t.Helper()
@@ -405,6 +500,20 @@ WHERE mapping_type = 'member' AND provider_slug = ? AND active = 1`, providerSlu
 	}
 	if got != want {
 		t.Fatalf("provider %s active member mapping count got %d want %d", providerSlug, got, want)
+	}
+}
+
+func assertActiveGroupMappingCount(t *testing.T, ctx context.Context, database *sql.DB, providerSlug string, want int) {
+	t.Helper()
+	var got int
+	if err := database.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM dsm_mapping_entries
+WHERE mapping_type = 'group' AND provider_slug = ? AND active = 1`, providerSlug).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("provider %s active group mapping count got %d want %d", providerSlug, got, want)
 	}
 }
 

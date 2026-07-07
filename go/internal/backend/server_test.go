@@ -185,6 +185,48 @@ func TestSyncSourceToDSMDisableMissingUsersPolicy(t *testing.T) {
 	}
 }
 
+func TestSyncSourceToDSMPreservesMissingGroupsForUserOnlyDirectory(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	seedSyncedAccount(t, ctx, database, "wecom-main", "identity-1", "external-identity-1", "u1", "alice", "2000-01-01 00:00:00")
+	seedGroupMember(t, ctx, database, "wecom-main", "group-1", "dsm-group-1", "member-1", "g1", "engineering", "identity-1", 1, "created")
+	if _, err := database.ExecContext(ctx, `
+UPDATE provider_groups SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main';
+UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main';
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "wecom-main", "2999-01-01 00:00:00", sourceSyncPolicy{DeactivateMissingData: true, PreserveMissingGroups: true}); err != nil {
+		t.Fatal(err)
+	}
+	var providerGroupActive, groupMappingActive, memberMappingActive, userMappingActive int
+	if err := database.QueryRowContext(ctx, `SELECT active FROM provider_groups WHERE id = 'group-1'`).Scan(&providerGroupActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-group-member-1'`).Scan(&groupMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-member-member-1'`).Scan(&memberMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-user-external-identity-1'`).Scan(&userMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if providerGroupActive != 1 || groupMappingActive != 1 || memberMappingActive != 1 {
+		t.Fatalf("group data should be preserved, providerGroup=%d groupMapping=%d memberMapping=%d", providerGroupActive, groupMappingActive, memberMappingActive)
+	}
+	if userMappingActive != 0 {
+		t.Fatalf("stale user mapping active=%d, want 0", userMappingActive)
+	}
+}
+
 func TestSyncSourceToDSMReenablesMappedDisabledUser(t *testing.T) {
 	ctx := context.Background()
 	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
