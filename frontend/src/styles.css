@@ -402,6 +402,12 @@ body {
   display: block;
 }
 
+.certificate-actions {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #f0f0f0;
+}
+
 @media (max-width: 900px) {
   .settings-console {
     grid-template-columns: 1fr;

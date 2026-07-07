@@ -424,7 +424,7 @@ export function SystemSettings() {
                   disabled={loading || saving}
                 />
               </div>
-              <Flex justify="end" gap={8} wrap>
+              <Flex className="certificate-actions" justify="end" gap={8} wrap>
                 <Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>
                 <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
