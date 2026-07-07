@@ -1,5 +1,5 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, List, Menu, Segmented, Select, Space, Switch, Tag, Typography, Upload } from "antd";
+import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -13,7 +13,6 @@ const defaultIDPPort = 26000;
 type SettingsSectionKey = "overview" | "access" | "dsm" | "security" | "certificates" | "account";
 type DeploymentMode = "direct" | "reverse_proxy" | "advanced";
 type CertificateScope = "admin" | "idp";
-const { Paragraph } = Typography;
 
 const systemFieldHelp = {
   deploymentMode: "影响地址推导和哪些地址允许手动编辑；不会关闭本机 /idp 监听端口。",
@@ -31,12 +30,12 @@ const systemFieldHelp = {
 };
 
 const fieldEffectHelp = {
-  adminPort: "只读。修改管理后台监听端口需要调整套件环境或安装向导配置，并重启 DSMPASS 套件后生效。",
+  adminPort: "管理后台监听由套件启动参数提供。修改套件环境或安装向导配置后，需要重启 DSMPASS 才会生效。",
   deploymentMode: "保存后立即更新地址推导规则；不会改变管理后台监听端口，也不会关闭本机认证入口监听。",
   accessHost: "保存后立即更新默认地址推导；直接访问模式会同步生成认证入口公网地址、DSM 地址和 DSM Auth API。",
   accessScheme: "保存后会刷新认证路由；刷新成功后本机 /idp 立即切换协议，无需重启套件。",
   idpPort: "保存后会刷新认证路由；端口可绑定时新端口立即生效，无需重启套件。端口被占用会显示刷新失败原因。",
-  publicBaseURLLocked: "当前部署方式下由上方字段自动生成，不能直接编辑；保存后影响新登录链接和 OAuth 回调地址。",
+  publicBaseURLLocked: "当前部署方式下由上方字段自动生成；保存后影响新登录链接和 OAuth 回调地址。",
   publicBaseURLEditable: "填写身份平台和用户浏览器访问的公网地址；保存后立即影响新登录链接和 OAuth 回调地址，不改变本机监听端口。",
   dsmLocked: "当前部署方式下自动生成，不能直接编辑；切换到高级模式后可分别指定 DSM 地址和 DSM Auth API。",
   dsmRedirectURL: "保存后立即影响后续认证成功后的 DSM 跳转目标。",
@@ -192,10 +191,9 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
           <section className="settings-section">
             <div className="settings-section-head">
               <div>
-                <h3>当前运行信息</h3>
-                <p>以下信息来自套件启动环境，只读展示；修改后是否生效取决于对应的生效方式。</p>
+                <h3>运行时边界</h3>
+                <p>这些值来自套件启动环境，用来说明当前实例的实际监听位置。</p>
               </div>
-              <Tag>只读</Tag>
             </div>
             <div className="form-grid">
               <Form.Item
@@ -205,7 +203,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
               >
                 <InputNumber disabled controls={false} precision={0} className="settings-full-input" />
               </Form.Item>
-              <Form.Item label="管理后台监听地址" extra="只读。系统设置页不会修改管理后台监听地址；反向代理也不会取消 NAS 本机监听。">
+              <Form.Item label="管理后台监听地址" extra="系统设置页不会修改管理后台监听地址；反向代理也不会取消 NAS 本机监听。">
                 <Input disabled value={adminPort > 0 ? `0.0.0.0:${adminPort}` : "未配置"} />
               </Form.Item>
             </div>
@@ -217,7 +215,6 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
                 <h3>认证入口配置</h3>
                 <p>配置 /idp 本机监听和身份平台看到的公网地址；管理后台监听不在此处修改。</p>
               </div>
-              <Tag color="blue">认证入口</Tag>
             </div>
             <div className="form-grid">
               <Form.Item
@@ -296,7 +293,6 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
             <h3>DSM 登录链路</h3>
             <p>配置最终跳转到 DSM 的地址和 Helper 登录方式。</p>
           </div>
-          <Tag color="purple">DSM</Tag>
         </div>
         <ProtocolConsistencyNotice />
         <div className="form-grid">
@@ -354,7 +350,6 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
             <h3>访问安全</h3>
             <p>控制管理后台的访问来源；认证入口的公网访问以认证入口公网地址和反向代理策略为准。</p>
           </div>
-          <Tag color="red">安全</Tag>
         </div>
         <Form.Item extra={fieldEffectHelp.adminAllowedCIDRs}>
           <AdminAccessSwitch />
@@ -613,6 +608,21 @@ function selectedFile(files: UploadFile[]) {
   return files[0]?.originFileObj;
 }
 
+const overviewConfigSections = [
+  {
+    title: "入口与域名",
+    keys: ["deployment_mode", "access_host", "access_scheme", "idp_port", "public_base_url"]
+  },
+  {
+    title: "DSM 登录链路",
+    keys: ["dsm_redirect_url", "helper_dsm_login_api", "helper_dsm_login_mode", "helper_dsm_browser_login_ttl_seconds", "helper_dsm_tls_skip_verify"]
+  },
+  {
+    title: "访问安全",
+    keys: ["admin_allowed_cidrs"]
+  }
+];
+
 function settingsSectionTitle(section: SettingsSectionKey) {
   switch (section) {
     case "access":
@@ -627,58 +637,38 @@ function settingsSectionTitle(section: SettingsSectionKey) {
 }
 
 function SystemOverviewCard({ overview, loading }: { overview: SystemSettingsOverview | null; loading: boolean }) {
+  const summaryLead = overview?.summary.slice(0, 2) || [];
+  const summaryDetails = overview?.summary.slice(2) || [];
+
   return (
     <Card title={overview?.title || "系统说明"} className="module-card settings-card" loading={loading && !overview}>
       {!overview ? (
         <Alert type="info" showIcon message="正在读取系统说明" />
       ) : (
-        <div className="settings-overview">
-          <section className="settings-overview-section">
-            <h3>核心边界</h3>
-            <div className="settings-summary">
-              {overview.summary.map((item) => (
-                <Paragraph key={item}>{item}</Paragraph>
-              ))}
-            </div>
+        <div className="settings-doc">
+          <section className="settings-doc-intro">
+            <h2>系统运行边界</h2>
+            {summaryLead.map((item) => (
+              <p key={item}>{item}</p>
+            ))}
+            {summaryDetails.length > 0 && (
+              <ul>
+                {summaryDetails.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            )}
           </section>
 
-          <section className="settings-overview-section">
-            <h3>当前运行拓扑</h3>
-            <RuntimeFactGrid items={overview.runtime} />
-          </section>
+          <OverviewRuntimeSection items={overview.runtime} />
 
-          <section className="settings-overview-section">
-            <h3>部署方式</h3>
-            <div className="settings-explain-grid">
-              {overview.deployment_modes.map((item) => (
-                <div className="settings-explain-item" key={item.title}>
-                  <div className="settings-explain-head">
-                    <strong>{item.title}</strong>
-                    <Tag color={item.value === "当前使用" ? "blue" : "default"}>{item.value}</Tag>
-                  </div>
-                  <p>{item.description}</p>
-                </div>
-              ))}
-            </div>
-          </section>
+          <OverviewModeSection items={overview.deployment_modes} />
 
-          <section className="settings-overview-section">
-            <h3>配置影响范围</h3>
-            <OverviewConfigList items={overview.configuration} />
-          </section>
+          <OverviewConfigSections items={overview.configuration} certificates={overview.certificates} />
 
-          <section className="settings-overview-section">
-            <h3>证书作用域</h3>
-            <OverviewConfigList items={overview.certificates} />
-          </section>
-
-          <section className="settings-overview-section">
+          <section className="settings-doc-section">
             <h3>操作注意</h3>
-            <List
-              size="small"
-              dataSource={overview.operational_notes}
-              renderItem={(item) => <List.Item>{item}</List.Item>}
-            />
+            <ol className="settings-note-list">
+              {overview.operational_notes.map((item) => <li key={item}>{item}</li>)}
+            </ol>
           </section>
         </div>
       )}
@@ -686,25 +676,107 @@ function SystemOverviewCard({ overview, loading }: { overview: SystemSettingsOve
   );
 }
 
+function OverviewRuntimeSection({ items }: { items: SystemSettingsOverview["runtime"] }) {
+  return (
+    <section className="settings-doc-section">
+      <h3>当前运行状态</h3>
+      <div className="settings-definition-list">
+        {items.map((item) => (
+          <div className="settings-definition-row" key={item.title}>
+            <div className="settings-definition-head">
+              <span>{item.title}</span>
+              <code>{item.value || "-"}</code>
+            </div>
+            <p>{item.description}</p>
+            <OverviewMeta changeMethod={item.change_method} applies={item.applies} />
+            {item.notes.length > 0 && (
+              <ul>
+                {item.notes.map((note) => <li key={note}>{note}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OverviewModeSection({ items }: { items: SystemSettingsOverview["deployment_modes"] }) {
+  return (
+    <section className="settings-doc-section">
+      <h3>部署方式</h3>
+      <div className="settings-mode-list">
+        {items.map((item) => (
+          <div className={item.value === "当前使用" ? "settings-mode-item active" : "settings-mode-item"} key={item.title}>
+            <div>
+              <strong>{item.title}</strong>
+              <p>{item.description}</p>
+            </div>
+            <span>{item.value}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OverviewConfigSections({
+  items,
+  certificates
+}: {
+  items: SystemSettingsOverview["configuration"];
+  certificates: SystemSettingsOverview["certificates"];
+}) {
+  const itemsByKey = new Map(items.map((item) => [item.key, item]));
+  const usedKeys = new Set<string>();
+  const groupedSections = overviewConfigSections.map((section) => {
+    const sectionItems = section.keys.flatMap((key) => {
+      const item = itemsByKey.get(key);
+      if (!item) {
+        return [];
+      }
+      usedKeys.add(key);
+      return [item];
+    });
+    return { ...section, items: sectionItems };
+  });
+  const remaining = items.filter((item) => !usedKeys.has(item.key));
+
+  return (
+    <>
+      {groupedSections.map((section) => (
+        section.items.length > 0 && (
+          <section className="settings-doc-section" key={section.title}>
+            <h3>{section.title}</h3>
+            <OverviewConfigList items={section.items} />
+          </section>
+        )
+      ))}
+      {remaining.length > 0 && (
+        <section className="settings-doc-section">
+          <h3>其他配置</h3>
+          <OverviewConfigList items={remaining} />
+        </section>
+      )}
+      <section className="settings-doc-section">
+        <h3>证书作用域</h3>
+        <OverviewConfigList items={certificates} />
+      </section>
+    </>
+  );
+}
+
 function OverviewConfigList({ items }: { items: SystemSettingsOverview["configuration"] }) {
   return (
-    <div className="settings-explain-grid">
+    <div className="settings-policy-list">
       {items.map((item) => (
-        <div className="settings-explain-item" key={item.key}>
-          <div className="settings-explain-head">
-            <strong>{item.label}</strong>
-            <Tag color={item.configurable ? "green" : "default"}>{item.configurable ? "可配置" : "只读"}</Tag>
-          </div>
-          <div className="settings-explain-value">{item.value || "-"}</div>
-          <div className="settings-explain-meta">
-            <span>修改入口</span>
-            <strong>{item.change_method || "-"}</strong>
-          </div>
-          <div className="settings-explain-meta">
-            <span>生效方式</span>
-            <strong>{item.applies || "-"}</strong>
+        <div className="settings-policy-row" key={item.key}>
+          <div className="settings-policy-title">
+            <span>{item.label}</span>
+            <code>{item.value || "-"}</code>
           </div>
           <p>{item.effect}</p>
+          <OverviewMeta changeMethod={item.change_method} applies={item.applies} />
           {item.notes.length > 0 && (
             <ul>
               {item.notes.map((note) => <li key={note}>{note}</li>)}
@@ -716,40 +788,11 @@ function OverviewConfigList({ items }: { items: SystemSettingsOverview["configur
   );
 }
 
-function RuntimeFactGrid({ items }: { items: SystemSettingsOverview["runtime"] }) {
+function OverviewMeta({ changeMethod, applies }: { changeMethod: string; applies: string }) {
   return (
-    <div className="settings-readonly-grid">
-      {items.map((item) => (
-        <div className="settings-readonly-item" key={item.title}>
-          <div className="settings-readonly-head">
-            <strong>{item.title}</strong>
-            <Tag color={item.configurable ? "green" : "default"}>{item.configurable ? "可配置" : "只读"}</Tag>
-          </div>
-          <Input value={item.value || "-"} disabled />
-          <div className="settings-readonly-detail">
-            <FactDetail label="说明" value={item.description} />
-            <FactDetail label="修改入口" value={item.change_method} />
-            <FactDetail label="生效方式" value={item.applies} />
-          </div>
-          {item.notes.length > 0 && (
-            <ul>
-              {item.notes.map((note) => <li key={note}>{note}</li>)}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function FactDetail({ label, value }: { label: string; value: string }) {
-  if (!value) {
-    return null;
-  }
-  return (
-    <div className="settings-fact-detail">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="settings-meta-line">
+      {changeMethod && <span>修改入口：{changeMethod}</span>}
+      {applies && <span>生效方式：{applies}</span>}
     </div>
   );
 }

@@ -384,137 +384,132 @@ body {
   margin-bottom: 14px;
 }
 
-.settings-overview {
+.settings-doc {
   display: grid;
-  gap: 18px;
+  gap: 24px;
+  max-width: 920px;
 }
 
-.settings-overview-section {
+.settings-doc-intro {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #f0f0f0;
 }
 
-.settings-overview-section h3 {
+.settings-doc-intro h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 18px;
+  font-weight: 600;
   line-height: 1.4;
 }
 
-.settings-summary {
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  background: #fafafa;
-}
-
-.settings-summary .ant-typography {
+.settings-doc-intro p,
+.settings-doc-intro li,
+.settings-doc-section p,
+.settings-doc-section li,
+.settings-policy-row p,
+.settings-definition-row p,
+.settings-mode-item p {
   margin: 0;
-  color: rgba(0, 0, 0, 0.72);
+  color: rgba(0, 0, 0, 0.64);
   font-size: 13px;
   line-height: 1.6;
 }
 
-.settings-readonly-grid {
+.settings-doc-intro ul,
+.settings-policy-row ul,
+.settings-definition-row ul,
+.settings-note-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.settings-doc-section {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 12px;
 }
 
-.settings-readonly-item {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid #e8e8e8;
-  border-radius: 8px;
-  background: #fbfbfb;
-}
-
-.settings-readonly-head,
-.settings-explain-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.settings-readonly-item .ant-input[disabled] {
-  color: rgba(0, 0, 0, 0.82);
-  cursor: not-allowed;
-  background: #f2f2f2;
-  border-color: #dedede;
-}
-
-.settings-readonly-detail {
-  display: grid;
-  gap: 6px;
-}
-
-.settings-fact-detail,
-.settings-explain-meta {
-  display: grid;
-  gap: 2px;
-}
-
-.settings-fact-detail span,
-.settings-explain-meta span {
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
+.settings-doc-section h3 {
+  margin: 0;
+  color: rgba(0, 0, 0, 0.86);
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.4;
 }
 
-.settings-fact-detail strong,
-.settings-explain-meta strong {
-  color: rgba(0, 0, 0, 0.72);
+.settings-definition-list,
+.settings-policy-list,
+.settings-mode-list {
+  display: grid;
+  border-top: 1px solid #f0f0f0;
+}
+
+.settings-definition-row,
+.settings-policy-row,
+.settings-mode-item {
+  display: grid;
+  gap: 7px;
+  padding: 13px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.settings-definition-head,
+.settings-policy-title,
+.settings-mode-item {
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.settings-definition-head,
+.settings-policy-title {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-definition-head span,
+.settings-policy-title span,
+.settings-mode-item strong {
+  color: rgba(0, 0, 0, 0.86);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.5;
 }
 
-.settings-readonly-item li,
-.settings-explain-item p,
-.settings-explain-item li {
-  color: rgba(0, 0, 0, 0.62);
-  font-size: 13px;
-  line-height: 1.55;
+.settings-definition-head code,
+.settings-policy-title code {
+  overflow-wrap: anywhere;
+  padding: 2px 0;
+  color: rgba(0, 0, 0, 0.78);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: transparent;
 }
 
-.settings-explain-grid {
+.settings-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: rgba(0, 0, 0, 0.48);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-mode-item {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
 }
 
-.settings-explain-item {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  background: #fff;
+.settings-mode-item > span {
+  color: rgba(0, 0, 0, 0.46);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: right;
 }
 
-.settings-explain-value {
-  min-height: 30px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #f7f7f7;
-  color: rgba(0, 0, 0, 0.82);
-  font-size: 13px;
-  line-height: 1.4;
-  word-break: break-all;
-}
-
-.settings-readonly-item ul,
-.settings-explain-item p,
-.settings-explain-item ul {
-  margin: 0;
-}
-
-.settings-readonly-item ul,
-.settings-explain-item ul {
-  padding-left: 18px;
+.settings-mode-item.active > span {
+  color: #1677ff;
+  font-weight: 500;
 }
 
 .certificate-upload {
@@ -552,6 +547,16 @@ body {
 }
 
 @media (max-width: 560px) {
+  .settings-definition-head,
+  .settings-policy-title,
+  .settings-mode-item {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-mode-item > span {
+    text-align: left;
+  }
+
   .settings-admin-access {
     align-items: flex-start;
     flex-direction: column;
