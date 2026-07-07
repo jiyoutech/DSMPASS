@@ -425,7 +425,7 @@ export function SystemSettings() {
               <div className="certificate-grid">
                 <CertificateUploadFields
                   title="管理端证书"
-                  description="用于管理后台 HTTPS。上传后不会修改 IDP 地址；需要重启 DSMPASS 套件后生效。"
+                  description="用于管理后台 HTTPS。上传后不会修改认证入口地址；无需重启，新建 HTTPS 连接会自动使用新证书。"
                   certFiles={adminCertFiles}
                   keyFiles={adminKeyFiles}
                   onCertFiles={setAdminCertFiles}
@@ -434,7 +434,7 @@ export function SystemSettings() {
                 />
                 <CertificateUploadFields
                   title="认证端口证书"
-                  description="用于 /idp 登录入口。优先读取非通配符 DNS SAN，并自动同步到 IDP 地址；通配符证书不会自动改写访问域名。"
+                  description="用于 /idp 登录入口。上传后不会影响管理后台证书；如证书包含非通配符 DNS SAN，会自动同步为认证入口域名。"
                   certFiles={idpCertFiles}
                   keyFiles={idpKeyFiles}
                   onCertFiles={setIDPCertFiles}
