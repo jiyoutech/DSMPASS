@@ -10,7 +10,7 @@ import type { AdminPasswordChange, SystemSettingsOverview, SystemSettingsUpdate 
 const privateCIDRs = "private";
 const allCIDRs = "all";
 const defaultIDPPort = 26000;
-type SettingsSectionKey = "overview" | "base" | "dsm" | "certificates" | "account";
+type SettingsSectionKey = "overview" | "access" | "dsm" | "security" | "certificates" | "account";
 type DeploymentMode = "direct" | "reverse_proxy" | "advanced";
 type CertificateScope = "admin" | "idp";
 const { Paragraph } = Typography;
@@ -20,6 +20,7 @@ const systemFieldHelp = {
   accessHost: "用于生成默认认证入口、DSM 地址和 DSM Auth API；填写主机名或 IP，不包含协议、端口和路径。",
   accessScheme: "影响本机 /idp 监听使用 HTTP 还是 HTTPS；反向代理公网协议由认证入口公网地址决定。",
   idpPort: "影响本机 /idp 登录入口监听端口，必须大于 1024、不能被占用，并且不能与管理后台端口一致。",
+  adminPort: "管理后台页面、静态前端和 /api/admin 接口使用的本机监听端口。此值由套件启动参数决定，不能在系统设置页修改。",
   adminAllowedCIDRs: "开启后，管理后台仅允许本机和内网访问。保存时后端会确认当前访问 IP 仍可访问，避免把自己锁在外面。",
   publicBaseURL: "影响登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉看到的认证入口公网地址。",
   dsmRedirectURL: "影响认证成功后浏览器最终跳转到哪个 DSM 地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
@@ -27,6 +28,23 @@ const systemFieldHelp = {
   helperDSMBrowserLoginTTL: "浏览器直登时临时密码保留的秒数，到期后 helper 自动恢复 shadow。",
   helperDSMLoginAPI: "影响 DSMPASS 或浏览器调用哪个 DSM SYNO.API.Auth 登录接口。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMTLSSkipVerify: "控制辅助程序访问需要登录的 NAS 时是否跳过 DSM 证书校验。"
+};
+
+const fieldEffectHelp = {
+  adminPort: "只读。修改管理后台监听端口需要调整套件环境或安装向导配置，并重启 DSMPASS 套件后生效。",
+  deploymentMode: "保存后立即更新地址推导规则；不会改变管理后台监听端口，也不会关闭本机认证入口监听。",
+  accessHost: "保存后立即更新默认地址推导；直接访问模式会同步生成认证入口公网地址、DSM 地址和 DSM Auth API。",
+  accessScheme: "保存后会刷新认证路由；刷新成功后本机 /idp 立即切换协议，无需重启套件。",
+  idpPort: "保存后会刷新认证路由；端口可绑定时新端口立即生效，无需重启套件。端口被占用会显示刷新失败原因。",
+  publicBaseURLLocked: "当前部署方式下由上方字段自动生成，不能直接编辑；保存后影响新登录链接和 OAuth 回调地址。",
+  publicBaseURLEditable: "填写身份平台和用户浏览器访问的公网地址；保存后立即影响新登录链接和 OAuth 回调地址，不改变本机监听端口。",
+  dsmLocked: "当前部署方式下自动生成，不能直接编辑；切换到高级模式后可分别指定 DSM 地址和 DSM Auth API。",
+  dsmRedirectURL: "保存后立即影响后续认证成功后的 DSM 跳转目标。",
+  helperDSMLoginAPI: "保存后立即影响后续 DSM 登录调用；浏览器直登模式要求用户浏览器可访问该地址。",
+  helperDSMLoginMode: "保存后立即影响后续登录流程；外网无法访问 DSM 时建议使用 Helper 连接。",
+  helperDSMBrowserLoginTTL: "保存后立即影响后续浏览器直登临时密码。",
+  helperDSMTLSSkipVerify: "保存后立即影响 DSMPASS/Helper 访问 DSM Auth API 的证书校验。",
+  adminAllowedCIDRs: "保存后立即影响管理后台和 /api/admin 的新请求；后端会校验当前管理员来源，避免保存后自己无法继续访问。"
 };
 
 const deploymentOptions: { label: string; value: DeploymentMode }[] = [
@@ -100,13 +118,14 @@ function browserDSMProtocolMismatch(values: Partial<SystemSettingsUpdate>) {
   return "";
 }
 
-export function SystemSettingsFields({ section = "all" }: { section?: "all" | "base" | "dsm" } = {}) {
+export function SystemSettingsFields({ section = "all" }: { section?: "all" | "access" | "dsm" | "security" } = {}) {
   const form = Form.useFormInstance<SystemSettingsUpdate>();
   const { message } = AntApp.useApp();
   const [detecting, setDetecting] = useState(false);
   const deploymentMode = normalizedDeploymentMode(Form.useWatch("deployment_mode", form));
   const publicBaseEditable = deploymentMode !== "direct";
   const dsmEditable = deploymentMode === "advanced";
+  const adminPort = Number(Form.useWatch("admin_port", form) || 0);
 
   function syncDerivedURLs(next?: Partial<{ deployment_mode: DeploymentMode; access_host: string; access_scheme: "http" | "https"; idp_port: number }>) {
     const mode = normalizedDeploymentMode(next?.deployment_mode ?? form.getFieldValue("deployment_mode"));
@@ -168,83 +187,141 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
 
   return (
     <Space direction="vertical" size={18} className="settings-stack">
-      {(section === "all" || section === "base") && <section className="settings-section">
-        <div className="settings-section-head">
-          <div>
-            <h3>认证入口配置</h3>
-            <p>配置 /idp 本机监听和身份平台看到的公网地址；管理后台监听不在此处修改。</p>
-          </div>
-          <Tag color="blue">IDP</Tag>
-        </div>
-        <Form.Item name="admin_port" hidden>
-          <InputNumber />
-        </Form.Item>
-        <div className="form-grid">
-          <Form.Item name="deployment_mode" label={<HelpLabel label="部署方式" help={systemFieldHelp.deploymentMode} />} rules={[{ required: true }]}>
-            <Segmented
-              block
-              options={deploymentOptions}
-              onChange={(value) => syncDerivedURLs({ deployment_mode: value as DeploymentMode })}
-            />
-          </Form.Item>
-          <Form.Item name="access_scheme" label={<HelpLabel label="IDP 协议" help={systemFieldHelp.accessScheme} />} rules={[{ required: true }]}>
-            <Segmented
-              block
-              options={[
-                { label: "HTTP", value: "http" },
-                { label: "HTTPS", value: "https" }
-              ]}
-              onChange={(value) => syncDerivedURLs({ access_scheme: value as "http" | "https" })}
-            />
-          </Form.Item>
-          <Form.Item name="access_host" label={<HelpLabel label="NAS IP / 域名" help={systemFieldHelp.accessHost} />} rules={[{ required: true }]}>
-            <Input
-              addonAfter={<Button htmlType="button" type="link" size="small" loading={detecting} onClick={() => void discover()}>检测</Button>}
-              onChange={(event) => syncDerivedURLs({ access_host: event.target.value })}
-            />
-          </Form.Item>
-          <Form.Item
-            name="idp_port"
-            label={<HelpLabel label="IDP 监听端口" help={systemFieldHelp.idpPort} />}
-            rules={[
-              { required: true },
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  const adminPort = Number(getFieldValue("admin_port") || 0);
-                  if (adminPort > 0 && Number(value) === adminPort) {
-                    return Promise.reject(new Error("IDP 监听端口不能与管理后台端口一致"));
-                  }
-                  return Promise.resolve();
-                }
-              })
-            ]}
-          >
-            <InputNumber min={1025} max={65535} precision={0} onChange={(value) => syncDerivedURLs({ idp_port: Number(value) })} />
-          </Form.Item>
-          <Form.Item name="public_base_url" label={<HelpLabel label="IDP 对外地址" help={systemFieldHelp.publicBaseURL} />} rules={[{ required: true }]}>
-            <Input disabled={!publicBaseEditable} placeholder="https://login.example.com" />
-          </Form.Item>
-        </div>
-        <AdminAccessSwitch />
-      </section>}
+      {(section === "all" || section === "access") && (
+        <>
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <div>
+                <h3>当前运行信息</h3>
+                <p>以下信息来自套件启动环境，只读展示；修改后是否生效取决于对应的生效方式。</p>
+              </div>
+              <Tag>只读</Tag>
+            </div>
+            <div className="form-grid">
+              <Form.Item
+                name="admin_port"
+                label={<HelpLabel label="管理后台监听端口" help={systemFieldHelp.adminPort} />}
+                extra={fieldEffectHelp.adminPort}
+              >
+                <InputNumber disabled controls={false} precision={0} className="settings-full-input" />
+              </Form.Item>
+              <Form.Item label="管理后台监听地址" extra="只读。系统设置页不会修改管理后台监听地址；反向代理也不会取消 NAS 本机监听。">
+                <Input disabled value={adminPort > 0 ? `0.0.0.0:${adminPort}` : "未配置"} />
+              </Form.Item>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <div>
+                <h3>认证入口配置</h3>
+                <p>配置 /idp 本机监听和身份平台看到的公网地址；管理后台监听不在此处修改。</p>
+              </div>
+              <Tag color="blue">认证入口</Tag>
+            </div>
+            <div className="form-grid">
+              <Form.Item
+                name="deployment_mode"
+                label={<HelpLabel label="部署方式" help={systemFieldHelp.deploymentMode} />}
+                extra={fieldEffectHelp.deploymentMode}
+                rules={[{ required: true }]}
+              >
+                <Segmented
+                  block
+                  options={deploymentOptions}
+                  onChange={(value) => syncDerivedURLs({ deployment_mode: value as DeploymentMode })}
+                />
+              </Form.Item>
+              <Form.Item
+                name="access_scheme"
+                label={<HelpLabel label="认证入口本机协议" help={systemFieldHelp.accessScheme} />}
+                extra={fieldEffectHelp.accessScheme}
+                rules={[{ required: true }]}
+              >
+                <Segmented
+                  block
+                  options={[
+                    { label: "HTTP", value: "http" },
+                    { label: "HTTPS", value: "https" }
+                  ]}
+                  onChange={(value) => syncDerivedURLs({ access_scheme: value as "http" | "https" })}
+                />
+              </Form.Item>
+              <Form.Item
+                name="access_host"
+                label={<HelpLabel label="NAS IP / 域名" help={systemFieldHelp.accessHost} />}
+                extra={fieldEffectHelp.accessHost}
+                rules={[{ required: true }]}
+              >
+                <Input
+                  addonAfter={<Button htmlType="button" type="link" size="small" loading={detecting} onClick={() => void discover()}>检测</Button>}
+                  onChange={(event) => syncDerivedURLs({ access_host: event.target.value })}
+                />
+              </Form.Item>
+              <Form.Item
+                name="idp_port"
+                label={<HelpLabel label="认证入口本机端口" help={systemFieldHelp.idpPort} />}
+                extra={fieldEffectHelp.idpPort}
+                rules={[
+                  { required: true },
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      const adminPort = Number(getFieldValue("admin_port") || 0);
+                      if (adminPort > 0 && Number(value) === adminPort) {
+                        return Promise.reject(new Error("认证入口本机端口不能与管理后台端口一致"));
+                      }
+                      return Promise.resolve();
+                    }
+                  })
+                ]}
+              >
+                <InputNumber min={1025} max={65535} precision={0} onChange={(value) => syncDerivedURLs({ idp_port: Number(value) })} className="settings-full-input" />
+              </Form.Item>
+              <Form.Item
+                name="public_base_url"
+                label={<HelpLabel label="认证入口公网地址" help={systemFieldHelp.publicBaseURL} />}
+                extra={publicBaseEditable ? fieldEffectHelp.publicBaseURLEditable : fieldEffectHelp.publicBaseURLLocked}
+                rules={[{ required: true }]}
+              >
+                <Input disabled={!publicBaseEditable} placeholder="https://login.example.com" />
+              </Form.Item>
+            </div>
+          </section>
+        </>
+      )}
 
       {(section === "all" || section === "dsm") && <section className="settings-section">
         <div className="settings-section-head">
           <div>
-            <h3>DSM 登录</h3>
+            <h3>DSM 登录链路</h3>
             <p>配置最终跳转到 DSM 的地址和 Helper 登录方式。</p>
           </div>
           <Tag color="purple">DSM</Tag>
         </div>
         <ProtocolConsistencyNotice />
         <div className="form-grid">
-          <Form.Item name="dsm_redirect_url" label={<HelpLabel label="DSM 地址" help={systemFieldHelp.dsmRedirectURL} />} rules={[{ required: true }]}>
+          <Form.Item
+            name="dsm_redirect_url"
+            label={<HelpLabel label="DSM 地址" help={systemFieldHelp.dsmRedirectURL} />}
+            extra={dsmEditable ? fieldEffectHelp.dsmRedirectURL : fieldEffectHelp.dsmLocked}
+            rules={[{ required: true }]}
+          >
             <Input disabled={!dsmEditable} placeholder="https://nas.example.com:5001/" />
           </Form.Item>
-          <Form.Item name="helper_dsm_login_api" label={<HelpLabel label="DSM Auth API" help={systemFieldHelp.helperDSMLoginAPI} />} rules={[{ required: true }]}>
+          <Form.Item
+            name="helper_dsm_login_api"
+            label={<HelpLabel label="DSM Auth API" help={systemFieldHelp.helperDSMLoginAPI} />}
+            extra={dsmEditable ? fieldEffectHelp.helperDSMLoginAPI : fieldEffectHelp.dsmLocked}
+            rules={[{ required: true }]}
+          >
             <Input disabled={!dsmEditable} placeholder="https://nas.example.com:5001/webapi/entry.cgi" />
           </Form.Item>
-          <Form.Item name="helper_dsm_login_mode" label={<HelpLabel label="DSM 登录模式" help={systemFieldHelp.helperDSMLoginMode} />} rules={[{ required: true }]}>
+          <Form.Item
+            name="helper_dsm_login_mode"
+            label={<HelpLabel label="DSM 登录模式" help={systemFieldHelp.helperDSMLoginMode} />}
+            extra={fieldEffectHelp.helperDSMLoginMode}
+            rules={[{ required: true }]}
+          >
             <Select
               options={[
                 { label: "直接连接", value: "browser" },
@@ -252,13 +329,36 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
               ]}
             />
           </Form.Item>
-          <Form.Item name="helper_dsm_browser_login_ttl_seconds" label={<HelpLabel label="直登 TTL 秒数" help={systemFieldHelp.helperDSMBrowserLoginTTL} />} rules={[{ required: true }]}>
-            <InputNumber min={1} max={60} precision={0} />
+          <Form.Item
+            name="helper_dsm_browser_login_ttl_seconds"
+            label={<HelpLabel label="直登 TTL 秒数" help={systemFieldHelp.helperDSMBrowserLoginTTL} />}
+            extra={fieldEffectHelp.helperDSMBrowserLoginTTL}
+            rules={[{ required: true }]}
+          >
+            <InputNumber min={1} max={60} precision={0} className="settings-full-input" />
           </Form.Item>
-          <Form.Item name="helper_dsm_tls_skip_verify" label={<HelpLabel label="跳过 DSM TLS 校验" help={systemFieldHelp.helperDSMTLSSkipVerify} />} valuePropName="checked">
+          <Form.Item
+            name="helper_dsm_tls_skip_verify"
+            label={<HelpLabel label="跳过 DSM TLS 校验" help={systemFieldHelp.helperDSMTLSSkipVerify} />}
+            extra={fieldEffectHelp.helperDSMTLSSkipVerify}
+            valuePropName="checked"
+          >
             <Switch />
           </Form.Item>
         </div>
+      </section>}
+
+      {(section === "all" || section === "security") && <section className="settings-section">
+        <div className="settings-section-head">
+          <div>
+            <h3>访问安全</h3>
+            <p>控制管理后台的访问来源；认证入口的公网访问以认证入口公网地址和反向代理策略为准。</p>
+          </div>
+          <Tag color="red">安全</Tag>
+        </div>
+        <Form.Item extra={fieldEffectHelp.adminAllowedCIDRs}>
+          <AdminAccessSwitch />
+        </Form.Item>
       </section>}
     </Space>
   );
@@ -311,8 +411,14 @@ export function SystemSettings() {
       if (!payload.relay_helper_hmac_secret) {
         delete payload.relay_helper_hmac_secret;
       }
-      await api.updateSystemSettings(payload);
-      message.success("已保存");
+      const result = await api.updateSystemSettings(payload);
+      if (result.idp_route_restart_required && result.idp_route_restarted === false) {
+        message.warning(`配置已保存，但认证路由刷新失败：${result.idp_route_restart_error || "请检查端口占用后重试"}`);
+      } else if (result.idp_route_restart_required) {
+        message.success("已保存，认证路由已刷新");
+      } else {
+        message.success("已保存");
+      }
       form.setFieldsValue({ relay_helper_hmac_secret: "" });
       await reload();
       await reloadOverview();
@@ -425,8 +531,9 @@ export function SystemSettings() {
           onClick={({ key }) => setActiveSection(key as SettingsSectionKey)}
           items={[
             { key: "overview", label: "系统说明" },
-            { key: "base", label: "基础配置" },
-            { key: "dsm", label: "DSM 登录" },
+            { key: "access", label: "入口与域名" },
+            { key: "dsm", label: "DSM 登录链路" },
+            { key: "security", label: "访问安全" },
             { key: "certificates", label: "证书与路由" },
             { key: "account", label: "后台账号" }
           ]}
@@ -435,10 +542,10 @@ export function SystemSettings() {
           {activeSection === "overview" && (
             <SystemOverviewCard overview={overview} loading={overviewLoading} />
           )}
-          {(activeSection === "base" || activeSection === "dsm") && (
+          {(activeSection === "access" || activeSection === "dsm" || activeSection === "security") && (
             <Form form={form} layout="vertical" onFinish={(values) => void save(values)} disabled={loading || saving} className="settings-form">
               <Card
-                title={activeSection === "base" ? "基础配置" : "DSM 登录"}
+                title={settingsSectionTitle(activeSection)}
                 className="module-card settings-card"
                 extra={<Button type="primary" htmlType="submit" loading={saving}>保存配置</Button>}
               >
@@ -504,6 +611,19 @@ export function SystemSettings() {
 
 function selectedFile(files: UploadFile[]) {
   return files[0]?.originFileObj;
+}
+
+function settingsSectionTitle(section: SettingsSectionKey) {
+  switch (section) {
+    case "access":
+      return "入口与域名";
+    case "dsm":
+      return "DSM 登录链路";
+    case "security":
+      return "访问安全";
+    default:
+      return "系统设置";
+  }
 }
 
 function SystemOverviewCard({ overview, loading }: { overview: SystemSettingsOverview | null; loading: boolean }) {

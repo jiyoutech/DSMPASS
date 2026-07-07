@@ -276,6 +276,9 @@ export interface SystemSettings {
   helper_dsm_tls_skip_verify: boolean;
   setup_completed: boolean;
   helper_hmac_secret_configured: boolean;
+  idp_route_restart_required?: boolean;
+  idp_route_restarted?: boolean;
+  idp_route_restart_error?: string;
 }
 
 export interface SystemSettingsOverviewFact {

@@ -61,7 +61,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 	if idpListen != "" && !listenAddressesEqual(idpListen, adminListen) {
 		routeTopology = "/idp 认证入口使用独立本机监听"
 	} else {
-		routeTopology = "管理后台和 /idp 认证入口当前共用同一个本机监听；建议将 IDP 监听端口改为 " + strconv.Itoa(defaultIDPPortForAdmin(adminPort))
+		routeTopology = "管理后台和 /idp 认证入口当前共用同一个本机监听；建议将认证入口本机端口改为 " + strconv.Itoa(defaultIDPPortForAdmin(adminPort))
 	}
 	adminProtocol := "HTTP"
 	if s.cfg.TLSEnabled {
@@ -86,6 +86,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 		Title: "系统说明",
 		Summary: []string{
 			"DSMPASS 有两个入口：管理后台用于配置、同步、审计和证书管理；认证入口用于 /idp 登录、OAuth 回调和跳转 DSM。两个入口默认使用不同端口，避免管理面和登录面混用。",
+			"监听端口分为两类：管理后台监听由套件启动参数决定，系统设置页只读展示；认证入口本机监听可以在入口与域名中修改，保存后会立即尝试刷新 /idp 路由。",
 			"反向代理只改变用户浏览器和外部身份平台访问 DSMPASS 的公网地址，不会取消 DSMPASS 在 NAS 本机上的监听端口。反代必须转发到对应的本机监听。",
 			"系统设置页只允许修改运行期可安全调整的配置。套件启动参数、管理后台监听、证书文件路径等运行环境信息只读展示；如需修改，需要改套件环境并重启 DSMPASS 套件。",
 			"每个配置项都标明了修改入口、何时生效和影响范围。保存后立即生效表示后端内存配置和数据库会同步更新；刷新认证路由表示只重启 /idp listener，不重启管理后台。",
@@ -107,23 +108,24 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Title:        "认证入口本机监听",
 				Value:        listenValue(idpListen, idpPort),
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 监听端口",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口本机端口",
 				Applies:      "保存后刷新认证路由；无需重启套件",
 				Description:  "/idp 登录入口实际监听在此地址。反向代理场景下，公网域名应转发到这个监听。",
 				Notes: []string{
 					"端口必须大于 1024，不能与管理后台端口一致，且不能被其他进程占用。",
-					"如果保存时重启认证路由失败，页面会返回错误信息；旧路由不会被静默当作成功。",
+					"保存时会先写入配置，再关闭旧 /idp listener 并绑定新端口。",
+					"如果刷新认证路由失败，页面会显示警告和失败原因；检查端口占用后可重新保存或手动重启认证路由。",
 				},
 			},
 			{
 				Title:        "路由拓扑",
 				Value:        routeTopology,
 				Configurable: true,
-				ChangeMethod: "调整 IDP 监听端口",
+				ChangeMethod: "调整认证入口本机端口",
 				Applies:      "保存后刷新认证路由",
 				Description:  "管理后台和认证入口应保持独立监听。端口不同则启动独立的 IDP 路由。",
 				Notes: []string{
-					"如果这里显示共用监听，说明仍存在旧配置或异常配置，应将 IDP 监听端口改为独立端口。",
+					"如果这里显示共用监听，说明仍存在旧配置或异常配置，应将认证入口本机端口改为独立端口。",
 				},
 			},
 			{
@@ -141,7 +143,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Title:        "认证入口协议",
 				Value:        idpProtocol,
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 协议",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口本机协议",
 				Applies:      "保存后刷新认证路由；无需重启套件",
 				Description:  "影响本机 /idp 监听使用 HTTP 还是 HTTPS。公网协议以认证入口公网地址为准。",
 				Notes: []string{
@@ -152,7 +154,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Title:        "认证入口公网地址",
 				Value:        publicBaseURL,
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 对外地址",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口公网地址",
 				Applies:      "保存后立即影响新生成的登录地址和回调地址",
 				Description:  "外部身份平台和用户浏览器看到的 DSMPASS 基址，登录地址和回调地址都从这里生成。",
 				Notes: []string{
@@ -175,7 +177,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Title:        "DSM 登录目标",
 				Value:        dsmRedirectURL,
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > DSM 地址",
+				ChangeMethod: "系统设置 > DSM 登录链路 > DSM 地址",
 				Applies:      "保存后立即影响后续登录跳转",
 				Description:  "用户完成身份源登录后，最终跳转到这个 DSM 地址。",
 				Notes: []string{
@@ -206,7 +208,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "部署方式",
 				Value:        deploymentModeLabel(deploymentMode),
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > 部署方式",
+				ChangeMethod: "系统设置 > 入口与域名 > 部署方式",
 				Applies:      "保存后立即影响前端地址推导；涉及 IDP 协议或端口时会刷新认证路由",
 				Effect:       "影响系统设置页的地址推导方式和哪些地址允许手动编辑。",
 				Notes: []string{
@@ -219,7 +221,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "默认 NAS 主机名",
 				Value:        accessHost,
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > NAS IP / 域名，或上传认证端证书自动识别非通配符 DNS SAN",
+				ChangeMethod: "系统设置 > 入口与域名 > NAS IP / 域名，或上传认证端证书自动识别非通配符 DNS SAN",
 				Applies:      "保存后立即更新默认地址推导；直接访问模式会同步派生地址",
 				Effect:       "用于生成默认认证入口地址、DSM 地址和 DSM Auth API，也是认证端证书自动识别域名时会更新的主机名。",
 				Notes: []string{
@@ -229,10 +231,10 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 			},
 			{
 				Key:          "access_scheme",
-				Label:        "本机 IDP 协议",
+				Label:        "认证入口本机协议",
 				Value:        accessScheme,
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 协议",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口本机协议",
 				Applies:      "保存后刷新认证路由；无需重启 DSMPASS 套件",
 				Effect:       "决定 DSMPASS 本机 /idp 监听使用 HTTP 还是 HTTPS，并影响默认 DSM 地址端口推导。",
 				Notes: []string{
@@ -242,16 +244,17 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 			},
 			{
 				Key:          "idp_port",
-				Label:        "本机 IDP 监听端口",
+				Label:        "认证入口本机端口",
 				Value:        strconv.Itoa(idpPort),
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 监听端口",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口本机端口",
 				Applies:      "保存后刷新认证路由；端口可用时无需重启 DSMPASS 套件",
 				Effect:       "决定 DSMPASS 在本机提供 /idp 登录入口的端口。",
 				Notes: []string{
 					"反向代理场景下，该端口仍然存在，反代需要转发到它。",
 					"不会自动改变认证入口公网地址中的端口；公网地址由认证入口公网地址字段决定。",
 					"不能与管理后台端口一致。",
+					"保存成功且认证路由刷新成功后，新端口立即生效；不需要重启 DSMPASS 套件。",
 				},
 			},
 			{
@@ -259,7 +262,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "认证入口公网地址",
 				Value:        publicBaseURL,
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > IDP 对外地址",
+				ChangeMethod: "系统设置 > 入口与域名 > 认证入口公网地址",
 				Applies:      "保存后立即影响新生成的登录地址、回调地址和身份源展示",
 				Effect:       "决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。",
 				Notes: []string{
@@ -272,7 +275,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "DSM 访问地址",
 				Value:        dsmRedirectURL,
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > DSM 地址",
+				ChangeMethod: "系统设置 > DSM 登录链路 > DSM 地址",
 				Applies:      "保存后立即影响后续认证成功后的跳转目标",
 				Effect:       "决定认证成功后浏览器跳回哪个 DSM 地址。",
 				Notes: []string{
@@ -285,7 +288,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "DSM Auth API",
 				Value:        helperDSMLoginAPI,
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > DSM Auth API",
+				ChangeMethod: "系统设置 > DSM 登录链路 > DSM Auth API",
 				Applies:      "保存后立即影响后续 DSM 登录调用",
 				Effect:       "决定浏览器直登或 Helper 调用哪个 DSM SYNO.API.Auth 登录接口。",
 				Notes: []string{
@@ -298,7 +301,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "DSM 登录模式",
 				Value:        dsmLoginModeLabel(dsmLoginMode),
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > DSM 登录模式",
+				ChangeMethod: "系统设置 > DSM 登录链路 > DSM 登录模式",
 				Applies:      "保存后立即影响后续登录流程",
 				Effect:       "决定认证成功后由浏览器直接登录 DSM，还是由本机 Helper 代为调用 DSM Auth API。",
 				Notes: []string{
@@ -311,7 +314,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "管理端访问范围",
 				Value:        cidrLabel(adminAllowedCIDRs),
 				Configurable: true,
-				ChangeMethod: "系统设置 > 基础配置 > 管理端仅允许内网访问",
+				ChangeMethod: "系统设置 > 访问安全 > 管理端仅允许内网访问",
 				Applies:      "保存后立即影响管理后台和 /api/admin 的新请求",
 				Effect:       "限制管理后台页面和 /api/admin 接口允许哪些来源 IP 访问。",
 				Notes: []string{
@@ -324,7 +327,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "直登 TTL",
 				Value:        strconv.Itoa(browserLoginTTL) + " 秒",
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > 直登 TTL 秒数",
+				ChangeMethod: "系统设置 > DSM 登录链路 > 直登 TTL 秒数",
 				Applies:      "保存后立即影响后续浏览器直登临时密码",
 				Effect:       "控制浏览器直登模式下临时 DSM 密码的有效时间。",
 				Notes: []string{
@@ -336,7 +339,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				Label:        "跳过 DSM TLS 校验",
 				Value:        enabledLabel(dsmTLSSkipVerify),
 				Configurable: true,
-				ChangeMethod: "系统设置 > DSM 登录 > 跳过 DSM TLS 校验",
+				ChangeMethod: "系统设置 > DSM 登录链路 > 跳过 DSM TLS 校验",
 				Applies:      "保存后立即影响后续 DSMPASS/Helper 访问 DSM Auth API",
 				Effect:       "控制 DSMPASS/Helper 访问 DSM Auth API 时是否跳过 DSM 证书校验。",
 				Notes: []string{
@@ -376,7 +379,8 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 		OperationalNotes: []string{
 			"企业微信、飞书、钉钉的回调域名应以认证入口公网地址为准，不以管理后台地址为准。",
 			"如果外网只暴露 IDP 而不暴露 DSM，浏览器直登模式无法完成最终 DSM 登录；应改用 Helper 连接，或让用户浏览器可以访问 DSM 地址。",
-			"修改本机 IDP 监听端口会刷新认证路由；修改认证入口公网地址会影响新生成的登录链接和身份平台回调地址。",
+			"修改认证入口本机端口会刷新认证路由；刷新成功后新端口立即接管 /idp，刷新失败时页面会提示原因。",
+			"修改认证入口公网地址会立即影响新生成的登录链接、身份源展示和 OAuth 回调地址，但不会改变 NAS 本机监听端口。",
 			"管理后台监听端口和管理后台 HTTP/HTTPS 协议不是运行期设置项；修改套件环境变量后必须重启 DSMPASS 套件。",
 			"证书上传只替换对应入口的 TLS 证书，不会自动改变另一个入口，也不会自动开放 DSM 或 NAS 防火墙端口。",
 			"身份平台的可信域名、回调域名、企业微信可信 IP 等平台侧配置，需要在平台后台单独维护；DSMPASS 只能展示和生成本系统侧地址。",

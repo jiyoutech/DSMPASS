@@ -527,9 +527,15 @@ function Onboarding({
   async function saveSystem(values: SystemSettingsUpdate) {
     setSaving(true);
     try {
-      await api.updateSystemSettings({ ...values, setup_completed: true });
+      const result = await api.updateSystemSettings({ ...values, setup_completed: true });
       await reloadSettings();
-      message.success("已保存");
+      if (result.idp_route_restart_required && result.idp_route_restarted === false) {
+        message.warning(`配置已保存，但认证路由刷新失败：${result.idp_route_restart_error || "请检查端口占用后重试"}`);
+      } else if (result.idp_route_restart_required) {
+        message.success("已保存，认证路由已刷新");
+      } else {
+        message.success("已保存");
+      }
     } catch (err) {
       message.error(err instanceof Error ? err.message : "保存失败");
     } finally {

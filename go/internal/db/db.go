@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS deployment_settings (
     mode TEXT NOT NULL DEFAULT 'direct',
     access_host TEXT NOT NULL DEFAULT '',
     access_scheme TEXT NOT NULL DEFAULT 'https',
-    idp_port INTEGER NOT NULL DEFAULT 25000,
+    idp_port INTEGER NOT NULL DEFAULT 26000,
     public_base_url TEXT NOT NULL DEFAULT '',
     dsm_redirect_url TEXT NOT NULL DEFAULT '',
     helper_dsm_login_api TEXT NOT NULL DEFAULT '',

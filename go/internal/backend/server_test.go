@@ -1142,10 +1142,10 @@ func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing
 		`"value":"0.0.0.0:25000"`,
 		`"title":"认证入口本机监听"`,
 		`"value":"0.0.0.0:26000"`,
-		`"change_method":"系统设置 \u003e 基础配置 \u003e IDP 监听端口"`,
+		`"change_method":"系统设置 \u003e 入口与域名 \u003e 认证入口本机端口"`,
 		`"applies":"保存后刷新认证路由；无需重启套件"`,
 		`"label":"认证入口公网地址"`,
-		`"change_method":"系统设置 \u003e 基础配置 \u003e IDP 对外地址"`,
+		`"change_method":"系统设置 \u003e 入口与域名 \u003e 认证入口公网地址"`,
 		`"applies":"保存后立即影响新生成的登录地址、回调地址和身份源展示"`,
 		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
 	} {
