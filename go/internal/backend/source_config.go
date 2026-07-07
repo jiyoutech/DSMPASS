@@ -13,6 +13,11 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/provider"
 )
 
+const (
+	defaultWeComAuthorizeURL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
+	legacyWeComAuthorizeURL  = "https://open.weixin.qq.com/connect/oauth2/authorize"
+)
+
 type identitySourceConfig struct {
 	PublicBaseURL         string `json:"public_base_url"`
 	ClientID              string `json:"client_id"`
@@ -127,12 +132,10 @@ func weComAuthorizePreviewURL(corpID, agentID, redirectURI string) string {
 	values := url.Values{}
 	values.Set("appid", corpID)
 	values.Set("redirect_uri", redirectURI)
-	values.Set("response_type", "code")
-	values.Set("scope", "snsapi_base")
 	if strings.TrimSpace(agentID) != "" {
 		values.Set("agentid", agentID)
 	}
-	return "https://open.weixin.qq.com/connect/oauth2/authorize?" + values.Encode() + "#wechat_redirect"
+	return defaultWeComAuthorizeURL + "?" + values.Encode()
 }
 
 func sourceResponse(source db.IdentitySource, config identitySourceConfig, publicBaseURL string) gin.H {
@@ -214,8 +217,8 @@ func withSourceDefaultsForType(providerType string, config identitySourceConfig)
 	config.PublicBaseURL = ""
 	switch providerType {
 	case "wecom":
-		if config.AuthorizeURL == "" {
-			config.AuthorizeURL = "https://open.weixin.qq.com/connect/oauth2/authorize"
+		if config.AuthorizeURL == "" || config.AuthorizeURL == legacyWeComAuthorizeURL {
+			config.AuthorizeURL = defaultWeComAuthorizeURL
 		}
 		if config.TokenURL == "" {
 			config.TokenURL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"

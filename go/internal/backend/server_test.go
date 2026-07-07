@@ -697,9 +697,10 @@ func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
 		CredentialsConfigured bool   `json:"credentials_configured"`
 		WeComAuthorizeURL     string `json:"wecom_authorize_url"`
 		Config                struct {
-			ClientID string `json:"client_id"`
-			AgentID  string `json:"agent_id"`
-			TokenURL string `json:"token_url"`
+			ClientID     string `json:"client_id"`
+			AgentID      string `json:"agent_id"`
+			AuthorizeURL string `json:"authorize_url"`
+			TokenURL     string `json:"token_url"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
@@ -714,7 +715,10 @@ func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
 	if created.Config.ClientID != "wwcorp" {
 		t.Fatalf("wecom client_id should be trimmed, got %q", created.Config.ClientID)
 	}
-	if !strings.Contains(created.WeComAuthorizeURL, "appid=wwcorp") || strings.Contains(created.WeComAuthorizeURL, "agentid=") {
+	if created.Config.AuthorizeURL != "https://open.work.weixin.qq.com/wwopen/sso/qrConnect" {
+		t.Fatalf("wecom default authorize URL should use QR login, got %q", created.Config.AuthorizeURL)
+	}
+	if !strings.Contains(created.WeComAuthorizeURL, "open.work.weixin.qq.com/wwopen/sso/qrConnect") || !strings.Contains(created.WeComAuthorizeURL, "appid=wwcorp") || strings.Contains(created.WeComAuthorizeURL, "agentid=") || strings.Contains(created.WeComAuthorizeURL, "wechat_redirect") {
 		t.Fatalf("unexpected authorize URL without agent_id: %s", created.WeComAuthorizeURL)
 	}
 
@@ -735,8 +739,15 @@ func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
 	if err := json.Unmarshal(updateResponse.Body.Bytes(), &updated); err != nil {
 		t.Fatal(err)
 	}
-	if !updated.CredentialsConfigured || updated.Config.AgentID != "1000002" || !strings.Contains(updated.WeComAuthorizeURL, "agentid=1000002") {
+	if !updated.CredentialsConfigured || updated.Config.AgentID != "1000002" || !strings.Contains(updated.WeComAuthorizeURL, "open.work.weixin.qq.com/wwopen/sso/qrConnect") || !strings.Contains(updated.WeComAuthorizeURL, "agentid=1000002") {
 		t.Fatalf("wecom with agent_id should be fully configured: %#v", updated)
+	}
+}
+
+func TestWeComSourceConfigUpgradesLegacyAuthorizeURL(t *testing.T) {
+	config := decodeSourceConfigForType("wecom", `{"authorize_url":"https://open.weixin.qq.com/connect/oauth2/authorize"}`)
+	if config.AuthorizeURL != "https://open.work.weixin.qq.com/wwopen/sso/qrConnect" {
+		t.Fatalf("legacy wecom authorize URL should upgrade to QR login, got %q", config.AuthorizeURL)
 	}
 }
 

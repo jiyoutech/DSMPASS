@@ -338,7 +338,7 @@ function providerCredentialText(providerType?: string | null, providerName?: str
         clientSecretHelp: "企业微信自建应用 Secret，用于后端换取 access_token。留空保存会沿用旧密钥。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> Secret。",
         clientSecretPlaceholder: "请输入企业微信应用 Secret",
         agentIDLabel: "企业微信 AgentId",
-        agentIDHelp: "企业微信自建应用的 AgentId，用于构造 OAuth 授权链接。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
+        agentIDHelp: "企业微信自建应用的 AgentId，用于构造企业微信扫码登录链接。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
         agentIDPlaceholder: "1000002"
       };
     case "dingtalk":

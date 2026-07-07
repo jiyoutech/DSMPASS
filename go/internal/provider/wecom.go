@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	defaultWeComAuthorizeURL   = "https://open.weixin.qq.com/connect/oauth2/authorize"
+	legacyWeComAuthorizeURL    = "https://open.weixin.qq.com/connect/oauth2/authorize"
+	defaultWeComAuthorizeURL   = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
 	defaultWeComTokenURL       = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
 	defaultWeComUserInfoURL    = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo"
 	defaultWeComContactBaseURL = "https://qyapi.weixin.qq.com/cgi-bin"
@@ -52,7 +53,7 @@ func NewWeComWithSlug(cfg WeComConfig, slug string) WeCom {
 }
 
 func withWeComDefaults(cfg WeComConfig) WeComConfig {
-	if cfg.AuthorizeURL == "" {
+	if cfg.AuthorizeURL == "" || cfg.AuthorizeURL == legacyWeComAuthorizeURL {
 		cfg.AuthorizeURL = defaultWeComAuthorizeURL
 	}
 	if cfg.TokenURL == "" {
@@ -82,13 +83,11 @@ func (w WeCom) BuildAuthorizeURL(state, redirectURI string) string {
 	values := url.Values{}
 	values.Set("appid", w.cfg.CorpID)
 	values.Set("redirect_uri", redirectURI)
-	values.Set("response_type", "code")
-	values.Set("scope", "snsapi_base")
 	values.Set("state", state)
 	if strings.TrimSpace(w.cfg.AgentID) != "" {
 		values.Set("agentid", w.cfg.AgentID)
 	}
-	return withEncodedQueryAndFragment(w.cfg.AuthorizeURL, values, "wechat_redirect")
+	return withEncodedQuery(w.cfg.AuthorizeURL, values)
 }
 
 func (w WeCom) ExchangeCode(code, redirectURI string) (map[string]any, error) {
@@ -564,10 +563,18 @@ func withQuery(endpoint string, values map[string]string) string {
 	return parsed.String()
 }
 
+func withEncodedQuery(endpoint string, values url.Values) string {
+	return withEncodedQueryAndFragment(endpoint, values, "")
+}
+
 func withEncodedQueryAndFragment(endpoint string, values url.Values, fragment string) string {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return endpoint + "?" + values.Encode() + "#" + fragment
+		result := endpoint + "?" + values.Encode()
+		if fragment != "" {
+			result += "#" + fragment
+		}
+		return result
 	}
 	query := parsed.Query()
 	for key, rawValues := range values {
@@ -576,7 +583,9 @@ func withEncodedQueryAndFragment(endpoint string, values url.Values, fragment st
 		}
 	}
 	parsed.RawQuery = query.Encode()
-	parsed.Fragment = fragment
+	if fragment != "" {
+		parsed.Fragment = fragment
+	}
 	return parsed.String()
 }
 

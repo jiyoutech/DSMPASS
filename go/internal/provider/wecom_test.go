@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestWeComBuildAuthorizeURLUsesCorpIDAgentIDAndRedirect(t *testing.T) {
+func TestWeComBuildAuthorizeURLUsesQRConnectWithCorpIDAgentIDAndRedirect(t *testing.T) {
 	wecom := NewWeCom(WeComConfig{
 		CorpID:       "wwcorp",
 		AgentID:      "1000002",
@@ -15,17 +15,19 @@ func TestWeComBuildAuthorizeURLUsesCorpIDAgentIDAndRedirect(t *testing.T) {
 	})
 	got := wecom.BuildAuthorizeURL("state-1", "https://idp.example.com/idp/source/callback")
 	for _, want := range []string{
-		"https://open.weixin.qq.com/connect/oauth2/authorize?",
+		"https://open.work.weixin.qq.com/wwopen/sso/qrConnect?",
 		"appid=wwcorp",
 		"agentid=1000002",
 		"redirect_uri=https%3A%2F%2Fidp.example.com%2Fidp%2Fsource%2Fcallback",
-		"response_type=code",
-		"scope=snsapi_base",
 		"state=state-1",
-		"#wechat_redirect",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("authorize url missing %q: %s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"response_type=", "scope=", "#wechat_redirect"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("qr login url should not contain %q: %s", forbidden, got)
 		}
 	}
 }
