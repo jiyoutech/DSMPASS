@@ -11,6 +11,7 @@ const privateCIDRs = "private";
 const allCIDRs = "all";
 type SettingsSectionKey = "base" | "dsm" | "certificates" | "account";
 type DeploymentMode = "direct" | "reverse_proxy" | "advanced";
+type CertificateScope = "admin" | "idp";
 
 const systemFieldHelp = {
   deploymentMode: "直接访问会自动生成所有地址；反向代理允许单独填写公网 IDP 地址；高级自定义允许分别填写 IDP、DSM 和 DSM Auth API 地址。",
@@ -250,8 +251,10 @@ export function SystemSettings() {
   const { data, loading, error, reload } = useAsyncData(() => api.systemSettings(), []);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("base");
-  const [uploadingCert, setUploadingCert] = useState<"idp" | null>(null);
+  const [uploadingCert, setUploadingCert] = useState<CertificateScope | null>(null);
   const [restartingIDP, setRestartingIDP] = useState(false);
+  const [adminCertFiles, setAdminCertFiles] = useState<UploadFile[]>([]);
+  const [adminKeyFiles, setAdminKeyFiles] = useState<UploadFile[]>([]);
   const [idpCertFiles, setIDPCertFiles] = useState<UploadFile[]>([]);
   const [idpKeyFiles, setIDPKeyFiles] = useState<UploadFile[]>([]);
 
@@ -312,29 +315,39 @@ export function SystemSettings() {
     }
   }
 
-  async function uploadCertificate() {
-    const cert = selectedFile(idpCertFiles);
-    const key = selectedFile(idpKeyFiles);
+  async function uploadCertificate(scope: CertificateScope) {
+    const certFiles = scope === "admin" ? adminCertFiles : idpCertFiles;
+    const keyFiles = scope === "admin" ? adminKeyFiles : idpKeyFiles;
+    const cert = selectedFile(certFiles);
+    const key = selectedFile(keyFiles);
     if (!cert || !key) {
       message.error("请同时选择证书 PEM 和私钥 PEM");
       return;
     }
-    setUploadingCert("idp");
+    setUploadingCert(scope);
     try {
-      const result = await api.uploadCertificate("idp", cert, key);
+      const result = await api.uploadCertificate(scope, cert, key);
       const certificateLabel = result.certificate_info?.label || "证书";
       const certificateName = result.certificate_info?.common_name || result.certificate_domains?.[0] || "";
       const certificateSuffix = certificateName ? `，识别为${certificateLabel}：${certificateName}` : `，识别为${certificateLabel}`;
-      if (result.applied_access_host) {
+      if (scope === "admin") {
+        message.success(`管理端证书已上传${certificateSuffix}，重启 DSMPASS 套件后证书生效`);
+        setAdminCertFiles([]);
+        setAdminKeyFiles([]);
+      } else if (result.applied_access_host) {
         message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，重启认证路由后证书生效`);
+        setIDPCertFiles([]);
+        setIDPKeyFiles([]);
         await reload();
-      } else if (result.certificate_domains?.length) {
-        message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名并重启认证路由`);
       } else {
-        message.success(`认证端证书已上传${certificateSuffix}，可重启认证路由生效`);
+        if (result.certificate_domains?.length) {
+          message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名并重启认证路由`);
+        } else {
+          message.success(`认证端证书已上传${certificateSuffix}，可重启认证路由生效`);
+        }
+        setIDPCertFiles([]);
+        setIDPKeyFiles([]);
       }
-      setIDPCertFiles([]);
-      setIDPKeyFiles([]);
     } catch (err) {
       message.error(err instanceof Error ? err.message : "证书上传失败");
     } finally {
@@ -389,12 +402,21 @@ export function SystemSettings() {
                 type="info"
                 showIcon
                 className="settings-inline-alert"
-                message="管理端使用 DSMPASS 自签证书。上传认证端证书后，系统会读取证书里的 DNS 域名并自动更新认证入口域名；重启认证路由后证书生效。"
+                message="管理端和认证端可以分别上传证书；如果使用同一张通配符证书，也可以把同一套证书 PEM 和私钥 PEM 分别上传到两端。管理端证书需要重启 DSMPASS 套件后生效，认证端证书可重启认证路由生效。"
               />
               <div className="certificate-grid">
                 <CertificateUploadFields
+                  title="管理端证书"
+                  description="用于管理后台 HTTPS。上传后不会修改 IDP 地址；需要重启 DSMPASS 套件后生效。"
+                  certFiles={adminCertFiles}
+                  keyFiles={adminKeyFiles}
+                  onCertFiles={setAdminCertFiles}
+                  onKeyFiles={setAdminKeyFiles}
+                  disabled={loading || saving}
+                />
+                <CertificateUploadFields
                   title="认证端口证书"
-                  description="用于 /idp 登录入口。优先读取非通配符 DNS SAN，并自动同步到 IDP 地址。"
+                  description="用于 /idp 登录入口。优先读取非通配符 DNS SAN，并自动同步到 IDP 地址；通配符证书不会自动改写访问域名。"
                   certFiles={idpCertFiles}
                   keyFiles={idpKeyFiles}
                   onCertFiles={setIDPCertFiles}
@@ -403,7 +425,8 @@ export function SystemSettings() {
                 />
               </div>
               <Flex justify="end" gap={8} wrap>
-                <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate()}>上传认证端证书</Button>
+                <Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>
+                <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
               </Flex>
             </Card>

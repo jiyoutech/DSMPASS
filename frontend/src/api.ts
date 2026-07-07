@@ -139,7 +139,7 @@ export const api = {
   systemSettings: () => request<SystemSettings>("/api/admin/settings"),
   updateSystemSettings: (payload: SystemSettingsUpdate) =>
     request<SystemSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) }),
-  uploadCertificate: (scope: "idp", cert: File, key: File) => {
+  uploadCertificate: (scope: "admin" | "idp", cert: File, key: File) => {
     const body = new FormData();
     body.append("cert", cert);
     body.append("key", key);
