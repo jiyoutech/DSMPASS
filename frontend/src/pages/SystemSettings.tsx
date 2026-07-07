@@ -253,6 +253,7 @@ export function SystemSettings() {
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("base");
   const [uploadingCert, setUploadingCert] = useState<CertificateScope | null>(null);
   const [restartingIDP, setRestartingIDP] = useState(false);
+  const [refreshingTLS, setRefreshingTLS] = useState(false);
   const [adminCertFiles, setAdminCertFiles] = useState<UploadFile[]>([]);
   const [adminKeyFiles, setAdminKeyFiles] = useState<UploadFile[]>([]);
   const [idpCertFiles, setIDPCertFiles] = useState<UploadFile[]>([]);
@@ -330,20 +331,21 @@ export function SystemSettings() {
       const certificateLabel = result.certificate_info?.label || "证书";
       const certificateName = result.certificate_info?.common_name || result.certificate_domains?.[0] || "";
       const certificateSuffix = certificateName ? `，识别为${certificateLabel}：${certificateName}` : `，识别为${certificateLabel}`;
+      const refreshSuffix = result.connections_refreshed ? "，已断开空闲 HTTPS 连接，请刷新页面确认新证书" : "，请刷新页面确认新证书";
       if (scope === "admin") {
-        message.success(`管理端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书`);
+        message.success(`管理端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书${refreshSuffix}`);
         setAdminCertFiles([]);
         setAdminKeyFiles([]);
       } else if (result.applied_access_host) {
-        message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，新建 HTTPS 连接会自动使用新证书`);
+        message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，新建 HTTPS 连接会自动使用新证书${refreshSuffix}`);
         setIDPCertFiles([]);
         setIDPKeyFiles([]);
         await reload();
       } else {
         if (result.certificate_domains?.length) {
-          message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名，新建 HTTPS 连接会自动使用新证书`);
+          message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名，新建 HTTPS 连接会自动使用新证书${refreshSuffix}`);
         } else {
-          message.success(`认证端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书`);
+          message.success(`认证端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书${refreshSuffix}`);
         }
         setIDPCertFiles([]);
         setIDPKeyFiles([]);
@@ -364,6 +366,22 @@ export function SystemSettings() {
       message.error(err instanceof Error ? err.message : "认证路由重启失败");
     } finally {
       setRestartingIDP(false);
+    }
+  }
+
+  async function refreshTLSConnections() {
+    setRefreshingTLS(true);
+    try {
+      const result = await api.refreshTLSConnections();
+      if (result.connections_refreshed) {
+        message.success("已断开空闲 HTTPS 连接，请刷新页面确认新证书");
+      } else {
+        message.info("当前没有可刷新的 HTTPS 连接");
+      }
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "刷新证书连接失败");
+    } finally {
+      setRefreshingTLS(false);
     }
   }
 
@@ -427,6 +445,7 @@ export function SystemSettings() {
               <Flex className="certificate-actions" justify="end" gap={8} wrap>
                 <Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>
                 <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>
+                <Button icon={<ReloadOutlined />} loading={refreshingTLS} onClick={() => void refreshTLSConnections()}>刷新证书连接</Button>
                 <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
               </Flex>
             </Card>

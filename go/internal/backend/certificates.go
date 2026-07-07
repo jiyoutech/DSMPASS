@@ -75,13 +75,15 @@ func (s *Server) uploadCertificate(c *gin.Context) {
 			}
 		}
 	}
+	connectionsRefreshed := s.refreshTLSConnections(scope)
 	c.JSON(http.StatusOK, gin.H{
-		"success":             true,
-		"scope":               scope,
-		"restart_required":    restartRequired,
-		"certificate_domains": domains,
-		"certificate_info":    info,
-		"applied_access_host": appliedAccessHost,
+		"success":               true,
+		"scope":                 scope,
+		"restart_required":      restartRequired,
+		"connections_refreshed": connectionsRefreshed,
+		"certificate_domains":   domains,
+		"certificate_info":      info,
+		"applied_access_host":   appliedAccessHost,
 	})
 }
 
@@ -254,4 +256,11 @@ func (s *Server) restartIDPRouteHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func (s *Server) refreshTLSConnectionsHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"success":               true,
+		"connections_refreshed": s.refreshTLSConnections("all"),
+	})
 }

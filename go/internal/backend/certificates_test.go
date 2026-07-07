@@ -39,6 +39,10 @@ func TestUploadIDPCertificateAppliesCertificateDomain(t *testing.T) {
 	}
 	defer database.Close()
 	server := NewWithDB(cfg, testHelper{}, database, queries)
+	refreshedScopes := make(chan string, 2)
+	server.SetTLSConnectionRefresher(func(scope string) {
+		refreshedScopes <- scope
+	})
 	router := server.Router()
 
 	certPEM, keyPEM := testCertificatePair(t, "login.example.com", "unused.example.com")
@@ -52,16 +56,23 @@ func TestUploadIDPCertificateAppliesCertificateDomain(t *testing.T) {
 	}
 
 	var payload struct {
-		CertificateDomains []string        `json:"certificate_domains"`
-		CertificateInfo    certificateInfo `json:"certificate_info"`
-		AppliedAccessHost  string          `json:"applied_access_host"`
-		RestartRequired    bool            `json:"restart_required"`
+		CertificateDomains   []string        `json:"certificate_domains"`
+		CertificateInfo      certificateInfo `json:"certificate_info"`
+		AppliedAccessHost    string          `json:"applied_access_host"`
+		RestartRequired      bool            `json:"restart_required"`
+		ConnectionsRefreshed bool            `json:"connections_refreshed"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.RestartRequired {
 		t.Fatalf("expected idp certificate upload to use dynamic TLS without restart")
+	}
+	if !payload.ConnectionsRefreshed {
+		t.Fatalf("expected idp certificate upload to refresh idle tls connections")
+	}
+	if scope := nextRefreshedScope(t, refreshedScopes); scope != "idp" {
+		t.Fatalf("expected idp tls refresh, got %q", scope)
 	}
 	if payload.AppliedAccessHost != "login.example.com" {
 		t.Fatalf("expected applied certificate domain, got %#v", payload)
@@ -93,6 +104,10 @@ func TestUploadAdminCertificateStoresAdminCertificateOnly(t *testing.T) {
 	}
 	defer database.Close()
 	server := NewWithDB(cfg, testHelper{}, database, queries)
+	refreshedScopes := make(chan string, 2)
+	server.SetTLSConnectionRefresher(func(scope string) {
+		refreshedScopes <- scope
+	})
 	router := server.Router()
 
 	certPEM, keyPEM := testCertificatePair(t, "*.example.com")
@@ -106,17 +121,24 @@ func TestUploadAdminCertificateStoresAdminCertificateOnly(t *testing.T) {
 	}
 
 	var payload struct {
-		Scope              string          `json:"scope"`
-		CertificateInfo    certificateInfo `json:"certificate_info"`
-		AppliedAccessHost  string          `json:"applied_access_host"`
-		RestartRequired    bool            `json:"restart_required"`
-		CertificateDomains []string        `json:"certificate_domains"`
+		Scope                string          `json:"scope"`
+		CertificateInfo      certificateInfo `json:"certificate_info"`
+		AppliedAccessHost    string          `json:"applied_access_host"`
+		RestartRequired      bool            `json:"restart_required"`
+		ConnectionsRefreshed bool            `json:"connections_refreshed"`
+		CertificateDomains   []string        `json:"certificate_domains"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.Scope != "admin" || payload.RestartRequired {
 		t.Fatalf("expected admin upload response to use dynamic TLS without restart, got %#v", payload)
+	}
+	if !payload.ConnectionsRefreshed {
+		t.Fatalf("expected admin certificate upload to refresh idle tls connections")
+	}
+	if scope := nextRefreshedScope(t, refreshedScopes); scope != "admin" {
+		t.Fatalf("expected admin tls refresh, got %q", scope)
 	}
 	if payload.AppliedAccessHost != "" {
 		t.Fatalf("admin certificate upload should not update idp access host, got %#v", payload)
@@ -131,6 +153,38 @@ func TestUploadAdminCertificateStoresAdminCertificateOnly(t *testing.T) {
 	assertFileBytes(t, cfg.TLSKeyFile, keyPEM)
 	if _, err := os.Stat(cfg.IDPTLSCertFile); !os.IsNotExist(err) {
 		t.Fatalf("admin certificate upload should not write idp certificate, stat err=%v", err)
+	}
+}
+
+func TestRefreshTLSConnectionsEndpoint(t *testing.T) {
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries)
+	refreshedScopes := make(chan string, 2)
+	server.SetTLSConnectionRefresher(func(scope string) {
+		refreshedScopes <- scope
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/tls-connections/refresh", nil)
+	server.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected ok, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		ConnectionsRefreshed bool `json:"connections_refreshed"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.ConnectionsRefreshed {
+		t.Fatalf("expected manual tls refresh to report refreshed")
+	}
+	if scope := nextRefreshedScope(t, refreshedScopes); scope != "all" {
+		t.Fatalf("expected all tls refresh, got %q", scope)
 	}
 }
 
@@ -209,5 +263,16 @@ func assertFileBytes(t *testing.T, path string, want []byte) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("unexpected file content for %s", path)
+	}
+}
+
+func nextRefreshedScope(t *testing.T, scopes <-chan string) string {
+	t.Helper()
+	select {
+	case scope := <-scopes:
+		return scope
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for tls refresh")
+		return ""
 	}
 }

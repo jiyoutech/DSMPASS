@@ -103,6 +103,30 @@ func TestServeHTTPUsesUpdatedTLSCertificate(t *testing.T) {
 	}
 }
 
+func TestManagedHTTPServerClosesIdleConnections(t *testing.T) {
+	managed := newManagedHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	managed.trackConnState(serverConn, http.StateIdle)
+
+	done := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 1)
+		_, err := clientConn.Read(buffer)
+		done <- err
+	}()
+	managed.CloseIdleConnections()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected idle connection to close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for idle connection close")
+	}
+}
+
 func writeTestCertificatePair(t *testing.T, certFile, keyFile, commonName string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

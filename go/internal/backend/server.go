@@ -31,6 +31,8 @@ type Server struct {
 	idpRouteMu       sync.Mutex
 	restartIDPRoute  func() error
 	restartIDPNotice func(string)
+	tlsRefreshMu     sync.Mutex
+	refreshTLS       func(string)
 }
 
 const defaultInitialPassword = "123456"
@@ -112,6 +114,27 @@ func (s *Server) SetIDPRouteRestarter(restart func() error, notice func(string))
 	defer s.idpRouteMu.Unlock()
 	s.restartIDPRoute = restart
 	s.restartIDPNotice = notice
+}
+
+func (s *Server) SetTLSConnectionRefresher(refresh func(string)) {
+	s.tlsRefreshMu.Lock()
+	defer s.tlsRefreshMu.Unlock()
+	s.refreshTLS = refresh
+}
+
+func (s *Server) refreshTLSConnections(scope string) bool {
+	s.tlsRefreshMu.Lock()
+	refresh := s.refreshTLS
+	s.tlsRefreshMu.Unlock()
+	if refresh == nil {
+		return false
+	}
+	refresh(scope)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		refresh(scope)
+	}()
+	return true
 }
 
 func (s *Server) restartIDPRouteOnly(reason string) {
