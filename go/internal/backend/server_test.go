@@ -827,6 +827,72 @@ func TestWeComSourceConfigUpgradesLegacyAuthorizeURL(t *testing.T) {
 	}
 }
 
+func TestDingTalkProviderUsesQRLoginAuthorizeURL(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	typesResponse := httptest.NewRecorder()
+	router.ServeHTTP(typesResponse, httptest.NewRequest("GET", "/api/admin/provider-types", nil))
+	if typesResponse.Code != http.StatusOK {
+		t.Fatalf("provider types got %d body=%s", typesResponse.Code, typesResponse.Body.String())
+	}
+	if !strings.Contains(typesResponse.Body.String(), `"type":"dingtalk"`) || !strings.Contains(typesResponse.Body.String(), `"display_name":"钉钉"`) {
+		t.Fatalf("provider types missing dingtalk: %s", typesResponse.Body.String())
+	}
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"dingtalk","display_name":"钉钉","config":{"client_id":" ding-app-key ","client_secret":" secret "}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		ProviderType          string `json:"provider_type"`
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		DingTalkAuthorizeURL  string `json:"dingtalk_authorize_url"`
+		Config                struct {
+			ClientID       string `json:"client_id"`
+			AuthorizeURL   string `json:"authorize_url"`
+			TokenURL       string `json:"token_url"`
+			UserInfoURL    string `json:"user_info_url"`
+			TenantTokenURL string `json:"tenant_token_url"`
+			ContactBaseURL string `json:"contact_base_url"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ProviderType != "dingtalk" || !created.CredentialsConfigured {
+		t.Fatalf("unexpected dingtalk credentials state: %#v", created)
+	}
+	if created.Config.ClientID != "ding-app-key" {
+		t.Fatalf("dingtalk client_id should be trimmed, got %q", created.Config.ClientID)
+	}
+	if created.Config.AuthorizeURL != "https://login.dingtalk.com/oauth2/auth" {
+		t.Fatalf("dingtalk default authorize URL should use QR login, got %q", created.Config.AuthorizeURL)
+	}
+	if created.Config.TokenURL != "https://api.dingtalk.com/v1.0/oauth2/userAccessToken" || created.Config.UserInfoURL != "https://api.dingtalk.com/v1.0/contact/users/me" {
+		t.Fatalf("unexpected dingtalk oauth URLs: %#v", created.Config)
+	}
+	if created.Config.TenantTokenURL != "https://oapi.dingtalk.com/gettoken" || created.Config.ContactBaseURL != "https://oapi.dingtalk.com/topapi" {
+		t.Fatalf("unexpected dingtalk directory URLs: %#v", created.Config)
+	}
+	if !strings.Contains(created.DingTalkAuthorizeURL, "login.dingtalk.com/oauth2/auth") || !strings.Contains(created.DingTalkAuthorizeURL, "client_id=ding-app-key") || !strings.Contains(created.DingTalkAuthorizeURL, "scope=openid") {
+		t.Fatalf("unexpected dingtalk authorize URL: %s", created.DingTalkAuthorizeURL)
+	}
+}
+
 func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	cfg := config.BackendConfig{
 		Listen:            "0.0.0.0:25000",

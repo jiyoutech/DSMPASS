@@ -42,6 +42,16 @@ func supportedProviderTypes() []gin.H {
 			"supports_authorize":   true,
 			"supports_contact_api": true,
 		},
+		{
+			"type":                 "dingtalk",
+			"display_name":         providerTypeDisplayName("dingtalk"),
+			"supports_login":       true,
+			"supports_sync":        true,
+			"requires_client_id":   true,
+			"requires_secret":      true,
+			"supports_authorize":   true,
+			"supports_contact_api": true,
+		},
 	}
 }
 
