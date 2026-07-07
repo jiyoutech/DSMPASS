@@ -1035,6 +1035,42 @@ func TestSettingsPublicBaseURLPortDoesNotDriveIDPListenPort(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeploymentSettingsSeparatesLegacyIDPPortFromManagementPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO deployment_settings (
+			id, mode, access_host, access_scheme, idp_port, public_base_url, dsm_redirect_url, helper_dsm_login_api
+		) VALUES (
+			1, 'direct', '192.0.2.10', 'https', 25000, 'https://192.0.2.10:25000', 'https://192.0.2.10:5001/', 'https://192.0.2.10:5001/webapi/entry.cgi'
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("legacy idp port should be separated from management port, got %q", server.IDPListenAddress())
+	}
+	if server.cfg.PublicBaseURL != "https://192.0.2.10:26000" {
+		t.Fatalf("legacy direct public base url should follow separated idp port, got %q", server.cfg.PublicBaseURL)
+	}
+}
+
 func TestSettingsRejectsIDPPortMatchingManagementPort(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.BackendConfig{
@@ -1106,7 +1142,11 @@ func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing
 		`"value":"0.0.0.0:25000"`,
 		`"title":"认证入口本机监听"`,
 		`"value":"0.0.0.0:26000"`,
+		`"change_method":"系统设置 \u003e 基础配置 \u003e IDP 监听端口"`,
+		`"applies":"保存后刷新认证路由；无需重启套件"`,
 		`"label":"认证入口公网地址"`,
+		`"change_method":"系统设置 \u003e 基础配置 \u003e IDP 对外地址"`,
+		`"applies":"保存后立即影响新生成的登录地址、回调地址和身份源展示"`,
 		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
 	} {
 		if !strings.Contains(body, want) {

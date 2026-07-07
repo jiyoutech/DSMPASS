@@ -416,16 +416,63 @@ body {
   line-height: 1.6;
 }
 
-.settings-fact {
+.settings-readonly-grid {
   display: grid;
-  gap: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
 }
 
-.settings-fact strong {
-  word-break: break-all;
+.settings-readonly-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #fbfbfb;
 }
 
-.settings-fact span,
+.settings-readonly-head,
+.settings-explain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-readonly-item .ant-input[disabled] {
+  color: rgba(0, 0, 0, 0.82);
+  cursor: not-allowed;
+  background: #f2f2f2;
+  border-color: #dedede;
+}
+
+.settings-readonly-detail {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-fact-detail,
+.settings-explain-meta {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-fact-detail span,
+.settings-explain-meta span {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-fact-detail strong,
+.settings-explain-meta strong {
+  color: rgba(0, 0, 0, 0.72);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.settings-readonly-item li,
 .settings-explain-item p,
 .settings-explain-item li {
   color: rgba(0, 0, 0, 0.62);
@@ -448,13 +495,6 @@ body {
   background: #fff;
 }
 
-.settings-explain-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 .settings-explain-value {
   min-height: 30px;
   padding: 6px 8px;
@@ -466,11 +506,13 @@ body {
   word-break: break-all;
 }
 
+.settings-readonly-item ul,
 .settings-explain-item p,
 .settings-explain-item ul {
   margin: 0;
 }
 
+.settings-readonly-item ul,
 .settings-explain-item ul {
   padding-left: 18px;
 }

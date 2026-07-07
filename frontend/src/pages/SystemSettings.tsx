@@ -1,5 +1,5 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Card, Descriptions, Flex, Form, Input, InputNumber, List, Menu, Segmented, Select, Space, Switch, Tag, Typography, Upload } from "antd";
+import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, List, Menu, Segmented, Select, Space, Switch, Tag, Typography, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -222,7 +222,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
             <InputNumber min={1025} max={65535} precision={0} onChange={(value) => syncDerivedURLs({ idp_port: Number(value) })} />
           </Form.Item>
           <Form.Item name="public_base_url" label={<HelpLabel label="IDP 对外地址" help={systemFieldHelp.publicBaseURL} />} rules={[{ required: true }]}>
-            <Input readOnly={!publicBaseEditable} placeholder="https://login.example.com" />
+            <Input disabled={!publicBaseEditable} placeholder="https://login.example.com" />
           </Form.Item>
         </div>
         <AdminAccessSwitch />
@@ -239,10 +239,10 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
         <ProtocolConsistencyNotice />
         <div className="form-grid">
           <Form.Item name="dsm_redirect_url" label={<HelpLabel label="DSM 地址" help={systemFieldHelp.dsmRedirectURL} />} rules={[{ required: true }]}>
-            <Input readOnly={!dsmEditable} placeholder="https://nas.example.com:5001/" />
+            <Input disabled={!dsmEditable} placeholder="https://nas.example.com:5001/" />
           </Form.Item>
           <Form.Item name="helper_dsm_login_api" label={<HelpLabel label="DSM Auth API" help={systemFieldHelp.helperDSMLoginAPI} />} rules={[{ required: true }]}>
-            <Input readOnly={!dsmEditable} placeholder="https://nas.example.com:5001/webapi/entry.cgi" />
+            <Input disabled={!dsmEditable} placeholder="https://nas.example.com:5001/webapi/entry.cgi" />
           </Form.Item>
           <Form.Item name="helper_dsm_login_mode" label={<HelpLabel label="DSM 登录模式" help={systemFieldHelp.helperDSMLoginMode} />} rules={[{ required: true }]}>
             <Select
@@ -524,21 +524,7 @@ function SystemOverviewCard({ overview, loading }: { overview: SystemSettingsOve
 
           <section className="settings-overview-section">
             <h3>当前运行拓扑</h3>
-            <Descriptions
-              size="small"
-              bordered
-              column={{ xs: 1, sm: 1, md: 2 }}
-              items={overview.runtime.map((item) => ({
-                key: item.title,
-                label: item.title,
-                children: (
-                  <div className="settings-fact">
-                    <strong>{item.value || "-"}</strong>
-                    <span>{item.description}</span>
-                  </div>
-                )
-              }))}
-            />
+            <RuntimeFactGrid items={overview.runtime} />
           </section>
 
           <section className="settings-overview-section">
@@ -590,6 +576,14 @@ function OverviewConfigList({ items }: { items: SystemSettingsOverview["configur
             <Tag color={item.configurable ? "green" : "default"}>{item.configurable ? "可配置" : "只读"}</Tag>
           </div>
           <div className="settings-explain-value">{item.value || "-"}</div>
+          <div className="settings-explain-meta">
+            <span>修改入口</span>
+            <strong>{item.change_method || "-"}</strong>
+          </div>
+          <div className="settings-explain-meta">
+            <span>生效方式</span>
+            <strong>{item.applies || "-"}</strong>
+          </div>
           <p>{item.effect}</p>
           {item.notes.length > 0 && (
             <ul>
@@ -598,6 +592,44 @@ function OverviewConfigList({ items }: { items: SystemSettingsOverview["configur
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function RuntimeFactGrid({ items }: { items: SystemSettingsOverview["runtime"] }) {
+  return (
+    <div className="settings-readonly-grid">
+      {items.map((item) => (
+        <div className="settings-readonly-item" key={item.title}>
+          <div className="settings-readonly-head">
+            <strong>{item.title}</strong>
+            <Tag color={item.configurable ? "green" : "default"}>{item.configurable ? "可配置" : "只读"}</Tag>
+          </div>
+          <Input value={item.value || "-"} disabled />
+          <div className="settings-readonly-detail">
+            <FactDetail label="说明" value={item.description} />
+            <FactDetail label="修改入口" value={item.change_method} />
+            <FactDetail label="生效方式" value={item.applies} />
+          </div>
+          {item.notes.length > 0 && (
+            <ul>
+              {item.notes.map((note) => <li key={note}>{note}</li>)}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FactDetail({ label, value }: { label: string; value: string }) {
+  if (!value) {
+    return null;
+  }
+  return (
+    <div className="settings-fact-detail">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

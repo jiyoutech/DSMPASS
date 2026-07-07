@@ -141,17 +141,24 @@ func (s *Server) deploymentSettingsFromRuntimeRows(state deploymentSettingsState
 
 func (s *Server) normalizeDeploymentSettings(state deploymentSettingsState) deploymentSettingsState {
 	state.Mode = normalizeDeploymentMode(state.Mode)
+	adminPort := parsePortInt(listenAddressPort(s.cfg.Listen))
 	if state.AccessScheme != "http" && state.AccessScheme != "https" {
 		state.AccessScheme = publicBaseURLScheme(state.PublicBaseURL)
 	}
 	state.AccessScheme = normalizedAccessScheme(state.AccessScheme, s.cfg.TLSEnabled)
 	state.AccessHost = normalizeAccessHost(state.AccessHost)
 	if state.IDPPort < minUserPort || state.IDPPort > 65535 {
-		state.IDPPort = defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))
+		state.IDPPort = defaultIDPPortForAdmin(adminPort)
+	}
+	if adminPort > 0 && state.IDPPort == adminPort {
+		state.IDPPort = defaultIDPPortForAdmin(adminPort)
 	}
 	state.PublicBaseURL = normalizePublicBaseURL(state.PublicBaseURL, state.AccessScheme)
 	if state.PublicBaseURL == "" && state.AccessHost != "" {
 		state.PublicBaseURL = state.AccessScheme + "://" + state.AccessHost + ":" + strconv.Itoa(state.IDPPort)
+	}
+	if adminPort > 0 && state.Mode == "direct" && publicBaseURLPort(state.PublicBaseURL) == strconv.Itoa(adminPort) && state.IDPPort != adminPort {
+		state.PublicBaseURL = replaceBaseURLPort(state.PublicBaseURL, state.IDPPort)
 	}
 	state.DSMRedirectURL = normalizeDSMBaseURL(state.DSMRedirectURL)
 	if state.DSMRedirectURL == "" && state.AccessHost != "" {

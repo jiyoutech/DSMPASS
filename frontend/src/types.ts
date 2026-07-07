@@ -281,7 +281,11 @@ export interface SystemSettings {
 export interface SystemSettingsOverviewFact {
   title: string;
   value: string;
+  configurable: boolean;
+  change_method: string;
+  applies: string;
   description: string;
+  notes: string[];
 }
 
 export interface SystemSettingsOverviewConfig {
@@ -289,6 +293,8 @@ export interface SystemSettingsOverviewConfig {
   label: string;
   value: string;
   configurable: boolean;
+  change_method: string;
+  applies: string;
   effect: string;
   notes: string[];
 }
