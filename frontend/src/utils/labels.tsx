@@ -20,7 +20,10 @@ const statusLabels: Record<string, string> = {
   member: "成员",
   reachable: "可连接",
   unreachable: "不可连接",
-  socket: "本地套接字"
+  socket: "本地套接字",
+  feishu: "飞书",
+  wecom: "企业微信",
+  dingtalk: "钉钉"
 };
 
 const actionLabels: Record<string, string> = {

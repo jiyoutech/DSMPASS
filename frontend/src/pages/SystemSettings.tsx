@@ -19,7 +19,7 @@ const systemFieldHelp = {
   accessScheme: "DSMPASS IDP 入口实际监听使用的协议。反向代理场景下，它可以不同于 IDP 对外地址的协议。",
   idpPort: "DSMPASS IDP 实际监听端口，必须大于 1024 且不能被占用。反向代理时公网地址可以不带这个端口。",
   adminAllowedCIDRs: "开启后，管理后台仅允许本机和内网访问。保存时后端会确认当前访问 IP 仍可访问，避免把自己锁在外面。",
-  publicBaseURL: "用户浏览器和 OAuth Provider 看到的 IDP 对外地址，用于生成 redirect_uri。反向代理时通常填写 https://login.example.com。",
+  publicBaseURL: "用户浏览器和外部身份平台看到的 IDP 对外地址，用于生成 redirect_uri。反向代理时通常填写 https://login.example.com。",
   dsmRedirectURL: "登录完成后跳回的 DSM 访问地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMLoginMode: "直接连接：前端浏览器用临时密码调用 DSM Auth API，DSM 看到的是用户真实访问 IP；此模式下 DSM 地址协议必须和 IDP 协议一致。Helper 连接：由 NAS 上的 helper 后台调用 DSM Auth API。",
   helperDSMBrowserLoginTTL: "浏览器直登时临时密码保留的秒数，到期后 helper 自动恢复 shadow。",

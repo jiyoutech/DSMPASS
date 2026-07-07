@@ -903,7 +903,7 @@ function Providers({
           })}
           columns={[
             { title: "名称", dataIndex: "display_name" },
-            { title: "平台", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? labelOf(value) },
+            { title: "平台", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? providerTypeLabel(String(value)) },
             { title: "状态", dataIndex: "enabled", render: (value) => value ? <Tag color="success">运行中</Tag> : <Tag color="default">已暂停</Tag> },
             { title: "登录", dataIndex: "login_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
             { title: "同步", dataIndex: "directory_sync_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
@@ -1087,7 +1087,7 @@ function SourceDetail({
         title: `${label} 地址已复制`,
         content: label === "Launch"
           ? `请粘贴到${providerLabel}应用的入口地址/主页配置位置。`
-          : `请粘贴到${providerLabel}应用的 OAuth 重定向 URL / 回调地址配置位置。`
+          : `请粘贴到${providerLabel}应用的登录回调地址配置位置。`
       });
     } catch {
       message.error("复制失败");
