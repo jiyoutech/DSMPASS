@@ -67,11 +67,6 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 			if normalized == "" {
 				return badRequest("invalid public_base_url")
 			}
-			if port := parsePortInt(publicBaseURLPort(normalized)); port > 0 {
-				if err := validateUserPort(port, "public_base_url port"); err != nil {
-					return err
-				}
-			}
 			normalized = normalizeURLScheme(normalized, adminScheme)
 			if err := s.persistRuntimeSetting(ctx, key, normalized); err != nil {
 				return err
@@ -80,6 +75,13 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 				return internalError(err)
 			}
 			continue
+		}
+		if key == "deployment_mode" {
+			mode := strings.ToLower(strings.TrimSpace(asRuntimeString(value)))
+			if !validDeploymentMode(mode) {
+				return badRequest("invalid deployment_mode")
+			}
+			value = mode
 		}
 		if key == "dsm_redirect_url" {
 			value = normalizeDSMDefaultPortForScheme(asRuntimeString(value), adminScheme, s.cfg.AccessHost, false)
@@ -186,7 +188,7 @@ func (s *Server) updateAccessHostSettings(ctx context.Context, raw any, update m
 	if publicBaseURL == "" {
 		publicBaseURL = s.publicBaseURLForHost(host)
 	}
-	if port, ok := runtimeInt(update["idp_port"]); ok {
+	if port, ok := runtimeInt(update["idp_port"]); ok && strings.TrimSpace(asRuntimeString(update["public_base_url"])) == "" {
 		publicBaseURL = replaceBaseURLPort(publicBaseURL, port)
 	}
 	dsmRedirectURL := strings.TrimSpace(asRuntimeString(update["dsm_redirect_url"]))
@@ -202,11 +204,6 @@ func (s *Server) updateAccessHostSettings(ctx context.Context, raw any, update m
 		"dsm_redirect_url":     normalizeDSMDefaultPortForScheme(dsmRedirectURL, adminScheme, host, false),
 		"helper_dsm_login_api": normalizeDSMDefaultPortForScheme(helperDSMLoginAPI, adminScheme, host, true),
 		"dsm_cookie_secure":    adminScheme == "https",
-	}
-	if port := parsePortInt(publicBaseURLPort(derived["public_base_url"].(string))); port > 0 {
-		if err := validateUserPort(port, "public_base_url port"); err != nil {
-			return err
-		}
 	}
 	for derivedKey, derivedValue := range derived {
 		if err := s.persistRuntimeSetting(ctx, derivedKey, derivedValue); err != nil {

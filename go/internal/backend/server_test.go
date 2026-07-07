@@ -744,6 +744,151 @@ func TestSettingsPublicBaseURLAllowsIndependentIDPHostPortButUsesDSMScheme(t *te
 	}
 }
 
+func TestRuntimeDeploymentSettingsMigrateToDeploymentSettings(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://default.example.com:25000",
+		AccessHost:        "default.example.com",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for key, value := range map[string]any{
+		"deployment_mode":      "reverse_proxy",
+		"access_host":          "nas.local",
+		"access_scheme":        "https",
+		"idp_port":             26000,
+		"public_base_url":      "https://login.example.com",
+		"dsm_redirect_url":     "https://nas.example.com:5001/",
+		"helper_dsm_login_api": "https://nas.example.com:5001/webapi/entry.cgi",
+	} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.ExecContext(ctx, `INSERT INTO runtime_settings (key, value_json) VALUES (?, ?)`, key, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Mode != "reverse_proxy" ||
+		row.AccessHost != "nas.local" ||
+		row.AccessScheme != "https" ||
+		row.IDPPort != 26000 ||
+		row.PublicBaseURL != "https://login.example.com" ||
+		row.DSMRedirectURL != "https://nas.example.com:5001/" ||
+		row.HelperDSMLoginAPI != "https://nas.example.com:5001/webapi/entry.cgi" {
+		t.Fatalf("unexpected migrated deployment settings: %#v", row)
+	}
+	if server.cfg.PublicBaseURL != "https://login.example.com" || server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("server did not apply migrated deployment settings: public=%q idp_listen=%q", server.cfg.PublicBaseURL, server.IDPListenAddress())
+	}
+}
+
+func TestSettingsWriteDeploymentSettingsTable(t *testing.T) {
+	stubTCPPortAvailable(t)
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{
+		"deployment_mode":"reverse_proxy",
+		"access_host":"nas.local",
+		"access_scheme":"https",
+		"idp_port":26000,
+		"public_base_url":"https://login.example.com",
+		"dsm_redirect_url":"https://nas.example.com:5001/",
+		"helper_dsm_login_api":"https://nas.example.com:5001/webapi/entry.cgi"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"deployment_mode":"reverse_proxy"`) ||
+		!strings.Contains(body, `"public_base_url":"https://login.example.com"`) ||
+		!strings.Contains(body, `"idp_port":26000`) {
+		t.Fatalf("settings response did not use deployment settings: %s", body)
+	}
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Mode != "reverse_proxy" || row.IDPPort != 26000 || row.PublicBaseURL != "https://login.example.com" {
+		t.Fatalf("deployment settings were not persisted: %#v", row)
+	}
+	var legacyDeploymentRows int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_settings WHERE key IN ('deployment_mode', 'access_host', 'access_scheme', 'idp_port', 'public_base_url', 'dsm_redirect_url', 'helper_dsm_login_api')`).Scan(&legacyDeploymentRows); err != nil {
+		t.Fatal(err)
+	}
+	if legacyDeploymentRows != 0 {
+		t.Fatalf("deployment settings should not be written to runtime_settings, got %d rows", legacyDeploymentRows)
+	}
+}
+
+func TestSettingsPublicBaseURLPortDoesNotDriveIDPListenPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"public_base_url":"https://login.example.com:443"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	if server.IDPListenAddress() != "0.0.0.0:25000" {
+		t.Fatalf("public_base_url port should not drive IDP listen port, got %q", server.IDPListenAddress())
+	}
+}
+
 func TestSettingsAccessSchemeHTTPDerivesHTTPURLs(t *testing.T) {
 	stubTCPPortAvailable(t)
 	idpPort := 26001

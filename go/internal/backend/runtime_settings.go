@@ -15,7 +15,15 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	deployment, err := s.loadOrCreateDeploymentSettings(ctx, rows)
+	if err != nil {
+		return err
+	}
+	s.applyDeploymentSettings(deployment)
 	for _, row := range rows {
+		if isDeploymentSettingKey(row.Key) {
+			continue
+		}
 		var value any
 		if err := json.Unmarshal([]byte(row.ValueJson), &value); err != nil {
 			return err
@@ -27,9 +35,6 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 			value = normalizeDSMAPIURL(asRuntimeString(value))
 		}
 		s.applyRuntimeSetting(row.Key, value)
-	}
-	if port := parsePortInt(listenAddressPort(s.cfg.IDPListen)); port > 0 {
-		s.cfg.PublicBaseURL = replaceBaseURLPort(s.cfg.PublicBaseURL, port)
 	}
 	s.refreshAdminSetupState()
 	if err := s.ensureAdminJWTSecret(ctx); err != nil {
@@ -49,10 +54,11 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 
 func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) {
 	settings := map[string]any{
+		"deployment_mode":                      normalizeDeploymentMode(s.cfg.DeploymentMode),
 		"access_host":                          s.cfg.AccessHost,
 		"access_scheme":                        s.configuredAccessScheme(),
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":                             firstPositiveInt(parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)), 25000),
+		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)), 25000),
 		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
 		"idp_allowed_cidrs":                    s.cfg.IDPAllowedCIDRs,
 		"public_base_url":                      s.cfg.PublicBaseURL,
@@ -79,6 +85,9 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		return nil, err
 	}
 	for _, row := range rows {
+		if isDeploymentSettingKey(row.Key) {
+			continue
+		}
 		if row.Key == "relay_mode" || strings.HasPrefix(row.Key, "feishu_") || strings.HasPrefix(row.Key, "username_") || strings.HasPrefix(row.Key, "admin_") {
 			if row.Key == "relay_helper_hmac_secret" {
 				settings["helper_hmac_secret_configured"] = row.ValueJson != `""`
@@ -99,6 +108,9 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 }
 
 func (s *Server) saveSetting(ctx context.Context, key string, value any) error {
+	if isDeploymentSettingKey(key) {
+		return s.saveDeploymentSetting(ctx, key, value)
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -120,6 +132,8 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 		return false
 	}
 	switch key {
+	case "deployment_mode":
+		s.cfg.DeploymentMode = normalizeDeploymentMode(asString())
 	case "access_host":
 		host := normalizeAccessHost(asString())
 		s.cfg.AccessHost = host
@@ -138,7 +152,6 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 	case "idp_port":
 		if port, ok := runtimeInt(value); ok {
 			s.cfg.IDPListen = replaceListenPort(s.cfg.IDPListen, s.cfg.Listen, port)
-			s.cfg.PublicBaseURL = replaceBaseURLPort(s.cfg.PublicBaseURL, port)
 		}
 	case "admin_allowed_cidrs":
 		s.cfg.AdminAllowedCIDRs = asString()

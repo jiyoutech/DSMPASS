@@ -29,7 +29,7 @@ func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, 
 		restartRequired = true
 	}
 	adminPort := parsePortInt(listenAddressPort(s.AdminListenAddress()))
-	nextIDPPort := firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)))
+	nextIDPPort := firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), parsePortInt(listenAddressPort(s.cfg.Listen)), 25000)
 	if raw, ok := update["idp_port"]; ok {
 		port, valid := runtimeInt(raw)
 		if !valid {
@@ -48,18 +48,8 @@ func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, 
 	}
 	if raw, ok := update["public_base_url"]; ok {
 		normalized := normalizePublicBaseURL(asRuntimeString(raw), nextScheme)
-		port := parsePortInt(publicBaseURLPort(normalized))
-		if port > 0 {
-			if err := validateUserPort(port, "public_base_url port"); err != nil {
-				return false, err
-			}
-			if _, hasExplicitIDPPort := update["idp_port"]; !hasExplicitIDPPort && port != nextIDPPort {
-				if err := tcpPortAvailable(replaceListenPort("", s.cfg.Listen, port)); err != nil {
-					return false, badRequest("public_base_url port is already in use")
-				}
-				restartRequired = true
-				nextIDPPort = port
-			}
+		if normalized == "" {
+			return false, badRequest("invalid public_base_url")
 		}
 	}
 	if nextScheme == "http" && s.cfg.TLSEnabled && adminPort > 0 && nextIDPPort == adminPort {

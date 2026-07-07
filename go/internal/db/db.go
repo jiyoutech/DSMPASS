@@ -32,6 +32,18 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
     value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS deployment_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'direct',
+    access_host TEXT NOT NULL DEFAULT '',
+    access_scheme TEXT NOT NULL DEFAULT 'https',
+    idp_port INTEGER NOT NULL DEFAULT 25000,
+    public_base_url TEXT NOT NULL DEFAULT '',
+    dsm_redirect_url TEXT NOT NULL DEFAULT '',
+    helper_dsm_login_api TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS identity_sources (
     slug TEXT PRIMARY KEY,
     provider_type TEXT NOT NULL,

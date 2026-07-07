@@ -251,6 +251,7 @@ export interface OperationEvent {
 }
 
 export interface SystemSettings {
+  deployment_mode: "direct" | "reverse_proxy" | "advanced";
   access_host: string;
   access_scheme: "http" | "https";
   admin_port: number;
@@ -274,6 +275,7 @@ export interface SystemSettings {
 }
 
 export interface SystemSettingsDiscovery {
+  deployment_mode?: "direct" | "reverse_proxy" | "advanced";
   access_host: string;
   access_scheme: "http" | "https";
   admin_port: number;

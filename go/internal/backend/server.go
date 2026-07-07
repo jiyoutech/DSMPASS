@@ -100,9 +100,6 @@ func (s *Server) IDPListenAddress() string {
 	if s.cfg.IDPListen != "" {
 		return s.cfg.IDPListen
 	}
-	if port := parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)); port > 0 {
-		return replaceListenPort("", s.cfg.Listen, port)
-	}
 	return ""
 }
 

@@ -28,6 +28,7 @@ type BackendConfig struct {
 	AdminJWTSecret             string
 	AdminSetupRequired         bool
 	LoginDiagnosticsEnabled    bool
+	DeploymentMode             string
 	AccessHost                 string
 	AccessScheme               string
 	PublicBaseURL              string
@@ -116,6 +117,7 @@ func LoadBackend() BackendConfig {
 		AdminPassword:              env("DSMPASS_ADMIN_PASSWORD", ""),
 		AdminJWTSecret:             env("DSMPASS_ADMIN_JWT_SECRET", ""),
 		LoginDiagnosticsEnabled:    envBool("DSMPASS_LOGIN_DIAGNOSTICS", false),
+		DeploymentMode:             env("DSMPASS_DEPLOYMENT_MODE", "direct"),
 		AccessHost:                 accessHost,
 		AccessScheme:               scheme,
 		PublicBaseURL:              env("DSMPASS_PUBLIC_BASE_URL", scheme+"://"+accessHost+":"+publicPort),
