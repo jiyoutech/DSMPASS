@@ -1717,11 +1717,11 @@ function SourceDetail({
   const conflictCloseDisabled = conflictAutoSyncing && progressRunning();
 
   return (
-    <Space direction="vertical" size={16} className="page">
+    <Space direction="vertical" size={16} className="page source-detail-page">
       <PageTitle
         title={source.display_name}
         extra={
-          <Space>
+          <Space wrap className="source-detail-actions">
             <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
             {source.login_enabled ? (
               <Button onClick={() => void setSourceLoginEnabled(false)} loading={sourceLoginLoading}>暂停登录</Button>
@@ -1900,6 +1900,7 @@ function SourceDetail({
         )}
       </Modal>
       <Tabs
+        className="source-detail-tabs"
         activeKey={activeTab}
         onChange={(key) => {
           if (sourceTabKeys.includes(key as SourceTabKey)) {

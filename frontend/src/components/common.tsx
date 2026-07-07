@@ -109,7 +109,7 @@ export function SourceTable({
   }
 
   return (
-    <Space direction="vertical" size={16} className="page">
+    <Space direction="vertical" size={16} className="page source-table-shell">
       {metrics}
       <Flex className="section-toolbar" justify="space-between" gap={12} wrap="wrap">
         <div>{toolbar}</div>

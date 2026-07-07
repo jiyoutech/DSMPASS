@@ -1,7 +1,7 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { HelpLabel, PageTitle } from "../components/common";
 import { useAsyncData } from "../hooks/useAsyncData";
@@ -30,20 +30,20 @@ const systemFieldHelp = {
 };
 
 const fieldEffectHelp = {
-  adminPort: "管理后台监听由套件启动参数提供。修改套件环境或安装向导配置后，需要重启 DSMPASS 才会生效。",
-  deploymentMode: "保存后立即更新地址推导规则；不会改变管理后台监听端口，也不会关闭本机认证入口监听。",
-  accessHost: "保存后立即更新默认地址推导；直接访问模式会同步生成认证入口公网地址、DSM 地址和 DSM Auth API。",
-  accessScheme: "保存后会刷新认证路由；刷新成功后本机 /idp 立即切换协议，无需重启套件。",
-  idpPort: "保存后会刷新认证路由；端口可绑定时新端口立即生效，无需重启套件。端口被占用会显示刷新失败原因。",
-  publicBaseURLLocked: "当前部署方式下由上方字段自动生成；保存后影响新登录链接和 OAuth 回调地址。",
-  publicBaseURLEditable: "填写身份平台和用户浏览器访问的公网地址；保存后立即影响新登录链接和 OAuth 回调地址，不改变本机监听端口。",
-  dsmLocked: "当前部署方式下自动生成，不能直接编辑；切换到高级模式后可分别指定 DSM 地址和 DSM Auth API。",
-  dsmRedirectURL: "保存后立即影响后续认证成功后的 DSM 跳转目标。",
-  helperDSMLoginAPI: "保存后立即影响后续 DSM 登录调用；浏览器直登模式要求用户浏览器可访问该地址。",
-  helperDSMLoginMode: "保存后立即影响后续登录流程；外网无法访问 DSM 时建议使用 Helper 连接。",
-  helperDSMBrowserLoginTTL: "保存后立即影响后续浏览器直登临时密码。",
-  helperDSMTLSSkipVerify: "保存后立即影响 DSMPASS/Helper 访问 DSM Auth API 的证书校验。",
-  adminAllowedCIDRs: "保存后立即影响管理后台和 /api/admin 的新请求；后端会校验当前管理员来源，避免保存后自己无法继续访问。"
+  adminPort: "由套件启动参数提供；修改后需重启 DSMPASS。",
+  deploymentMode: "保存后立即更新地址推导规则。",
+  accessHost: "保存后立即更新默认地址推导。",
+  accessScheme: "保存后刷新认证路由；无需重启套件。",
+  idpPort: "保存后刷新认证路由；端口可绑定时立即生效。",
+  publicBaseURLLocked: "由上方字段自动生成；影响新登录链接和 OAuth 回调地址。",
+  publicBaseURLEditable: "保存后立即影响新登录链接和 OAuth 回调地址。",
+  dsmLocked: "当前部署方式下自动生成；高级模式可手动填写。",
+  dsmRedirectURL: "保存后立即影响认证成功后的 DSM 跳转目标。",
+  helperDSMLoginAPI: "保存后立即影响后续 DSM 登录调用。",
+  helperDSMLoginMode: "保存后立即影响后续登录流程。",
+  helperDSMBrowserLoginTTL: "保存后立即影响浏览器直登临时密码。",
+  helperDSMTLSSkipVerify: "保存后立即影响 DSMPASS/Helper 访问 DSM Auth API。",
+  adminAllowedCIDRs: "保存后立即影响管理后台和 /api/admin 新请求。"
 };
 
 const deploymentOptions: { label: string; value: DeploymentMode }[] = [
@@ -550,38 +550,50 @@ export function SystemSettings() {
           )}
           {activeSection === "certificates" && (
             <Card title="证书与路由" className="module-card settings-card">
-              <Alert
-                type="info"
-                showIcon
-                className="settings-inline-alert"
-                message="管理端和认证端可以分别上传证书；如果使用同一张通配符证书，也可以把同一套证书 PEM 和私钥 PEM 分别上传到两端。证书上传后无需重启，新建 HTTPS 连接会自动使用新证书。"
-              />
-              <div className="certificate-grid">
-                <CertificateUploadFields
-                  title="管理端证书"
-                  description="用于管理后台 HTTPS。上传后不会修改认证入口地址；无需重启，新建 HTTPS 连接会自动使用新证书。"
-                  certFiles={adminCertFiles}
-                  keyFiles={adminKeyFiles}
-                  onCertFiles={setAdminCertFiles}
-                  onKeyFiles={setAdminKeyFiles}
-                  disabled={loading || saving}
-                />
-                <CertificateUploadFields
-                  title="认证端口证书"
-                  description="用于 /idp 登录入口。上传后不会影响管理后台证书；如证书包含非通配符 DNS SAN，会自动同步为认证入口域名。"
-                  certFiles={idpCertFiles}
-                  keyFiles={idpKeyFiles}
-                  onCertFiles={setIDPCertFiles}
-                  onKeyFiles={setIDPKeyFiles}
-                  disabled={loading || saving}
-                />
+              <div className="settings-doc certificate-settings">
+                <section className="settings-doc-intro">
+                  <h2>证书作用范围</h2>
+                  <p>管理端和认证端使用独立证书槽位。可以分别上传不同证书，也可以把同一张通配符证书分别上传到两个槽位。</p>
+                  <p>证书上传后不需要重启套件，新建 HTTPS 连接会自动使用新证书。</p>
+                </section>
+
+                <section className="settings-doc-section">
+                  <h3>证书槽位</h3>
+                  <div className="certificate-slot-list">
+                    <CertificateUploadFields
+                      title="管理端证书"
+                      description="用于管理后台 HTTPS，不会修改认证入口地址。"
+                      certFiles={adminCertFiles}
+                      keyFiles={adminKeyFiles}
+                      onCertFiles={setAdminCertFiles}
+                      onKeyFiles={setAdminKeyFiles}
+                      disabled={loading || saving}
+                      action={<Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>}
+                    />
+                    <CertificateUploadFields
+                      title="认证端证书"
+                      description="用于 /idp 登录入口；非通配符 DNS SAN 会同步为认证入口域名。"
+                      certFiles={idpCertFiles}
+                      keyFiles={idpKeyFiles}
+                      onCertFiles={setIDPCertFiles}
+                      onKeyFiles={setIDPKeyFiles}
+                      disabled={loading || saving}
+                      action={<Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>}
+                    />
+                  </div>
+                </section>
+
+                <section className="settings-doc-section">
+                  <h3>路由维护</h3>
+                  <div className="certificate-maintenance">
+                    <p>通常上传证书后不需要手动操作。仅在浏览器仍复用旧连接，或认证入口路由需要重新绑定时使用下面的维护动作。</p>
+                    <Flex gap={8} wrap>
+                      <Button icon={<ReloadOutlined />} loading={refreshingTLS} onClick={() => void refreshTLSConnections()}>刷新证书连接</Button>
+                      <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
+                    </Flex>
+                  </div>
+                </section>
               </div>
-              <Flex className="certificate-actions" justify="end" gap={8} wrap>
-                <Button icon={<UploadOutlined />} loading={uploadingCert === "admin"} onClick={() => void uploadCertificate("admin")}>上传管理端证书</Button>
-                <Button icon={<UploadOutlined />} loading={uploadingCert === "idp"} onClick={() => void uploadCertificate("idp")}>上传认证端证书</Button>
-                <Button icon={<ReloadOutlined />} loading={refreshingTLS} onClick={() => void refreshTLSConnections()}>刷新证书连接</Button>
-                <Button icon={<SafetyCertificateOutlined />} loading={restartingIDP} onClick={() => void restartIDPRoute()}>重启认证路由</Button>
-              </Flex>
             </Card>
           )}
           {activeSection === "account" && (
@@ -865,7 +877,8 @@ function CertificateUploadFields({
   keyFiles,
   onCertFiles,
   onKeyFiles,
-  disabled
+  disabled,
+  action
 }: {
   title: string;
   description: string;
@@ -874,33 +887,37 @@ function CertificateUploadFields({
   onCertFiles: (files: UploadFile[]) => void;
   onKeyFiles: (files: UploadFile[]) => void;
   disabled?: boolean;
+  action?: ReactNode;
 }) {
   return (
     <div className="certificate-upload">
-      <div>
+      <div className="certificate-upload-copy">
         <strong>{title}</strong>
         <p>{description}</p>
       </div>
-      <Upload
-        accept=".pem,.crt,.cer"
-        maxCount={1}
-        fileList={certFiles}
-        beforeUpload={() => false}
-        onChange={({ fileList }) => onCertFiles(fileList.slice(-1))}
-        disabled={disabled}
-      >
-        <Button icon={<UploadOutlined />} disabled={disabled}>选择证书 PEM</Button>
-      </Upload>
-      <Upload
-        accept=".pem,.key"
-        maxCount={1}
-        fileList={keyFiles}
-        beforeUpload={() => false}
-        onChange={({ fileList }) => onKeyFiles(fileList.slice(-1))}
-        disabled={disabled}
-      >
-        <Button icon={<UploadOutlined />} disabled={disabled}>选择私钥 PEM</Button>
-      </Upload>
+      <div className="certificate-file-row">
+        <Upload
+          accept=".pem,.crt,.cer"
+          maxCount={1}
+          fileList={certFiles}
+          beforeUpload={() => false}
+          onChange={({ fileList }) => onCertFiles(fileList.slice(-1))}
+          disabled={disabled}
+        >
+          <Button icon={<UploadOutlined />} disabled={disabled}>选择证书 PEM</Button>
+        </Upload>
+        <Upload
+          accept=".pem,.key"
+          maxCount={1}
+          fileList={keyFiles}
+          beforeUpload={() => false}
+          onChange={({ fileList }) => onKeyFiles(fileList.slice(-1))}
+          disabled={disabled}
+        >
+          <Button icon={<UploadOutlined />} disabled={disabled}>选择私钥 PEM</Button>
+        </Upload>
+      </div>
+      {action && <div className="certificate-upload-action">{action}</div>}
     </div>
   );
 }
