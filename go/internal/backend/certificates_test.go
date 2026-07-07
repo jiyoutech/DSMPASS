@@ -60,8 +60,8 @@ func TestUploadIDPCertificateAppliesCertificateDomain(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.RestartRequired {
-		t.Fatalf("expected idp certificate upload to require route restart")
+	if payload.RestartRequired {
+		t.Fatalf("expected idp certificate upload to use dynamic TLS without restart")
 	}
 	if payload.AppliedAccessHost != "login.example.com" {
 		t.Fatalf("expected applied certificate domain, got %#v", payload)
@@ -115,8 +115,8 @@ func TestUploadAdminCertificateStoresAdminCertificateOnly(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Scope != "admin" || !payload.RestartRequired {
-		t.Fatalf("expected admin upload response to require restart, got %#v", payload)
+	if payload.Scope != "admin" || payload.RestartRequired {
+		t.Fatalf("expected admin upload response to use dynamic TLS without restart, got %#v", payload)
 	}
 	if payload.AppliedAccessHost != "" {
 		t.Fatalf("admin certificate upload should not update idp access host, got %#v", payload)

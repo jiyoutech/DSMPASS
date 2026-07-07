@@ -199,7 +199,7 @@ func (s *idpRouteService) Restart() error {
 	go func() {
 		var err error
 		if idpTLSEnabled {
-			err = httpServer.ServeTLS(listener, s.certFile, s.keyFile)
+			err = serveHTTPServer(httpServer, listener, true, s.certFile, s.keyFile)
 		} else {
 			err = httpServer.Serve(listener)
 		}
@@ -211,10 +211,15 @@ func (s *idpRouteService) Restart() error {
 }
 
 func serveHTTP(listener net.Listener, handler http.Handler, tlsEnabled bool, certFile, keyFile string) error {
+	return serveHTTPServer(&http.Server{Handler: handler}, listener, tlsEnabled, certFile, keyFile)
+}
+
+func serveHTTPServer(server *http.Server, listener net.Listener, tlsEnabled bool, certFile, keyFile string) error {
 	if tlsEnabled {
-		return http.ServeTLS(listener, handler, certFile, keyFile)
+		server.TLSConfig = dynamicTLSConfig(certFile, keyFile)
+		return server.ServeTLS(listener, "", "")
 	}
-	return http.Serve(listener, handler)
+	return server.Serve(listener)
 }
 
 func ensureCertificate(certFile, keyFile, accessHost string) error {

@@ -331,19 +331,19 @@ export function SystemSettings() {
       const certificateName = result.certificate_info?.common_name || result.certificate_domains?.[0] || "";
       const certificateSuffix = certificateName ? `，识别为${certificateLabel}：${certificateName}` : `，识别为${certificateLabel}`;
       if (scope === "admin") {
-        message.success(`管理端证书已上传${certificateSuffix}，重启 DSMPASS 套件后证书生效`);
+        message.success(`管理端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书`);
         setAdminCertFiles([]);
         setAdminKeyFiles([]);
       } else if (result.applied_access_host) {
-        message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，重启认证路由后证书生效`);
+        message.success(`认证端证书已上传${certificateSuffix}，已自动将认证入口域名更新为 ${result.applied_access_host}，新建 HTTPS 连接会自动使用新证书`);
         setIDPCertFiles([]);
         setIDPKeyFiles([]);
         await reload();
       } else {
         if (result.certificate_domains?.length) {
-          message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名并重启认证路由`);
+          message.success(`认证端证书已上传${certificateSuffix}，但未自动修改认证入口域名；请确认后手动设置认证入口域名，新建 HTTPS 连接会自动使用新证书`);
         } else {
-          message.success(`认证端证书已上传${certificateSuffix}，可重启认证路由生效`);
+          message.success(`认证端证书已上传${certificateSuffix}，新建 HTTPS 连接会自动使用新证书`);
         }
         setIDPCertFiles([]);
         setIDPKeyFiles([]);
@@ -402,7 +402,7 @@ export function SystemSettings() {
                 type="info"
                 showIcon
                 className="settings-inline-alert"
-                message="管理端和认证端可以分别上传证书；如果使用同一张通配符证书，也可以把同一套证书 PEM 和私钥 PEM 分别上传到两端。管理端证书需要重启 DSMPASS 套件后生效，认证端证书可重启认证路由生效。"
+                message="管理端和认证端可以分别上传证书；如果使用同一张通配符证书，也可以把同一套证书 PEM 和私钥 PEM 分别上传到两端。证书上传后无需重启，新建 HTTPS 连接会自动使用新证书。"
               />
               <div className="certificate-grid">
                 <CertificateUploadFields

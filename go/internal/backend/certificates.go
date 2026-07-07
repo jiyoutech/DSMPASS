@@ -88,9 +88,9 @@ func (s *Server) uploadCertificate(c *gin.Context) {
 func (s *Server) certificateTarget(scope string) (string, string, bool, bool) {
 	switch scope {
 	case "admin":
-		return s.cfg.TLSCertFile, s.cfg.TLSKeyFile, true, true
+		return s.cfg.TLSCertFile, s.cfg.TLSKeyFile, false, true
 	case "idp":
-		return s.cfg.IDPTLSCertFile, s.cfg.IDPTLSKeyFile, true, true
+		return s.cfg.IDPTLSCertFile, s.cfg.IDPTLSKeyFile, false, true
 	default:
 		return "", "", false, false
 	}
