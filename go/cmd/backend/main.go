@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"log"
 	"math/big"
 	"net"
@@ -349,6 +351,9 @@ func serveHTTPServer(server *http.Server, listener net.Listener, tlsEnabled bool
 
 func ensureCertificate(certFile, keyFile, accessHost string) error {
 	if fileExists(certFile) && fileExists(keyFile) {
+		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return fmt.Errorf("existing tls certificate and private key are invalid or do not match: %w", err)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(certFile), 0o700); err != nil {

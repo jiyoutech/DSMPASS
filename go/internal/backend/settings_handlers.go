@@ -39,10 +39,21 @@ func (s *Server) putSettings(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	s.getSettings(c)
-	if restartRequired {
-		s.restartIDPRouteOnly("idp route configuration changed")
+	settings, err := s.effectiveSettings(c.Request.Context())
+	if err != nil {
+		writeError(c, err)
+		return
 	}
+	if restartRequired {
+		settings["idp_route_restart_required"] = true
+		if err := s.restartIDPRouteNow("idp route configuration changed"); err != nil {
+			settings["idp_route_restarted"] = false
+			settings["idp_route_restart_error"] = err.Error()
+		} else {
+			settings["idp_route_restarted"] = true
+		}
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (s *Server) discoverSettings(c *gin.Context) {

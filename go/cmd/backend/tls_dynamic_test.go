@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,8 +128,34 @@ func TestManagedHTTPServerClosesIdleConnections(t *testing.T) {
 	}
 }
 
+func TestEnsureCertificateRejectsExistingMismatchedPair(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	otherCertFile := filepath.Join(dir, "other.crt")
+	otherKeyFile := filepath.Join(dir, "other.key")
+	writeTestCertificatePair(t, certFile, keyFile, "first.example.com")
+	writeTestCertificatePair(t, otherCertFile, otherKeyFile, "second.example.com")
+	otherKey, err := os.ReadFile(otherKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, otherKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = ensureCertificate(certFile, keyFile, "first.example.com")
+	if err == nil {
+		t.Fatal("expected mismatched certificate pair error")
+	}
+	if !strings.Contains(err.Error(), "invalid or do not match") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func writeTestCertificatePair(t *testing.T, certFile, keyFile, commonName string) {
 	t.Helper()
+	time.Sleep(time.Millisecond)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

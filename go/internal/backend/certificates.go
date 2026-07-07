@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -223,31 +224,113 @@ func readUploadedFile(header *multipart.FileHeader) ([]byte, error) {
 }
 
 func writeCertificatePair(certFile, keyFile string, certData, keyData []byte) error {
+	if _, err := tls.X509KeyPair(certData, keyData); err != nil {
+		return fmt.Errorf("certificate and private key do not match: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(certFile), 0o700); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
 		return err
 	}
-	certTemp := certFile + ".tmp"
-	keyTemp := keyFile + ".tmp"
-	if err := os.WriteFile(certTemp, certData, 0o600); err != nil {
+	certTemp, err := writeTempCertificateFile(certFile, certData)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyTemp, keyData, 0o600); err != nil {
+	keyTemp, err := writeTempCertificateFile(keyFile, keyData)
+	if err != nil {
 		_ = os.Remove(certTemp)
 		return err
 	}
+	certBackup, certExisted, err := backupExistingFile(certFile)
+	if err != nil {
+		_ = os.Remove(certTemp)
+		_ = os.Remove(keyTemp)
+		return err
+	}
+	keyBackup, keyExisted, err := backupExistingFile(keyFile)
+	if err != nil {
+		restoreFile(certFile, certBackup, certExisted)
+		_ = os.Remove(certTemp)
+		_ = os.Remove(keyTemp)
+		return err
+	}
 	if err := os.Rename(certTemp, certFile); err != nil {
+		restoreFile(certFile, certBackup, certExisted)
+		restoreFile(keyFile, keyBackup, keyExisted)
 		_ = os.Remove(certTemp)
 		_ = os.Remove(keyTemp)
 		return err
 	}
 	if err := os.Rename(keyTemp, keyFile); err != nil {
+		restoreFile(certFile, certBackup, certExisted)
+		restoreFile(keyFile, keyBackup, keyExisted)
 		_ = os.Remove(keyTemp)
 		return err
 	}
+	removeBackup(certBackup, certExisted)
+	removeBackup(keyBackup, keyExisted)
 	return nil
+}
+
+func writeTempCertificateFile(target string, data []byte) (string, error) {
+	file, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func backupExistingFile(target string) (string, bool, error) {
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	backup, err := os.CreateTemp(filepath.Dir(target), filepath.Base(target)+".*.bak")
+	if err != nil {
+		return "", false, err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return "", false, err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return "", false, err
+	}
+	if err := os.Rename(target, backupPath); err != nil {
+		return "", false, err
+	}
+	return backupPath, true, nil
+}
+
+func restoreFile(target, backup string, existed bool) {
+	_ = os.Remove(target)
+	if existed {
+		_ = os.Rename(backup, target)
+	}
+}
+
+func removeBackup(backup string, existed bool) {
+	if existed {
+		_ = os.Remove(backup)
+	}
 }
 
 func (s *Server) restartIDPRouteHandler(c *gin.Context) {

@@ -137,27 +137,6 @@ func (s *Server) refreshTLSConnections(scope string) bool {
 	return true
 }
 
-func (s *Server) restartIDPRouteOnly(reason string) {
-	s.idpRouteMu.Lock()
-	restart := s.restartIDPRoute
-	notice := s.restartIDPNotice
-	s.idpRouteMu.Unlock()
-	if restart == nil {
-		if notice != nil {
-			notice("idp route restart requested but no idp route restarter is configured")
-		}
-		return
-	}
-	go func() {
-		if notice != nil {
-			notice("restarting idp route: " + reason)
-		}
-		if err := restart(); err != nil && notice != nil {
-			notice("failed to restart idp route: " + err.Error())
-		}
-	}()
-}
-
 func (s *Server) restartIDPRouteNow(reason string) error {
 	s.idpRouteMu.Lock()
 	restart := s.restartIDPRoute

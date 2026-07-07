@@ -538,6 +538,82 @@ func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
 	}
 }
 
+func TestSettingsUpdateDoesNotPersistPartialChangesWhenLaterValidationFails(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"access_scheme":"http","helper_dsm_login_mode":"invalid"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", response.Code, response.Body.String())
+	}
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.AccessScheme != "https" || server.cfg.AccessScheme != "https" {
+		t.Fatalf("partial settings update was persisted: row=%#v runtime_scheme=%q", row, server.cfg.AccessScheme)
+	}
+}
+
+func TestSettingsResponseReportsIDPRouteRestartError(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"access_scheme":"http","helper_dsm_login_mode":"helper"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"idp_route_restart_required":true`,
+		`"idp_route_restarted":false`,
+		"idp route restarter is not configured",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings response missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestRestartHelperEndpointUsesHelperControlScript(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "called")

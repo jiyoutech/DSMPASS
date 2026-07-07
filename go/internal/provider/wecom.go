@@ -162,7 +162,10 @@ func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
 func (w WeCom) visibleUsers(token string) ([]User, error) {
 	if strings.TrimSpace(w.cfg.AgentID) != "" {
 		userIDs, err := w.agentVisibleUserIDs(token)
-		if err == nil && len(userIDs) > 0 {
+		if err != nil {
+			return nil, fmt.Errorf("企业微信读取自建应用可见范围失败：%w", err)
+		}
+		if len(userIDs) > 0 {
 			return w.usersByIDs(token, userIDs, nil)
 		}
 	}

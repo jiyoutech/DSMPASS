@@ -3,6 +3,7 @@ package diaglog
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,6 +43,9 @@ func Append(dataDir, requestID, stage string, enabled bool, fields Event) {
 }
 
 func redactValue(key string, value any) any {
+	if text, ok := value.(string); ok && shouldRedactURL(key) {
+		return redactURL(text)
+	}
 	if isSensitiveKey(key) {
 		return "[REDACTED]"
 	}
@@ -71,6 +75,28 @@ func redactValue(key string, value any) any {
 
 func isSensitiveKey(key string) bool {
 	normalized := strings.ToLower(key)
+	switch normalized {
+	case "code",
+		"authorization_code",
+		"state",
+		"profile",
+		"subject",
+		"userid",
+		"user_id",
+		"openid",
+		"open_id",
+		"unionid",
+		"union_id",
+		"email",
+		"email_norm",
+		"mobile",
+		"phone",
+		"name",
+		"display_name",
+		"username",
+		"dsm_username":
+		return true
+	}
 	for _, marker := range []string{
 		"password",
 		"passwd",
@@ -88,6 +114,56 @@ func isSensitiveKey(key string) bool {
 		}
 	}
 	return false
+}
+
+func shouldRedactURL(key string) bool {
+	switch strings.ToLower(key) {
+	case "request_url", "authorize_url", "redirect_url", "location":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	changed := false
+	for key := range query {
+		if isSensitiveQueryKey(key) {
+			query.Set(key, "[REDACTED]")
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func isSensitiveQueryKey(key string) bool {
+	normalized := strings.ToLower(key)
+	switch normalized {
+	case "code",
+		"state",
+		"access_token",
+		"refresh_token",
+		"id_token",
+		"token",
+		"sid",
+		"cookie",
+		"password",
+		"passwd",
+		"secret",
+		"signature":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatEvent(event Event) string {

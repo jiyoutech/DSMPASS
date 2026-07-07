@@ -285,6 +285,40 @@ func TestWeComListUsersPrefersAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T
 	}
 }
 
+func TestWeComListUsersReturnsAgentVisibleErrorWhenAgentIDConfigured(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		AgentID:        "1000016",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 0, "department": []map[string]any{}}, http.StatusOK
+		case "/cgi-bin/agent/get":
+			return map[string]any{"errcode": 48002, "errmsg": "api forbidden"}, http.StatusOK
+		case "/cgi-bin/user/list_id":
+			t.Fatal("list_id should not be called when agent visible range fails")
+		}
+		return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+	})}
+
+	_, err := wecom.ListUsers()
+	if err == nil {
+		t.Fatal("expected agent visible range error")
+	}
+	message := err.Error()
+	for _, want := range []string{"自建应用可见范围", "48002", "读取通讯录/读取成员接口权限"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message missing %q: %s", want, message)
+		}
+	}
+}
+
 func TestWeComTrustedIPErrorIsActionable(t *testing.T) {
 	err := formatWeComHTTPError(http.StatusOK, []byte(`{"errcode":60020,"errmsg":"not allow to access from your ip"}`))
 	if err == nil {

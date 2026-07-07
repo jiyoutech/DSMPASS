@@ -200,6 +200,25 @@ func TestCertificateInformationMarksTestCertificate(t *testing.T) {
 	}
 }
 
+func TestWriteCertificatePairRejectsMismatchedKeyWithoutReplacingExistingPair(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	oldCertPEM, oldKeyPEM := testCertificatePair(t, "old.example.com")
+	if err := writeCertificatePair(certFile, keyFile, oldCertPEM, oldKeyPEM); err != nil {
+		t.Fatal(err)
+	}
+	newCertPEM, _ := testCertificatePair(t, "new.example.com")
+	_, mismatchedKeyPEM := testCertificatePair(t, "other.example.com")
+
+	err := writeCertificatePair(certFile, keyFile, newCertPEM, mismatchedKeyPEM)
+	if err == nil {
+		t.Fatal("expected mismatched certificate pair error")
+	}
+	assertFileBytes(t, certFile, oldCertPEM)
+	assertFileBytes(t, keyFile, oldKeyPEM)
+}
+
 func TestPreferredCertificateAccessHostSkipsWildcard(t *testing.T) {
 	got := preferredCertificateAccessHost([]string{"*.example.com", "login.example.com"})
 	if got != "login.example.com" {
