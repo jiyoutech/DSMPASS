@@ -36,6 +36,7 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin := router.Group("/api/admin", adminNetwork, s.adminAuth())
 		admin.PUT("/auth/password", s.adminChangePassword)
 		admin.GET("/settings", s.getSettings)
+		admin.GET("/settings/overview", s.settingsOverview)
 		admin.PUT("/settings", s.putSettings)
 		admin.POST("/settings/discover", s.discoverSettings)
 		admin.POST("/settings/certificates/:scope", s.uploadCertificate)

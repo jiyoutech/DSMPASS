@@ -1,29 +1,31 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Tag, Upload } from "antd";
+import { Alert, App as AntApp, Button, Card, Descriptions, Flex, Form, Input, InputNumber, List, Menu, Segmented, Select, Space, Switch, Tag, Typography, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { HelpLabel, PageTitle } from "../components/common";
 import { useAsyncData } from "../hooks/useAsyncData";
-import type { AdminPasswordChange, SystemSettingsUpdate } from "../types";
+import type { AdminPasswordChange, SystemSettingsOverview, SystemSettingsUpdate } from "../types";
 
 const privateCIDRs = "private";
 const allCIDRs = "all";
-type SettingsSectionKey = "base" | "dsm" | "certificates" | "account";
+const defaultIDPPort = 26000;
+type SettingsSectionKey = "overview" | "base" | "dsm" | "certificates" | "account";
 type DeploymentMode = "direct" | "reverse_proxy" | "advanced";
 type CertificateScope = "admin" | "idp";
+const { Paragraph } = Typography;
 
 const systemFieldHelp = {
-  deploymentMode: "直接访问会自动生成所有地址；反向代理允许单独填写公网 IDP 地址；高级自定义允许分别填写 IDP、DSM 和 DSM Auth API 地址。",
-  accessHost: "NAS 的 IP 或域名，用于检测并生成默认 DSM 地址和 DSM Auth API；填写主机名，不包含协议和路径。",
-  accessScheme: "DSMPASS IDP 入口实际监听使用的协议。反向代理场景下，它可以不同于 IDP 对外地址的协议。",
-  idpPort: "DSMPASS IDP 实际监听端口，必须大于 1024 且不能被占用。反向代理时公网地址可以不带这个端口。",
+  deploymentMode: "影响地址推导和哪些地址允许手动编辑；不会关闭本机 /idp 监听端口。",
+  accessHost: "用于生成默认认证入口、DSM 地址和 DSM Auth API；填写主机名或 IP，不包含协议、端口和路径。",
+  accessScheme: "影响本机 /idp 监听使用 HTTP 还是 HTTPS；反向代理公网协议由认证入口公网地址决定。",
+  idpPort: "影响本机 /idp 登录入口监听端口，必须大于 1024、不能被占用，并且不能与管理后台端口一致。",
   adminAllowedCIDRs: "开启后，管理后台仅允许本机和内网访问。保存时后端会确认当前访问 IP 仍可访问，避免把自己锁在外面。",
-  publicBaseURL: "用户浏览器和外部身份平台看到的 IDP 对外地址，用于生成 redirect_uri。反向代理时通常填写 https://login.example.com。",
-  dsmRedirectURL: "登录完成后跳回的 DSM 访问地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
+  publicBaseURL: "影响登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉看到的认证入口公网地址。",
+  dsmRedirectURL: "影响认证成功后浏览器最终跳转到哪个 DSM 地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMLoginMode: "直接连接：前端浏览器用临时密码调用 DSM Auth API，DSM 看到的是用户真实访问 IP；此模式下 DSM 地址协议必须和 IDP 协议一致。Helper 连接：由 NAS 上的 helper 后台调用 DSM Auth API。",
   helperDSMBrowserLoginTTL: "浏览器直登时临时密码保留的秒数，到期后 helper 自动恢复 shadow。",
-  helperDSMLoginAPI: "需要登录的 NAS 的 DSM 登录接口地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
+  helperDSMLoginAPI: "影响 DSMPASS 或浏览器调用哪个 DSM SYNO.API.Auth 登录接口。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMTLSSkipVerify: "控制辅助程序访问需要登录的 NAS 时是否跳过 DSM 证书校验。"
 };
 
@@ -50,7 +52,7 @@ function dsmPortForScheme(scheme: "http" | "https") {
 
 function directPublicBaseURL(host: string, scheme: "http" | "https", idpPort: number) {
   const accessHost = normalizedHost(host);
-  return `${scheme}://${accessHost}:${idpPort || 25000}`;
+  return `${scheme}://${accessHost}:${idpPort || defaultIDPPort}`;
 }
 
 function reverseProxyPublicBaseURL(host: string, scheme: "http" | "https") {
@@ -110,7 +112,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
     const mode = normalizedDeploymentMode(next?.deployment_mode ?? form.getFieldValue("deployment_mode"));
     const scheme = next?.access_scheme || (form.getFieldValue("access_scheme") || "https") as "http" | "https";
     const host = next?.access_host ?? String(form.getFieldValue("access_host") || "");
-    const idpPort = Number(next?.idp_port ?? form.getFieldValue("idp_port") ?? 25000);
+    const idpPort = Number(next?.idp_port ?? form.getFieldValue("idp_port") ?? defaultIDPPort);
     if (mode === "direct") {
       form.setFieldsValue(derivedSystemURLs(host, scheme, idpPort));
       return;
@@ -137,7 +139,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
   async function discover() {
     const host = String(form.getFieldValue("access_host") ?? "").trim();
     const scheme = (form.getFieldValue("access_scheme") || "https") as "http" | "https";
-    const idpPort = Number(form.getFieldValue("idp_port") || 25000);
+    const idpPort = Number(form.getFieldValue("idp_port") || defaultIDPPort);
     if (!host) {
       message.error("请先填写访问 IP / 域名");
       return;
@@ -169,11 +171,14 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
       {(section === "all" || section === "base") && <section className="settings-section">
         <div className="settings-section-head">
           <div>
-            <h3>入口地址</h3>
-            <p>配置用户访问认证入口时使用的协议、主机和端口。</p>
+            <h3>认证入口配置</h3>
+            <p>配置 /idp 本机监听和身份平台看到的公网地址；管理后台监听不在此处修改。</p>
           </div>
           <Tag color="blue">IDP</Tag>
         </div>
+        <Form.Item name="admin_port" hidden>
+          <InputNumber />
+        </Form.Item>
         <div className="form-grid">
           <Form.Item name="deployment_mode" label={<HelpLabel label="部署方式" help={systemFieldHelp.deploymentMode} />} rules={[{ required: true }]}>
             <Segmented
@@ -198,7 +203,22 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
               onChange={(event) => syncDerivedURLs({ access_host: event.target.value })}
             />
           </Form.Item>
-          <Form.Item name="idp_port" label={<HelpLabel label="IDP 监听端口" help={systemFieldHelp.idpPort} />} rules={[{ required: true }]}>
+          <Form.Item
+            name="idp_port"
+            label={<HelpLabel label="IDP 监听端口" help={systemFieldHelp.idpPort} />}
+            rules={[
+              { required: true },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  const adminPort = Number(getFieldValue("admin_port") || 0);
+                  if (adminPort > 0 && Number(value) === adminPort) {
+                    return Promise.reject(new Error("IDP 监听端口不能与管理后台端口一致"));
+                  }
+                  return Promise.resolve();
+                }
+              })
+            ]}
+          >
             <InputNumber min={1025} max={65535} precision={0} onChange={(value) => syncDerivedURLs({ idp_port: Number(value) })} />
           </Form.Item>
           <Form.Item name="public_base_url" label={<HelpLabel label="IDP 对外地址" help={systemFieldHelp.publicBaseURL} />} rules={[{ required: true }]}>
@@ -249,8 +269,9 @@ export function SystemSettings() {
   const [passwordForm] = Form.useForm<AdminPasswordChange>();
   const { message } = AntApp.useApp();
   const { data, loading, error, reload } = useAsyncData(() => api.systemSettings(), []);
+  const { data: overview, loading: overviewLoading, error: overviewError, reload: reloadOverview } = useAsyncData(() => api.systemSettingsOverview(), []);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<SettingsSectionKey>("base");
+  const [activeSection, setActiveSection] = useState<SettingsSectionKey>("overview");
   const [uploadingCert, setUploadingCert] = useState<CertificateScope | null>(null);
   const [restartingIDP, setRestartingIDP] = useState(false);
   const [refreshingTLS, setRefreshingTLS] = useState(false);
@@ -263,9 +284,10 @@ export function SystemSettings() {
     if (data) {
       form.setFieldsValue({
         deployment_mode: data.deployment_mode || "direct",
+        admin_port: data.admin_port,
         access_host: data.access_host,
         access_scheme: data.access_scheme || "https",
-        idp_port: data.idp_port || 25000,
+        idp_port: data.idp_port || defaultIDPPort,
         admin_allowed_cidrs: data.admin_allowed_cidrs,
         public_base_url: data.public_base_url,
         dsm_redirect_url: data.dsm_redirect_url,
@@ -293,6 +315,7 @@ export function SystemSettings() {
       message.success("已保存");
       form.setFieldsValue({ relay_helper_hmac_secret: "" });
       await reload();
+      await reloadOverview();
     } catch (err) {
       message.error(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -385,10 +408,15 @@ export function SystemSettings() {
     }
   }
 
+  async function refreshAll() {
+    await Promise.all([reload(), reloadOverview()]);
+  }
+
   return (
     <Space direction="vertical" size={16} className="page settings-page">
-      <PageTitle title="系统设置" extra={<Button icon={<ReloadOutlined />} onClick={() => void reload()}>刷新</Button>} />
+      <PageTitle title="系统设置" extra={<Button icon={<ReloadOutlined />} onClick={() => void refreshAll()}>刷新</Button>} />
       {error && <Alert type="error" showIcon message={error} />}
+      {overviewError && <Alert type="error" showIcon message={overviewError} />}
       <div className="settings-console">
         <Menu
           mode="inline"
@@ -396,6 +424,7 @@ export function SystemSettings() {
           selectedKeys={[activeSection]}
           onClick={({ key }) => setActiveSection(key as SettingsSectionKey)}
           items={[
+            { key: "overview", label: "系统说明" },
             { key: "base", label: "基础配置" },
             { key: "dsm", label: "DSM 登录" },
             { key: "certificates", label: "证书与路由" },
@@ -403,6 +432,9 @@ export function SystemSettings() {
           ]}
         />
         <div className="settings-console-body">
+          {activeSection === "overview" && (
+            <SystemOverviewCard overview={overview} loading={overviewLoading} />
+          )}
           {(activeSection === "base" || activeSection === "dsm") && (
             <Form form={form} layout="vertical" onFinish={(values) => void save(values)} disabled={loading || saving} className="settings-form">
               <Card
@@ -472,6 +504,102 @@ export function SystemSettings() {
 
 function selectedFile(files: UploadFile[]) {
   return files[0]?.originFileObj;
+}
+
+function SystemOverviewCard({ overview, loading }: { overview: SystemSettingsOverview | null; loading: boolean }) {
+  return (
+    <Card title={overview?.title || "系统说明"} className="module-card settings-card" loading={loading && !overview}>
+      {!overview ? (
+        <Alert type="info" showIcon message="正在读取系统说明" />
+      ) : (
+        <div className="settings-overview">
+          <section className="settings-overview-section">
+            <h3>核心边界</h3>
+            <div className="settings-summary">
+              {overview.summary.map((item) => (
+                <Paragraph key={item}>{item}</Paragraph>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>当前运行拓扑</h3>
+            <Descriptions
+              size="small"
+              bordered
+              column={{ xs: 1, sm: 1, md: 2 }}
+              items={overview.runtime.map((item) => ({
+                key: item.title,
+                label: item.title,
+                children: (
+                  <div className="settings-fact">
+                    <strong>{item.value || "-"}</strong>
+                    <span>{item.description}</span>
+                  </div>
+                )
+              }))}
+            />
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>部署方式</h3>
+            <div className="settings-explain-grid">
+              {overview.deployment_modes.map((item) => (
+                <div className="settings-explain-item" key={item.title}>
+                  <div className="settings-explain-head">
+                    <strong>{item.title}</strong>
+                    <Tag color={item.value === "当前使用" ? "blue" : "default"}>{item.value}</Tag>
+                  </div>
+                  <p>{item.description}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>配置影响范围</h3>
+            <OverviewConfigList items={overview.configuration} />
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>证书作用域</h3>
+            <OverviewConfigList items={overview.certificates} />
+          </section>
+
+          <section className="settings-overview-section">
+            <h3>操作注意</h3>
+            <List
+              size="small"
+              dataSource={overview.operational_notes}
+              renderItem={(item) => <List.Item>{item}</List.Item>}
+            />
+          </section>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function OverviewConfigList({ items }: { items: SystemSettingsOverview["configuration"] }) {
+  return (
+    <div className="settings-explain-grid">
+      {items.map((item) => (
+        <div className="settings-explain-item" key={item.key}>
+          <div className="settings-explain-head">
+            <strong>{item.label}</strong>
+            <Tag color={item.configurable ? "green" : "default"}>{item.configurable ? "可配置" : "只读"}</Tag>
+          </div>
+          <div className="settings-explain-value">{item.value || "-"}</div>
+          <p>{item.effect}</p>
+          {item.notes.length > 0 && (
+            <ul>
+              {item.notes.map((note) => <li key={note}>{note}</li>)}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function AdminAccessSwitch() {

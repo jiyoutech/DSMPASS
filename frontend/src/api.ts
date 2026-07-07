@@ -19,6 +19,7 @@ import type {
   SyncResult,
   SystemSettings,
   SystemSettingsDiscovery,
+  SystemSettingsOverview,
   SystemSettingsUpdate,
   VersionInfo
 } from "./types";
@@ -137,6 +138,7 @@ export const api = {
   restartHelper: () => request<{ success: boolean }>("/api/admin/helper/restart", { method: "POST" }),
   version: () => request<VersionInfo>("/api/admin/version"),
   systemSettings: () => request<SystemSettings>("/api/admin/settings"),
+  systemSettingsOverview: () => request<SystemSettingsOverview>("/api/admin/settings/overview"),
   updateSystemSettings: (payload: SystemSettingsUpdate) =>
     request<SystemSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) }),
   uploadCertificate: (scope: "admin" | "idp", cert: File, key: File) => {

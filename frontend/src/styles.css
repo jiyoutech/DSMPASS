@@ -384,6 +384,97 @@ body {
   margin-bottom: 14px;
 }
 
+.settings-overview {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-overview-section {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-overview-section h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.settings-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.settings-summary .ant-typography {
+  margin: 0;
+  color: rgba(0, 0, 0, 0.72);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings-fact {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-fact strong {
+  word-break: break-all;
+}
+
+.settings-fact span,
+.settings-explain-item p,
+.settings-explain-item li {
+  color: rgba(0, 0, 0, 0.62);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.settings-explain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.settings-explain-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.settings-explain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-explain-value {
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f7f7f7;
+  color: rgba(0, 0, 0, 0.82);
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.settings-explain-item p,
+.settings-explain-item ul {
+  margin: 0;
+}
+
+.settings-explain-item ul {
+  padding-left: 18px;
+}
+
 .certificate-upload {
   display: grid;
   gap: 10px;

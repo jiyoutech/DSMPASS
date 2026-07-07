@@ -92,7 +92,7 @@ func (s *Server) discoverSettings(c *gin.Context) {
 		currentPort = strconv.Itoa(payload.IDPPort)
 	}
 	if currentPort == "" {
-		currentPort = listenAddressPort(s.cfg.Listen)
+		currentPort = listenAddressPort(s.IDPListenAddress())
 	}
 	publicCandidates := []string{
 		currentPublicURL,
@@ -122,7 +122,7 @@ func (s *Server) discoverSettings(c *gin.Context) {
 		"access_host":          host,
 		"access_scheme":        scheme,
 		"admin_port":           firstPositiveInt(payload.AdminPort, parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":             firstPositiveInt(payload.IDPPort, parsePortInt(publicBaseURLPort(publicBaseURL)), 25000),
+		"idp_port":             firstPositiveInt(payload.IDPPort, parsePortInt(publicBaseURLPort(publicBaseURL)), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"public_base_url":      normalizeURLScheme(normalizePublicBaseURL(publicBaseURL, scheme), scheme),
 		"dsm_redirect_url":     dsmRedirectURL,
 		"helper_dsm_login_api": strings.TrimRight(dsmRedirectURL, "/") + "/webapi/entry.cgi",

@@ -65,9 +65,7 @@ func (s *Server) deploymentSettingsFromConfig() deploymentSettingsState {
 	host := normalizeAccessHost(s.cfg.AccessHost)
 	idpPort := firstPositiveInt(
 		parsePortInt(listenAddressPort(s.cfg.IDPListen)),
-		parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)),
-		parsePortInt(listenAddressPort(s.cfg.Listen)),
-		25000,
+		defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen))),
 	)
 	state := deploymentSettingsState{
 		Mode:              normalizeDeploymentMode(s.cfg.DeploymentMode),
@@ -149,7 +147,7 @@ func (s *Server) normalizeDeploymentSettings(state deploymentSettingsState) depl
 	state.AccessScheme = normalizedAccessScheme(state.AccessScheme, s.cfg.TLSEnabled)
 	state.AccessHost = normalizeAccessHost(state.AccessHost)
 	if state.IDPPort < minUserPort || state.IDPPort > 65535 {
-		state.IDPPort = firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000)
+		state.IDPPort = defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))
 	}
 	state.PublicBaseURL = normalizePublicBaseURL(state.PublicBaseURL, state.AccessScheme)
 	if state.PublicBaseURL == "" && state.AccessHost != "" {

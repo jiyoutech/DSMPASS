@@ -509,6 +509,7 @@ function Onboarding({
       const deploymentMode = settings.deployment_mode || "direct";
       systemForm.setFieldsValue({
         deployment_mode: deploymentMode,
+        admin_port: settings.admin_port,
         access_host: settings.access_host,
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,

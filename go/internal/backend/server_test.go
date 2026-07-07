@@ -1030,8 +1030,88 @@ func TestSettingsPublicBaseURLPortDoesNotDriveIDPListenPort(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
 	}
-	if server.IDPListenAddress() != "0.0.0.0:25000" {
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
 		t.Fatalf("public_base_url port should not drive IDP listen port, got %q", server.IDPListenAddress())
+	}
+}
+
+func TestSettingsRejectsIDPPortMatchingManagementPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"idp_port":25000}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "idp_port must be different from the management port") {
+		t.Fatalf("unexpected error body: %s", response.Body.String())
+	}
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("rejected idp_port update changed runtime listen: %q", server.IDPListenAddress())
+	}
+}
+
+func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://login.example.com",
+		AccessHost:        "nas.example.com",
+		AccessScheme:      "https",
+		DSMRedirectURL:    "https://nas.example.com:5001/",
+		HelperDSMLoginAPI: "https://nas.example.com:5001/webapi/entry.cgi",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/settings/overview", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"title":"系统说明"`,
+		`"title":"管理后台本机监听"`,
+		`"value":"0.0.0.0:25000"`,
+		`"title":"认证入口本机监听"`,
+		`"value":"0.0.0.0:26000"`,
+		`"label":"认证入口公网地址"`,
+		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings overview missing %q: %s", want, body)
+		}
 	}
 }
 

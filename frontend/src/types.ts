@@ -278,6 +278,31 @@ export interface SystemSettings {
   helper_hmac_secret_configured: boolean;
 }
 
+export interface SystemSettingsOverviewFact {
+  title: string;
+  value: string;
+  description: string;
+}
+
+export interface SystemSettingsOverviewConfig {
+  key: string;
+  label: string;
+  value: string;
+  configurable: boolean;
+  effect: string;
+  notes: string[];
+}
+
+export interface SystemSettingsOverview {
+  title: string;
+  summary: string[];
+  runtime: SystemSettingsOverviewFact[];
+  deployment_modes: SystemSettingsOverviewFact[];
+  configuration: SystemSettingsOverviewConfig[];
+  certificates: SystemSettingsOverviewConfig[];
+  operational_notes: string[];
+}
+
 export interface SystemSettingsDiscovery {
   deployment_mode?: "direct" | "reverse_proxy" | "advanced";
   access_host: string;

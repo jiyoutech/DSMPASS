@@ -58,7 +58,7 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		"access_host":                          s.cfg.AccessHost,
 		"access_scheme":                        s.configuredAccessScheme(),
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)), 25000),
+		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
 		"idp_allowed_cidrs":                    s.cfg.IDPAllowedCIDRs,
 		"public_base_url":                      s.cfg.PublicBaseURL,
