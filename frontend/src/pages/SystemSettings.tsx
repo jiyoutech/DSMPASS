@@ -10,19 +10,34 @@ import type { AdminPasswordChange, SystemSettingsUpdate } from "../types";
 const privateCIDRs = "private";
 const allCIDRs = "all";
 type SettingsSectionKey = "base" | "dsm" | "certificates" | "account";
+type DeploymentMode = "direct" | "reverse_proxy" | "advanced";
 
 const systemFieldHelp = {
-  accessHost: "需要登录的 NAS 的 IP 或域名，用于检测并生成 IDP 地址、DSM 地址和 DSM Auth API；填写主机名，不包含协议和路径。",
-  accessScheme: "IDP 登录入口使用的协议。/idp/.../launch、OAuth callback 和 redirect_uri 会使用这个协议；管理后台协议由 SPK 安装配置决定。",
-  idpPort: "用户登录入口对外端口，必须大于 1024 且不能被占用。登录入口 /idp/.../launch 和 OAuth callback 会使用 IDP 地址里的这个端口。",
+  deploymentMode: "直接访问会自动生成所有地址；反向代理允许单独填写公网 IDP 地址；高级自定义允许分别填写 IDP、DSM 和 DSM Auth API 地址。",
+  accessHost: "NAS 的 IP 或域名，用于检测并生成默认 DSM 地址和 DSM Auth API；填写主机名，不包含协议和路径。",
+  accessScheme: "DSMPASS IDP 入口实际监听使用的协议。反向代理场景下，它可以不同于 IDP 对外地址的协议。",
+  idpPort: "DSMPASS IDP 实际监听端口，必须大于 1024 且不能被占用。反向代理时公网地址可以不带这个端口。",
   adminAllowedCIDRs: "开启后，管理后台仅允许本机和内网访问。保存时后端会确认当前访问 IP 仍可访问，避免把自己锁在外面。",
-  publicBaseURL: "IDP 对外入口地址，由 IDP 协议、访问 IP / 域名和 IDP 入口端口自动生成，不能手动修改协议。",
-  dsmRedirectURL: "需要登录的 NAS 的 DSM 访问地址，由 IDP 协议和访问 IP / 域名自动生成。HTTP 使用 5000，HTTPS 使用 5001。",
+  publicBaseURL: "用户浏览器和 OAuth Provider 看到的 IDP 对外地址，用于生成 redirect_uri。反向代理时通常填写 https://login.example.com。",
+  dsmRedirectURL: "登录完成后跳回的 DSM 访问地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMLoginMode: "直接连接：前端浏览器用临时密码调用 DSM Auth API，DSM 看到的是用户真实访问 IP；此模式下 DSM 地址协议必须和 IDP 协议一致。Helper 连接：由 NAS 上的 helper 后台调用 DSM Auth API。",
   helperDSMBrowserLoginTTL: "浏览器直登时临时密码保留的秒数，到期后 helper 自动恢复 shadow。",
-  helperDSMLoginAPI: "需要登录的 NAS 的 DSM 登录接口地址，由 DSM 地址自动生成。",
+  helperDSMLoginAPI: "需要登录的 NAS 的 DSM 登录接口地址。直接访问和反向代理模式会自动生成，高级自定义可手动填写。",
   helperDSMTLSSkipVerify: "控制辅助程序访问需要登录的 NAS 时是否跳过 DSM 证书校验。"
 };
+
+const deploymentOptions: { label: string; value: DeploymentMode }[] = [
+  { label: "直接访问", value: "direct" },
+  { label: "反向代理", value: "reverse_proxy" },
+  { label: "高级", value: "advanced" }
+];
+
+function normalizedDeploymentMode(value: unknown): DeploymentMode {
+  if (value === "reverse_proxy" || value === "advanced") {
+    return value;
+  }
+  return "direct";
+}
 
 function normalizedHost(value: string | undefined) {
   return String(value || "").trim() || "127.0.0.1";
@@ -32,13 +47,28 @@ function dsmPortForScheme(scheme: "http" | "https") {
   return scheme === "https" ? 5001 : 5000;
 }
 
-function derivedSystemURLs(host: string, scheme: "http" | "https", idpPort: number) {
+function directPublicBaseURL(host: string, scheme: "http" | "https", idpPort: number) {
+  const accessHost = normalizedHost(host);
+  return `${scheme}://${accessHost}:${idpPort || 25000}`;
+}
+
+function reverseProxyPublicBaseURL(host: string, scheme: "http" | "https") {
+  return `${scheme}://${normalizedHost(host)}`;
+}
+
+function derivedDSMURLs(host: string, scheme: "http" | "https") {
   const accessHost = normalizedHost(host);
   const dsmPort = dsmPortForScheme(scheme);
   return {
-    public_base_url: `${scheme}://${accessHost}:${idpPort || 25000}`,
     dsm_redirect_url: `${scheme}://${accessHost}:${dsmPort}/`,
     helper_dsm_login_api: `${scheme}://${accessHost}:${dsmPort}/webapi/entry.cgi`
+  };
+}
+
+function derivedSystemURLs(host: string, scheme: "http" | "https", idpPort: number) {
+  return {
+    public_base_url: directPublicBaseURL(host, scheme, idpPort),
+    ...derivedDSMURLs(host, scheme)
   };
 }
 
@@ -71,12 +101,36 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
   const form = Form.useFormInstance<SystemSettingsUpdate>();
   const { message } = AntApp.useApp();
   const [detecting, setDetecting] = useState(false);
+  const deploymentMode = normalizedDeploymentMode(Form.useWatch("deployment_mode", form));
+  const publicBaseEditable = deploymentMode !== "direct";
+  const dsmEditable = deploymentMode === "advanced";
 
-  function syncDerivedURLs(next?: Partial<{ access_host: string; access_scheme: "http" | "https"; idp_port: number }>) {
+  function syncDerivedURLs(next?: Partial<{ deployment_mode: DeploymentMode; access_host: string; access_scheme: "http" | "https"; idp_port: number }>) {
+    const mode = normalizedDeploymentMode(next?.deployment_mode ?? form.getFieldValue("deployment_mode"));
     const scheme = next?.access_scheme || (form.getFieldValue("access_scheme") || "https") as "http" | "https";
     const host = next?.access_host ?? String(form.getFieldValue("access_host") || "");
     const idpPort = Number(next?.idp_port ?? form.getFieldValue("idp_port") ?? 25000);
-    form.setFieldsValue(derivedSystemURLs(host, scheme, idpPort));
+    if (mode === "direct") {
+      form.setFieldsValue(derivedSystemURLs(host, scheme, idpPort));
+      return;
+    }
+    if (mode === "reverse_proxy") {
+      form.setFieldsValue({
+        ...(next?.deployment_mode ? { public_base_url: reverseProxyPublicBaseURL(host, scheme) } : {}),
+        ...derivedDSMURLs(host, scheme)
+      });
+      return;
+    }
+    if (next?.deployment_mode) {
+      const currentPublicBaseURL = String(form.getFieldValue("public_base_url") || "");
+      const currentDSMRedirectURL = String(form.getFieldValue("dsm_redirect_url") || "");
+      const currentHelperAPI = String(form.getFieldValue("helper_dsm_login_api") || "");
+      form.setFieldsValue({
+        public_base_url: currentPublicBaseURL || directPublicBaseURL(host, scheme, idpPort),
+        dsm_redirect_url: currentDSMRedirectURL || derivedDSMURLs(host, scheme).dsm_redirect_url,
+        helper_dsm_login_api: currentHelperAPI || derivedDSMURLs(host, scheme).helper_dsm_login_api
+      });
+    }
   }
 
   async function discover() {
@@ -90,7 +144,17 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
     setDetecting(true);
     try {
       const result = await api.discoverSettings({ access_host: host, access_scheme: scheme, idp_port: idpPort });
-      form.setFieldsValue(result);
+      if (deploymentMode === "direct") {
+        form.setFieldsValue(result);
+      } else {
+        form.setFieldsValue({
+          access_host: result.access_host,
+          access_scheme: result.access_scheme,
+          idp_port: result.idp_port,
+          dsm_redirect_url: result.dsm_redirect_url,
+          helper_dsm_login_api: result.helper_dsm_login_api
+        });
+      }
       message.success(result.dsm_detected ? "已检测到 DSM" : "未检测到 DSM，已填入默认值");
     } catch (err) {
       message.error(err instanceof Error ? err.message : "检测失败");
@@ -110,6 +174,13 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
           <Tag color="blue">IDP</Tag>
         </div>
         <div className="form-grid">
+          <Form.Item name="deployment_mode" label={<HelpLabel label="部署方式" help={systemFieldHelp.deploymentMode} />} rules={[{ required: true }]}>
+            <Segmented
+              block
+              options={deploymentOptions}
+              onChange={(value) => syncDerivedURLs({ deployment_mode: value as DeploymentMode })}
+            />
+          </Form.Item>
           <Form.Item name="access_scheme" label={<HelpLabel label="IDP 协议" help={systemFieldHelp.accessScheme} />} rules={[{ required: true }]}>
             <Segmented
               block
@@ -120,17 +191,17 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
               onChange={(value) => syncDerivedURLs({ access_scheme: value as "http" | "https" })}
             />
           </Form.Item>
-          <Form.Item name="access_host" label={<HelpLabel label="访问 IP / 域名" help={systemFieldHelp.accessHost} />} rules={[{ required: true }]}>
+          <Form.Item name="access_host" label={<HelpLabel label="NAS IP / 域名" help={systemFieldHelp.accessHost} />} rules={[{ required: true }]}>
             <Input
               addonAfter={<Button htmlType="button" type="link" size="small" loading={detecting} onClick={() => void discover()}>检测</Button>}
               onChange={(event) => syncDerivedURLs({ access_host: event.target.value })}
             />
           </Form.Item>
-          <Form.Item name="idp_port" label={<HelpLabel label="IDP 入口端口" help={systemFieldHelp.idpPort} />} rules={[{ required: true }]}>
+          <Form.Item name="idp_port" label={<HelpLabel label="IDP 监听端口" help={systemFieldHelp.idpPort} />} rules={[{ required: true }]}>
             <InputNumber min={1025} max={65535} precision={0} onChange={(value) => syncDerivedURLs({ idp_port: Number(value) })} />
           </Form.Item>
-          <Form.Item name="public_base_url" label={<HelpLabel label="IDP 地址" help={systemFieldHelp.publicBaseURL} />} rules={[{ required: true }]}>
-            <Input readOnly />
+          <Form.Item name="public_base_url" label={<HelpLabel label="IDP 对外地址" help={systemFieldHelp.publicBaseURL} />} rules={[{ required: true }]}>
+            <Input readOnly={!publicBaseEditable} placeholder="https://login.example.com" />
           </Form.Item>
         </div>
         <AdminAccessSwitch />
@@ -147,10 +218,10 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "b
         <ProtocolConsistencyNotice />
         <div className="form-grid">
           <Form.Item name="dsm_redirect_url" label={<HelpLabel label="DSM 地址" help={systemFieldHelp.dsmRedirectURL} />} rules={[{ required: true }]}>
-            <Input readOnly />
+            <Input readOnly={!dsmEditable} placeholder="https://nas.example.com:5001/" />
           </Form.Item>
           <Form.Item name="helper_dsm_login_api" label={<HelpLabel label="DSM Auth API" help={systemFieldHelp.helperDSMLoginAPI} />} rules={[{ required: true }]}>
-            <Input readOnly />
+            <Input readOnly={!dsmEditable} placeholder="https://nas.example.com:5001/webapi/entry.cgi" />
           </Form.Item>
           <Form.Item name="helper_dsm_login_mode" label={<HelpLabel label="DSM 登录模式" help={systemFieldHelp.helperDSMLoginMode} />} rules={[{ required: true }]}>
             <Select
@@ -187,6 +258,7 @@ export function SystemSettings() {
   useEffect(() => {
     if (data) {
       form.setFieldsValue({
+        deployment_mode: data.deployment_mode || "direct",
         access_host: data.access_host,
         access_scheme: data.access_scheme || "https",
         idp_port: data.idp_port || 25000,

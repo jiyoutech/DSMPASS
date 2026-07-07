@@ -67,7 +67,6 @@ func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ st
 			if normalized == "" {
 				return badRequest("invalid public_base_url")
 			}
-			normalized = normalizeURLScheme(normalized, adminScheme)
 			if err := s.persistRuntimeSetting(ctx, key, normalized); err != nil {
 				return err
 			}
@@ -200,7 +199,7 @@ func (s *Server) updateAccessHostSettings(ctx context.Context, raw any, update m
 		helperDSMLoginAPI = dsmLoginAPIForHostScheme(host, adminScheme)
 	}
 	derived := map[string]any{
-		"public_base_url":      normalizeURLScheme(normalizePublicBaseURL(publicBaseURL, adminScheme), adminScheme),
+		"public_base_url":      normalizePublicBaseURL(publicBaseURL, adminScheme),
 		"dsm_redirect_url":     normalizeDSMDefaultPortForScheme(dsmRedirectURL, adminScheme, host, false),
 		"helper_dsm_login_api": normalizeDSMDefaultPortForScheme(helperDSMLoginAPI, adminScheme, host, true),
 		"dsm_cookie_secure":    adminScheme == "https",

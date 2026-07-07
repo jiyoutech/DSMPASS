@@ -711,7 +711,7 @@ func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	}
 }
 
-func TestSettingsPublicBaseURLAllowsIndependentIDPHostPortButUsesDSMScheme(t *testing.T) {
+func TestSettingsPublicBaseURLAllowsIndependentIDPSchemeHostPort(t *testing.T) {
 	stubTCPPortAvailable(t)
 	idpPort := 26000
 	cfg := config.BackendConfig{
@@ -739,8 +739,8 @@ func TestSettingsPublicBaseURLAllowsIndependentIDPHostPortButUsesDSMScheme(t *te
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), fmt.Sprintf(`"public_base_url":"https://idp.example.com:%d"`, idpPort)) {
-		t.Fatalf("public base url did not preserve independent IDP host/port with DSM scheme: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), fmt.Sprintf(`"public_base_url":"http://idp.example.com:%d"`, idpPort)) {
+		t.Fatalf("public base url did not preserve independent IDP scheme/host/port: %s", response.Body.String())
 	}
 }
 
@@ -886,6 +886,49 @@ func TestSettingsPublicBaseURLPortDoesNotDriveIDPListenPort(t *testing.T) {
 	}
 	if server.IDPListenAddress() != "0.0.0.0:25000" {
 		t.Fatalf("public_base_url port should not drive IDP listen port, got %q", server.IDPListenAddress())
+	}
+}
+
+func TestSettingsPublicBaseURLSchemeDoesNotFollowInternalIDPScheme(t *testing.T) {
+	stubTCPPortAvailable(t)
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{
+		"deployment_mode":"reverse_proxy",
+		"access_scheme":"http",
+		"idp_port":26000,
+		"public_base_url":"https://login.example.com",
+		"helper_dsm_login_mode":"helper"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"access_scheme":"http"`) || !strings.Contains(body, `"public_base_url":"https://login.example.com"`) {
+		t.Fatalf("reverse proxy public URL should keep its external scheme: %s", body)
+	}
+	if server.IDPTLSEnabled() {
+		t.Fatalf("internal IDP route should use access_scheme, not public_base_url scheme")
 	}
 }
 

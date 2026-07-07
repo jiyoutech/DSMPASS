@@ -74,7 +74,7 @@ func (s *Server) deploymentSettingsFromConfig() deploymentSettingsState {
 		AccessHost:        host,
 		AccessScheme:      scheme,
 		IDPPort:           idpPort,
-		PublicBaseURL:     normalizeURLScheme(normalizePublicBaseURL(s.cfg.PublicBaseURL, scheme), scheme),
+		PublicBaseURL:     normalizePublicBaseURL(s.cfg.PublicBaseURL, scheme),
 		DSMRedirectURL:    normalizeDSMBaseURL(s.cfg.DSMRedirectURL),
 		HelperDSMLoginAPI: normalizeDSMAPIURL(s.cfg.HelperDSMLoginAPI),
 	}
@@ -124,7 +124,7 @@ func (s *Server) deploymentSettingsFromRuntimeRows(state deploymentSettingsState
 	}
 	if value, ok := values["public_base_url"]; ok {
 		if publicBaseURL := normalizePublicBaseURL(asRuntimeString(value), state.AccessScheme); publicBaseURL != "" {
-			state.PublicBaseURL = normalizeURLScheme(publicBaseURL, state.AccessScheme)
+			state.PublicBaseURL = publicBaseURL
 			if _, hasExplicitIDPPort := values["idp_port"]; !hasExplicitIDPPort {
 				if port := parsePortInt(publicBaseURLPort(state.PublicBaseURL)); port >= minUserPort && port <= 65535 {
 					state.IDPPort = port
@@ -151,7 +151,7 @@ func (s *Server) normalizeDeploymentSettings(state deploymentSettingsState) depl
 	if state.IDPPort < minUserPort || state.IDPPort > 65535 {
 		state.IDPPort = firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000)
 	}
-	state.PublicBaseURL = normalizeURLScheme(normalizePublicBaseURL(state.PublicBaseURL, state.AccessScheme), state.AccessScheme)
+	state.PublicBaseURL = normalizePublicBaseURL(state.PublicBaseURL, state.AccessScheme)
 	if state.PublicBaseURL == "" && state.AccessHost != "" {
 		state.PublicBaseURL = state.AccessScheme + "://" + state.AccessHost + ":" + strconv.Itoa(state.IDPPort)
 	}
@@ -203,7 +203,7 @@ func (s *Server) applyDeploymentSettingValue(state deploymentSettingsState, key 
 		}
 	case "public_base_url":
 		if publicBaseURL := normalizePublicBaseURL(asRuntimeString(value), state.AccessScheme); publicBaseURL != "" {
-			state.PublicBaseURL = normalizeURLScheme(publicBaseURL, state.AccessScheme)
+			state.PublicBaseURL = publicBaseURL
 		}
 	case "dsm_redirect_url":
 		state.DSMRedirectURL = normalizeDSMBaseURL(asRuntimeString(value))

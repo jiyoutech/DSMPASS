@@ -143,12 +143,14 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 	case "access_scheme":
 		scheme := normalizedAccessScheme(asString(), s.cfg.TLSEnabled)
 		s.cfg.AccessScheme = scheme
-		s.cfg.PublicBaseURL = normalizeURLScheme(s.cfg.PublicBaseURL, scheme)
+		if normalizeDeploymentMode(s.cfg.DeploymentMode) == "direct" {
+			s.cfg.PublicBaseURL = normalizeURLScheme(s.cfg.PublicBaseURL, scheme)
+		}
 		s.cfg.DSMRedirectURL = normalizeDSMDefaultPortForScheme(s.cfg.DSMRedirectURL, scheme, s.cfg.AccessHost, false)
 		s.cfg.HelperDSMLoginAPI = normalizeDSMDefaultPortForScheme(s.cfg.HelperDSMLoginAPI, scheme, s.cfg.AccessHost, true)
 		s.cfg.DSMCookieSecure = scheme == "https"
 	case "public_base_url":
-		s.cfg.PublicBaseURL = normalizeURLScheme(normalizePublicBaseURL(asString(), s.configuredAccessScheme()), s.configuredAccessScheme())
+		s.cfg.PublicBaseURL = normalizePublicBaseURL(asString(), s.configuredAccessScheme())
 	case "idp_port":
 		if port, ok := runtimeInt(value); ok {
 			s.cfg.IDPListen = replaceListenPort(s.cfg.IDPListen, s.cfg.Listen, port)

@@ -429,12 +429,14 @@ function Onboarding({
   useEffect(() => {
     if (settings) {
       const idpPort = preferredInitialIDPPort(settings);
+      const deploymentMode = settings.deployment_mode || "direct";
       systemForm.setFieldsValue({
+        deployment_mode: deploymentMode,
         access_host: settings.access_host,
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
         admin_allowed_cidrs: settings.admin_allowed_cidrs,
-        public_base_url: withPreferredPort(settings.public_base_url, idpPort),
+        public_base_url: deploymentMode === "direct" ? withPreferredPort(settings.public_base_url, idpPort) : settings.public_base_url,
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
         helper_dsm_login_mode: settings.helper_dsm_login_mode || "browser",
@@ -475,6 +477,7 @@ function Onboarding({
           layout="vertical"
           onFinish={(values) => void saveSystem(values)}
           initialValues={{
+            deployment_mode: "direct",
             access_scheme: "https",
             idp_port: defaultIDPPort,
             admin_allowed_cidrs: "all",
