@@ -86,6 +86,7 @@ export interface ProviderItem {
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
     initial_password?: string;
+    initial_password_configured?: boolean;
   };
 }
 

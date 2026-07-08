@@ -295,7 +295,7 @@ function providerTypeLabel(providerType?: string | null) {
 const sourceFieldHelp = {
   displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到外部身份平台或 DSM。",
   providerType: "选择这个身份源连接的外部身份平台，用于登录和通讯录同步。",
-  initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
+  initialPassword: "同步创建新的 DSM 用户时使用的初始密码。留空则由 Helper 随机生成；已保存的密码不会回显。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
   loginEnabled: "控制这个身份源是否允许用户通过外部身份平台登录 DSM。关闭后同步功能仍可单独使用。",
   syncEnabled: "控制是否允许从身份源通讯录同步用户、部门和成员关系到本地映射/DSM。",
@@ -983,8 +983,8 @@ function Providers({
             >
               <Input.Password placeholder={selectedProviderCredentialText.clientSecretPlaceholder} />
             </Form.Item>
-            <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} initialValue="123456" rules={[{ required: true }]}>
-              <Input.Password />
+            <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)}>
+              <Input.Password placeholder="留空则自动生成随机密码" />
             </Form.Item>
             <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked" initialValue>
               <Switch />
@@ -1093,7 +1093,7 @@ function SourceDetail({
         sync_interval_minutes: source.config?.sync_interval_minutes ?? 0,
         disable_missing_users: source.config?.disable_missing_users ?? true,
         deactivate_missing_data: source.config?.deactivate_missing_data ?? true,
-        initial_password: source.config?.initial_password ?? "123456"
+        initial_password: ""
       }
     });
   }, [form, source]);
@@ -1975,7 +1975,7 @@ function SourceDetail({
                       >
                         <Input.Password placeholder={sourceCredentialText.clientSecretPlaceholder} />
                       </Form.Item>
-                      <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} rules={[{ required: true }]}><Input.Password /></Form.Item>
+                      <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)}><Input.Password placeholder={source.config?.initial_password_configured ? "已配置；留空则保持不变" : "留空则自动生成随机密码"} /></Form.Item>
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="directory_sync_enabled" label={helpLabel("同步", sourceFieldHelp.syncEnabled)} valuePropName="checked"><Switch /></Form.Item>

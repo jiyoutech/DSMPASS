@@ -249,9 +249,6 @@ func withSourceDefaultsForType(providerType string, config identitySourceConfig)
 	if config.DirectoryPageSize <= 0 {
 		config.DirectoryPageSize = 50
 	}
-	if strings.TrimSpace(config.InitialPassword) == "" {
-		config.InitialPassword = defaultInitialPassword
-	}
 	if config.DisableMissingUsers == nil {
 		config.DisableMissingUsers = boolPointer(false)
 	}
@@ -273,19 +270,19 @@ func decodeSourceConfigForType(providerType, raw string) identitySourceConfig {
 
 func publicSourceConfig(config identitySourceConfig) gin.H {
 	return gin.H{
-		"client_id":                config.ClientID,
-		"agent_id":                 config.AgentID,
-		"client_secret_configured": config.ClientSecret != "",
-		"authorize_url":            config.AuthorizeURL,
-		"token_url":                config.TokenURL,
-		"user_info_url":            config.UserInfoURL,
-		"tenant_token_url":         config.TenantTokenURL,
-		"contact_base_url":         config.ContactBaseURL,
-		"directory_page_size":      config.DirectoryPageSize,
-		"sync_interval_minutes":    config.SyncIntervalMinutes,
-		"disable_missing_users":    boolValue(config.DisableMissingUsers, false),
-		"deactivate_missing_data":  boolValue(config.DeactivateMissingData, true),
-		"initial_password":         config.InitialPassword,
+		"client_id":                   config.ClientID,
+		"agent_id":                    config.AgentID,
+		"client_secret_configured":    config.ClientSecret != "",
+		"authorize_url":               config.AuthorizeURL,
+		"token_url":                   config.TokenURL,
+		"user_info_url":               config.UserInfoURL,
+		"tenant_token_url":            config.TenantTokenURL,
+		"contact_base_url":            config.ContactBaseURL,
+		"directory_page_size":         config.DirectoryPageSize,
+		"sync_interval_minutes":       config.SyncIntervalMinutes,
+		"disable_missing_users":       boolValue(config.DisableMissingUsers, false),
+		"deactivate_missing_data":     boolValue(config.DeactivateMissingData, true),
+		"initial_password_configured": strings.TrimSpace(config.InitialPassword) != "",
 	}
 }
 
