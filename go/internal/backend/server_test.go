@@ -97,6 +97,16 @@ func (h *recordingHelper) RemoveGroupMember(ctx context.Context, requestID, grou
 	return true, nil
 }
 
+type passwordRecordingHelper struct {
+	testHelper
+	passwords []string
+}
+
+func (h *passwordRecordingHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	h.passwords = append(h.passwords, initialPassword)
+	return true, nil
+}
+
 type provisioningOrderHelper struct {
 	testHelper
 	operations []string
@@ -122,53 +132,94 @@ func TestSourceConfigDefaultsEnablePermissionCleanupButNotMissingUserDisable(t *
 	if boolValue(defaults.DisableMissingUsers, true) || !boolValue(defaults.DeactivateMissingData, false) {
 		t.Fatalf("defaults should keep missing user disable off and permission cleanup on: %#v", defaults)
 	}
-	if defaults.InitialPassword != "" {
-		t.Fatalf("defaults should not set a fixed initial password: %#v", defaults)
-	}
 	explicit := decodeSourceConfig(`{"disable_missing_users":false,"deactivate_missing_data":false}`)
 	if boolValue(explicit.DisableMissingUsers, true) || boolValue(explicit.DeactivateMissingData, true) {
 		t.Fatalf("explicit missing cleanup settings should be preserved: %#v", explicit)
 	}
 }
 
-func TestPublicSourceConfigDoesNotExposeInitialPassword(t *testing.T) {
+func TestSourceConfigIgnoresLegacyInitialPassword(t *testing.T) {
 	config := decodeSourceConfig(`{"initial_password":"secret-password"}`)
 	public := publicSourceConfig(config)
 	if _, ok := public["initial_password"]; ok {
 		t.Fatalf("public config must not expose initial_password: %#v", public)
 	}
-	if public["initial_password_configured"] != true {
-		t.Fatalf("public config should report configured initial password: %#v", public)
-	}
-	empty := publicSourceConfig(decodeSourceConfig(`{}`))
-	if empty["initial_password_configured"] != false {
-		t.Fatalf("public config should report missing initial password: %#v", empty)
+	if _, ok := public["initial_password_configured"]; ok {
+		t.Fatalf("public config must not expose initial_password_configured: %#v", public)
 	}
 }
 
-func TestInitialPasswordForSourceUsesConfiguredValueOnly(t *testing.T) {
+func TestProvisionDSMAccountStoresGeneratedInitialPassword(t *testing.T) {
 	ctx := context.Background()
 	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, testHelper{}, database, queries)
+	helper := &passwordRecordingHelper{}
+	router := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries).Router()
 	if _, err := database.ExecContext(ctx, `
-INSERT INTO identity_sources (slug, provider_type, display_name, config_json)
-VALUES
-	('source-a', 'feishu', '公司飞书', '{"initial_password":"secret-password"}'),
-	('source-b', 'feishu', '公司飞书 2', '{}')`); err != nil {
+INSERT INTO identity_sources (slug, provider_type, display_name, config_json) VALUES ('source-a', 'feishu', '公司飞书', '{}');
+INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'Alice', 'alice@example.com');
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-a', 'source-a', 'alice-open-id', 'alice-open-id', 'user', 'identity-a', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
+`); err != nil {
 		t.Fatal(err)
 	}
-	if got := server.initialPasswordForSource(ctx, "source-a"); got != "secret-password" {
-		t.Fatalf("expected configured password, got %q", got)
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("POST", "/api/admin/dsm-accounts/account-a/provision", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected provision status %d body=%s", response.Code, response.Body.String())
 	}
-	if got := server.initialPasswordForSource(ctx, "source-b"); got != "" {
-		t.Fatalf("expected empty password for helper-generated password, got %q", got)
+	if len(helper.passwords) != 1 || len(helper.passwords[0]) < 32 {
+		t.Fatalf("expected generated helper password, got %#v", helper.passwords)
 	}
-	if got := server.initialPasswordForSource(ctx, "missing"); got != "" {
-		t.Fatalf("expected empty password for missing source, got %q", got)
+	if strings.Contains(response.Body.String(), helper.passwords[0]) {
+		t.Fatalf("provision response leaked password: %s", response.Body.String())
+	}
+
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest("GET", "/api/admin/initial-passwords?provider=source-a", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("unexpected list status %d body=%s", list.Code, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), helper.passwords[0]) {
+		t.Fatalf("list response leaked password: %s", list.Body.String())
+	}
+	var listed struct {
+		Items []struct {
+			ID          string `json:"id"`
+			DSMUsername string `json:"dsm_username"`
+			RevealCount int64  `json:"reveal_count"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].DSMUsername != "alice" || listed.Items[0].RevealCount != 0 {
+		t.Fatalf("unexpected initial password list: %#v", listed)
+	}
+
+	revealPath := "/api/admin/initial-passwords/" + listed.Items[0].ID + "/reveal"
+	for i := 1; i <= 2; i++ {
+		reveal := httptest.NewRecorder()
+		router.ServeHTTP(reveal, httptest.NewRequest("POST", revealPath, nil))
+		if reveal.Code != http.StatusOK {
+			t.Fatalf("unexpected reveal status %d body=%s", reveal.Code, reveal.Body.String())
+		}
+		var body struct {
+			DSMUsername     string `json:"dsm_username"`
+			InitialPassword string `json:"initial_password"`
+		}
+		if err := json.NewDecoder(reveal.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.DSMUsername != "alice" || body.InitialPassword != helper.passwords[0] {
+			t.Fatalf("unexpected revealed password: %#v", body)
+		}
 	}
 }
 
@@ -1624,7 +1675,7 @@ func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 	}
 }
 
-func TestCreateProviderDoesNotExposeInitialPassword(t *testing.T) {
+func TestCreateProviderIgnoresInitialPassword(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
 	if err != nil {
@@ -1652,8 +1703,15 @@ func TestCreateProviderDoesNotExposeInitialPassword(t *testing.T) {
 	if strings.Contains(body, "secret-password") {
 		t.Fatalf("provider response leaked initial password: %s", body)
 	}
-	if !strings.Contains(body, `"initial_password_configured":true`) {
-		t.Fatalf("provider response should report configured initial password: %s", body)
+	if strings.Contains(body, "initial_password_configured") {
+		t.Fatalf("provider response should not expose initial password config state: %s", body)
+	}
+	var configJSON string
+	if err := database.QueryRowContext(context.Background(), `SELECT config_json FROM identity_sources WHERE display_name = '公司飞书'`).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(configJSON, "secret-password") || strings.Contains(configJSON, "initial_password") {
+		t.Fatalf("provider config stored initial password: %s", configJSON)
 	}
 }
 

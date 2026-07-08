@@ -63,6 +63,8 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.GET("/identities", s.identities)
 		admin.GET("/provider-groups", s.providerGroups)
 		admin.GET("/group-links", s.groupLinks)
+		admin.GET("/initial-passwords", s.initialPasswords)
+		admin.POST("/initial-passwords/:id/reveal", s.revealInitialPassword)
 		admin.GET("/dsm-accounts", s.dsmAccounts)
 		admin.POST("/dsm-accounts/login-runs", s.startDSMAccountsLoginRun)
 		admin.PUT("/dsm-accounts/login", s.setDSMAccountsLogin)

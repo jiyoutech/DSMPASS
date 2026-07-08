@@ -7,6 +7,8 @@ import type {
   DSMGroup,
   GroupMember,
   HelperStatus,
+  InitialPasswordReveal,
+  InitialPasswordSecret,
   LoginAuditLog,
   OperationEvent,
   OperationRun,
@@ -121,6 +123,9 @@ export const api = {
     request<{ id: string; provision_status: string }>(`/api/admin/group-members/${id}/provision`, { method: "POST" }),
   listProviders: () => request<{ items: ProviderItem[] }>("/api/admin/providers"),
   listProviderTypes: () => request<{ items: ProviderTypeItem[] }>("/api/admin/provider-types"),
+  listInitialPasswords: (params?: ListParams) => request<PagedResponse<InitialPasswordSecret>>(`/api/admin/initial-passwords${queryString(params)}`),
+  revealInitialPassword: (id: string) =>
+    request<InitialPasswordReveal>(`/api/admin/initial-passwords/${id}/reveal`, { method: "POST" }),
   createProvider: (payload: ProviderUpsert) =>
     request<ProviderItem>("/api/admin/providers", { method: "POST", body: JSON.stringify(payload) }),
   updateProvider: (slug: string, payload: ProviderUpsert) =>

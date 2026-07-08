@@ -38,7 +38,6 @@ type identitySourceConfig struct {
 	SyncIntervalMinutes   int    `json:"sync_interval_minutes"`
 	DisableMissingUsers   *bool  `json:"disable_missing_users,omitempty"`
 	DeactivateMissingData *bool  `json:"deactivate_missing_data,omitempty"`
-	InitialPassword       string `json:"initial_password,omitempty"`
 }
 
 func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
@@ -322,19 +321,18 @@ func decodeSourceConfigForType(providerType, raw string) identitySourceConfig {
 
 func publicSourceConfig(config identitySourceConfig) gin.H {
 	return gin.H{
-		"client_id":                   config.ClientID,
-		"agent_id":                    config.AgentID,
-		"client_secret_configured":    config.ClientSecret != "",
-		"authorize_url":               config.AuthorizeURL,
-		"token_url":                   config.TokenURL,
-		"user_info_url":               config.UserInfoURL,
-		"tenant_token_url":            config.TenantTokenURL,
-		"contact_base_url":            config.ContactBaseURL,
-		"directory_page_size":         config.DirectoryPageSize,
-		"sync_interval_minutes":       config.SyncIntervalMinutes,
-		"disable_missing_users":       boolValue(config.DisableMissingUsers, false),
-		"deactivate_missing_data":     boolValue(config.DeactivateMissingData, true),
-		"initial_password_configured": strings.TrimSpace(config.InitialPassword) != "",
+		"client_id":                config.ClientID,
+		"agent_id":                 config.AgentID,
+		"client_secret_configured": config.ClientSecret != "",
+		"authorize_url":            config.AuthorizeURL,
+		"token_url":                config.TokenURL,
+		"user_info_url":            config.UserInfoURL,
+		"tenant_token_url":         config.TenantTokenURL,
+		"contact_base_url":         config.ContactBaseURL,
+		"directory_page_size":      config.DirectoryPageSize,
+		"sync_interval_minutes":    config.SyncIntervalMinutes,
+		"disable_missing_users":    boolValue(config.DisableMissingUsers, false),
+		"deactivate_missing_data":  boolValue(config.DeactivateMissingData, true),
 	}
 }
 
@@ -374,9 +372,6 @@ func mergeSourceConfigForType(providerType string, existing, update identitySour
 	if update.SyncIntervalMinutes >= 0 {
 		existing.SyncIntervalMinutes = update.SyncIntervalMinutes
 	}
-	if strings.TrimSpace(update.InitialPassword) != "" {
-		existing.InitialPassword = strings.TrimSpace(update.InitialPassword)
-	}
 	if update.DisableMissingUsers != nil {
 		existing.DisableMissingUsers = update.DisableMissingUsers
 	}
@@ -395,7 +390,6 @@ func trimSourceConfig(config identitySourceConfig) identitySourceConfig {
 	config.UserInfoURL = strings.TrimSpace(config.UserInfoURL)
 	config.TenantTokenURL = strings.TrimSpace(config.TenantTokenURL)
 	config.ContactBaseURL = strings.TrimSpace(config.ContactBaseURL)
-	config.InitialPassword = strings.TrimSpace(config.InitialPassword)
 	return config
 }
 

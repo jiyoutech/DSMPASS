@@ -357,8 +357,17 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	for _, item := range pendingAccounts {
 		id, username, displayName, email, status := item.id, item.username, item.displayName, item.email, item.status
 		err := error(nil)
-		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(ctx, id))
+		password, newPasswordSecret, err := s.provisionUserInitialPassword(ctx, sourceSlug, id, username)
 		if err != nil {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
+			return operations, err
+		}
+		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
+		if err != nil {
+			if newPasswordSecret {
+				s.deleteInitialPassword(ctx, id)
+			}
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, err
@@ -366,6 +375,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		nextStatus := "created"
 		action := "sync_dsm_user"
 		if !created {
+			if newPasswordSecret {
+				s.deleteInitialPassword(ctx, id)
+			}
 			nextStatus = "linked_existing"
 			action = "link_existing_dsm_user"
 		}

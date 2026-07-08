@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS initial_password_secrets (
+    id TEXT PRIMARY KEY,
+    source_slug TEXT NOT NULL,
+    dsm_account_id TEXT NOT NULL UNIQUE,
+    dsm_username TEXT NOT NULL,
+    encrypted_password TEXT NOT NULL,
+    reveal_count INTEGER NOT NULL DEFAULT 0,
+    last_revealed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS provider_groups (
     id TEXT PRIMARY KEY,
     provider_slug TEXT NOT NULL,
@@ -218,6 +230,9 @@ CREATE INDEX IF NOT EXISTS idx_dsm_accounts_status
 
 CREATE INDEX IF NOT EXISTS idx_dsm_accounts_allow_status
     ON dsm_accounts(allow_login, provision_status);
+
+CREATE INDEX IF NOT EXISTS idx_initial_password_secrets_source_updated
+    ON initial_password_secrets(source_slug, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_provider_groups_provider_active_updated
     ON provider_groups(provider_slug, active, updated_at);

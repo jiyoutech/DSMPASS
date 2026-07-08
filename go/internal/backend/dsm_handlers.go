@@ -508,19 +508,7 @@ func (s *Server) ensureRealDSMProvisioning(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) initialPasswordForSource(ctx context.Context, sourceSlug string) string {
-	source, err := s.loadIdentitySource(ctx, sourceSlug)
-	if err != nil {
-		return ""
-	}
-	password := strings.TrimSpace(decodeSourceConfigForType(source.ProviderType, source.ConfigJSON).InitialPassword)
-	if password == "" {
-		return ""
-	}
-	return password
-}
-
-func (s *Server) initialPasswordForAccount(ctx context.Context, accountID string) string {
+func (s *Server) sourceSlugForAccount(ctx context.Context, accountID string) string {
 	var sourceSlug string
 	err := s.store.DBTX().QueryRowContext(ctx, `
 SELECT e.provider_slug
@@ -530,9 +518,12 @@ WHERE a.id = ?
 ORDER BY e.updated_at DESC
 LIMIT 1`, accountID).Scan(&sourceSlug)
 	if err != nil {
-		return ""
+		return "manual"
 	}
-	return s.initialPasswordForSource(ctx, sourceSlug)
+	if strings.TrimSpace(sourceSlug) == "" {
+		return "manual"
+	}
+	return sourceSlug
 }
 
 func (s *Server) provisionDSMAccount(c *gin.Context) {
@@ -556,13 +547,25 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 		c.JSON(http.StatusConflict, gin.H{"detail": "账号存在冲突，请先由管理员修改 DSM 用户名"})
 		return
 	}
-	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(c.Request.Context(), id))
+	sourceSlug := s.sourceSlugForAccount(c.Request.Context(), id)
+	password, newPasswordSecret, err := s.provisionUserInitialPassword(c.Request.Context(), sourceSlug, id, username)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, password)
+	if err != nil {
+		if newPasswordSecret {
+			s.deleteInitialPassword(c.Request.Context(), id)
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
 	nextStatus := "created"
 	if !created {
+		if newPasswordSecret {
+			s.deleteInitialPassword(c.Request.Context(), id)
+		}
 		nextStatus = "linked_existing"
 	}
 	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)

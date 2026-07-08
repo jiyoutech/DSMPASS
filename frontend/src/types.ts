@@ -86,8 +86,6 @@ export interface ProviderItem {
     sync_interval_minutes?: number;
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
-    initial_password?: string;
-    initial_password_configured?: boolean;
   };
 }
 
@@ -124,8 +122,25 @@ export interface ProviderUpsert {
     sync_interval_minutes?: number;
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
-    initial_password?: string;
   };
+}
+
+export interface InitialPasswordSecret {
+  id: string;
+  source_slug: string;
+  dsm_account_id: string;
+  dsm_username: string;
+  reveal_count: number;
+  last_revealed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InitialPasswordReveal {
+  id: string;
+  dsm_account_id: string;
+  dsm_username: string;
+  initial_password: string;
 }
 
 export interface ResetSyncDataResult {
