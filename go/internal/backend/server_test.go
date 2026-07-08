@@ -1045,6 +1045,69 @@ func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
 	}
 }
 
+func TestUpdateProviderRejectsImmutableCredentialChanges(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"feishu","display_name":"飞书","config":{"client_id":"cli_original","client_secret":"secret_original"}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	clientIDResponse := httptest.NewRecorder()
+	clientIDRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"client_id":"cli_changed"}}`))
+	clientIDRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(clientIDResponse, clientIDRequest)
+	if clientIDResponse.Code != http.StatusBadRequest || !strings.Contains(clientIDResponse.Body.String(), "App ID cannot be changed") {
+		t.Fatalf("client_id update got %d body=%s", clientIDResponse.Code, clientIDResponse.Body.String())
+	}
+
+	secretResponse := httptest.NewRecorder()
+	secretRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"client_secret":"secret_changed"}}`))
+	secretRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(secretResponse, secretRequest)
+	if secretResponse.Code != http.StatusBadRequest || !strings.Contains(secretResponse.Body.String(), "App Secret cannot be changed") {
+		t.Fatalf("client_secret update got %d body=%s", secretResponse.Code, secretResponse.Body.String())
+	}
+
+	validResponse := httptest.NewRecorder()
+	validRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"display_name":"飞书主应用","config":{"sync_interval_minutes":15}}`))
+	validRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("allowed provider update got %d body=%s", validResponse.Code, validResponse.Body.String())
+	}
+
+	var configJSON string
+	var displayName string
+	if err := database.QueryRowContext(context.Background(), `SELECT display_name, config_json FROM identity_sources WHERE slug = ?`, created.Slug).Scan(&displayName, &configJSON); err != nil {
+		t.Fatal(err)
+	}
+	config := decodeSourceConfigForType("feishu", configJSON)
+	if displayName != "飞书主应用" || config.ClientID != "cli_original" || config.ClientSecret != "secret_original" || config.SyncIntervalMinutes != 15 {
+		t.Fatalf("unexpected stored source after updates: display_name=%q config=%#v", displayName, config)
+	}
+}
+
 func TestWeComSourceConfigUpgradesLegacyAuthorizeURL(t *testing.T) {
 	config := decodeSourceConfigForType("wecom", `{"authorize_url":"https://open.weixin.qq.com/connect/oauth2/authorize"}`)
 	if config.AuthorizeURL != "https://open.work.weixin.qq.com/wwopen/sso/qrConnect" {

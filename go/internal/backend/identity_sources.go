@@ -149,6 +149,10 @@ func (s *Server) updateProvider(c *gin.Context) {
 	}
 	config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	if payload.Config != nil {
+		if detail := immutableSourceConfigChangeDetail(config, *payload.Config); detail != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": detail})
+			return
+		}
 		config = mergeSourceConfigForType(source.ProviderType, config, *payload.Config)
 	}
 	configJSON, _ := json.Marshal(config)
@@ -162,6 +166,25 @@ WHERE slug = ?
 		return
 	}
 	s.getProvider(c, slug)
+}
+
+func immutableSourceConfigChangeDetail(existing, update identitySourceConfig) string {
+	if changedImmutableSourceField(existing.ClientID, update.ClientID) {
+		return "identity source App ID cannot be changed after creation"
+	}
+	if changedImmutableSourceField(existing.AgentID, update.AgentID) {
+		return "identity source Agent ID cannot be changed after creation"
+	}
+	if changedImmutableSourceField(existing.ClientSecret, update.ClientSecret) {
+		return "identity source App Secret cannot be changed after creation"
+	}
+	return ""
+}
+
+func changedImmutableSourceField(existing, update string) bool {
+	existing = strings.TrimSpace(existing)
+	update = strings.TrimSpace(update)
+	return existing != "" && update != "" && existing != update
 }
 
 func (s *Server) deleteProvider(c *gin.Context) {
