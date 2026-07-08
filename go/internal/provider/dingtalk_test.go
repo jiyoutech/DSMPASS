@@ -127,6 +127,7 @@ func TestDingTalkListUsersMergesDepartmentIDs(t *testing.T) {
 		ContactBaseURL:    "https://oapi.dingtalk.test/topapi",
 		DirectoryPageSize: 1,
 	})
+	userDetailCalls := 0
 	dingtalk.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
 		switch r.URL.Path {
 		case "/gettoken":
@@ -159,6 +160,7 @@ func TestDingTalkListUsersMergesDepartmentIDs(t *testing.T) {
 				t.Fatalf("unexpected dept_id: %#v", body["dept_id"])
 			}
 		case "/topapi/v2/user/get":
+			userDetailCalls++
 			return map[string]any{"errcode": 0, "result": map[string]any{
 				"userid":       "u1",
 				"unionid":      "union-1",
@@ -185,6 +187,42 @@ func TestDingTalkListUsersMergesDepartmentIDs(t *testing.T) {
 	}
 	if got := strings.Join(user.DepartmentSubjects, ","); got != "1,2" {
 		t.Fatalf("DepartmentSubjects got %q", got)
+	}
+	if userDetailCalls != 1 {
+		t.Fatalf("expected one user detail request for duplicate department user, got %d", userDetailCalls)
+	}
+}
+
+func TestDingTalkListGroupMembersUsesDirectorySubject(t *testing.T) {
+	dingtalk := NewDingTalk(DingTalkConfig{
+		AppKey:         "ding-app-key",
+		AppSecret:      "secret",
+		AppTokenURL:    "https://oapi.dingtalk.test/gettoken",
+		ContactBaseURL: "https://oapi.dingtalk.test/topapi",
+	})
+	dingtalk.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "app-token"}, http.StatusOK
+		case "/topapi/user/listsimple":
+			return map[string]any{"errcode": 0, "result": map[string]any{"list": []map[string]any{{"userid": "u1", "name": "张三"}}}}, http.StatusOK
+		case "/topapi/v2/user/get":
+			return map[string]any{"errcode": 0, "result": map[string]any{
+				"userid":  "u1",
+				"unionid": "union-1",
+				"name":    "张三",
+				"active":  true,
+			}}, http.StatusOK
+		}
+		return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
+	})}
+
+	members, err := dingtalk.ListGroupMembers("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 1 || members[0] != "union-1" {
+		t.Fatalf("expected group member to use directory subject, got %#v", members)
 	}
 }
 

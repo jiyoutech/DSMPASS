@@ -172,6 +172,7 @@ func (d DingTalk) ListUsersAndGroups() ([]User, []Group, error) {
 
 func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
+	loadUser := d.cachedUserGetter(token)
 	for _, group := range groups {
 		items, err := d.departmentUsers(token, group.Subject)
 		if err != nil {
@@ -182,12 +183,9 @@ func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
 			if userID == "" {
 				continue
 			}
-			detail, err := d.user(token, userID)
+			detail, err := loadUser(userID)
 			if err != nil {
 				return nil, err
-			}
-			if firstStringish(detail, "userid", "userId", "user_id") == "" {
-				detail["userid"] = userID
 			}
 			if err := d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject}); err != nil {
 				return nil, err
@@ -261,13 +259,21 @@ func (d DingTalk) ListGroupMembers(groupSubject string) ([]string, error) {
 		return nil, err
 	}
 	var members []string
+	loadUser := d.cachedUserGetter(token)
 	for _, raw := range items {
-		if subject, _ := dingTalkUserSubject(raw); subject != "" {
-			members = append(members, subject)
-			continue
-		}
+		detail := raw
 		if userID := firstStringish(raw, "userid", "userId", "user_id"); userID != "" {
-			members = append(members, userID)
+			detail, err = loadUser(userID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		subject, _, err := dingTalkDirectoryUserSubject(detail)
+		if err != nil {
+			return nil, err
+		}
+		if subject != "" {
+			members = append(members, subject)
 		}
 	}
 	return uniqueStrings(members), nil
@@ -345,6 +351,24 @@ func (d DingTalk) user(token, userID string) (map[string]any, error) {
 		return result, nil
 	}
 	return out, nil
+}
+
+func (d DingTalk) cachedUserGetter(token string) func(string) (map[string]any, error) {
+	cache := map[string]map[string]any{}
+	return func(userID string) (map[string]any, error) {
+		if detail, ok := cache[userID]; ok {
+			return detail, nil
+		}
+		detail, err := d.user(token, userID)
+		if err != nil {
+			return nil, err
+		}
+		if firstStringish(detail, "userid", "userId", "user_id") == "" {
+			detail["userid"] = userID
+		}
+		cache[userID] = detail
+		return detail, nil
+	}
 }
 
 func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string) error {
