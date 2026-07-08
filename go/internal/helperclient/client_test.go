@@ -90,6 +90,110 @@ func TestUnixSocketClientIncludesHelperErrorMessage(t *testing.T) {
 	}
 }
 
+func TestUnixSocketClientDiagnosticsRedactsRawResponse(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		if isSocketSandboxError(err) {
+			t.Skipf("unix socket bind blocked by sandbox: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')
+		_ = json.NewEncoder(conn).Encode(map[string]any{
+			"success": true,
+			"sid":     "sid-secret-value",
+			"cookies": []map[string]any{
+				{"name": "id", "value": "cookie-secret-value", "path": "/"},
+			},
+		})
+	}()
+
+	dataDir := t.TempDir()
+	client := UnixSocketClient{SocketPath: socketPath, Secret: "secret", Timeout: time.Second, DataDir: dataDir, DiagnosticsEnabled: true}
+	result, err := client.RelayLogin(context.Background(), "req-raw", "user_0001", "identity-1", "source-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SID != "sid-secret-value" {
+		t.Fatalf("unexpected sid: %q", result.SID)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dataDir, "login-diagnostics.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := string(raw)
+	for _, leaked := range []string{"sid-secret-value", "cookie-secret-value"} {
+		if strings.Contains(line, leaked) {
+			t.Fatalf("diagnostic log leaked %q: %s", leaked, line)
+		}
+	}
+	for _, want := range []string{
+		"raw_response=",
+		`"sid":"[REDACTED]"`,
+		`"cookies":"[REDACTED]"`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("diagnostic log missing %q: %s", want, line)
+		}
+	}
+}
+
+func TestUnixSocketClientDiagnosticsDoesNotLogInvalidRawResponse(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		if isSocketSandboxError(err) {
+			t.Skipf("unix socket bind blocked by sandbox: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')
+		_, _ = conn.Write([]byte(`{"success":true,"sid":"sid-secret-value"` + "\n"))
+	}()
+
+	dataDir := t.TempDir()
+	client := UnixSocketClient{SocketPath: socketPath, Secret: "secret", Timeout: time.Second, DataDir: dataDir, DiagnosticsEnabled: true}
+	_, err = client.HealthCheck(context.Background())
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dataDir, "login-diagnostics.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := string(raw)
+	if strings.Contains(line, "sid-secret-value") {
+		t.Fatalf("diagnostic log leaked invalid raw response: %s", line)
+	}
+	for _, want := range []string{
+		`"valid_json":false`,
+		`"bytes":`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("diagnostic log missing %q: %s", want, line)
+		}
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
