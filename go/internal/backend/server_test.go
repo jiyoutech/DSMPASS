@@ -1657,7 +1657,7 @@ func TestCreateProviderDoesNotExposeInitialPassword(t *testing.T) {
 	}
 }
 
-func TestCreateProviderRejectsSecondIdentitySource(t *testing.T) {
+func TestCreateProviderAllowsMultipleIdentitySources(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
 	if err != nil {
@@ -1692,11 +1692,11 @@ func TestCreateProviderRejectsSecondIdentitySource(t *testing.T) {
 	}`))
 	secondRequest.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(second, secondRequest)
-	if second.Code != http.StatusConflict {
-		t.Fatalf("expected conflict, got %d body=%s", second.Code, second.Body.String())
+	if second.Code != http.StatusOK {
+		t.Fatalf("unexpected second create status %d body=%s", second.Code, second.Body.String())
 	}
-	if !strings.Contains(second.Body.String(), singleIdentitySourceLimitMessage) {
-		t.Fatalf("unexpected response: %s", second.Body.String())
+	if !strings.Contains(second.Body.String(), `"provider_type":"wecom"`) {
+		t.Fatalf("second response should be wecom source: %s", second.Body.String())
 	}
 }
 

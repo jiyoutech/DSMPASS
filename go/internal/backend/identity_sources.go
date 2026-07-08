@@ -11,8 +11,6 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
-const singleIdentitySourceLimitMessage = "只能创建一个身份源，避免登录和同步冲突"
-
 func (s *Server) providers(c *gin.Context) {
 	items := []gin.H{}
 	rows, err := s.store.DBTX().QueryContext(c.Request.Context(), `
@@ -81,13 +79,6 @@ func (s *Server) createProvider(c *gin.Context) {
 		return
 	}
 	insert := func(q db.DBTX) (int, string, error) {
-		var count int
-		if err := q.QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
-			return http.StatusInternalServerError, err.Error(), err
-		}
-		if count > 0 {
-			return http.StatusConflict, singleIdentitySourceLimitMessage, nil
-		}
 		_, err := q.ExecContext(c.Request.Context(), `
 INSERT INTO identity_sources (slug, provider_type, display_name, enabled, login_enabled, directory_sync_enabled, config_json, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
