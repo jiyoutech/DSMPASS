@@ -11,6 +11,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+const singleIdentitySourceLimitMessage = "只能创建一个身份源，避免登录和同步冲突"
+
 func (s *Server) providers(c *gin.Context) {
 	items := []gin.H{}
 	rows, err := s.store.DBTX().QueryContext(c.Request.Context(), `
@@ -78,12 +80,43 @@ func (s *Server) createProvider(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
-	_, err = s.store.DBTX().ExecContext(c.Request.Context(), `
+	insert := func(q db.DBTX) (int, string, error) {
+		var count int
+		if err := q.QueryRowContext(c.Request.Context(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
+			return http.StatusInternalServerError, err.Error(), err
+		}
+		if count > 0 {
+			return http.StatusConflict, singleIdentitySourceLimitMessage, nil
+		}
+		_, err := q.ExecContext(c.Request.Context(), `
 INSERT INTO identity_sources (slug, provider_type, display_name, enabled, login_enabled, directory_sync_enabled, config_json, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 `, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON))
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+		if err != nil {
+			return http.StatusConflict, err.Error(), err
+		}
+		return http.StatusOK, "", nil
+	}
+	if s.database != nil {
+		tx, err := s.database.BeginTx(c.Request.Context(), nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if status, detail, err := insert(tx); err != nil || status != http.StatusOK {
+			c.JSON(status, gin.H{"detail": detail})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		s.getProvider(c, slug)
+		return
+	}
+	if status, detail, err := insert(s.store.DBTX()); err != nil || status != http.StatusOK {
+		c.JSON(status, gin.H{"detail": detail})
 		return
 	}
 	s.getProvider(c, slug)
