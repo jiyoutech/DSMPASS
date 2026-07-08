@@ -220,10 +220,6 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
   const [password, setPassword] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [revealing, setRevealing] = useState(false);
-  const status = source.initial_password;
-  const helper = status?.configured
-    ? `已保存${status.created_at ? `于 ${formatLocalTime(status.created_at)}` : ""}；查看次数 ${status.reveal_count ?? 0}${status.last_revealed_at ? `，最近查看 ${formatLocalTime(status.last_revealed_at)}` : ""}`
-    : "尚未生成；点击查看时会为这个身份源生成并保存一个随机初始密码。";
 
   useEffect(() => {
     setPassword("");
@@ -262,15 +258,9 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
     <Form.Item
       label={helpLabel("DSM 初始密码", "这个身份源自动创建 DSM 用户时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
     >
-      <Space direction="vertical" size={6} style={{ width: "100%" }}>
-        <Space wrap>
-          <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
-            查看初始密码
-          </Button>
-          <Tag color={status?.configured ? "success" : "default"}>{status?.configured ? "已保存" : "未生成"}</Tag>
-        </Space>
-        <Typography.Text type="secondary">{helper}</Typography.Text>
-      </Space>
+      <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
+        查看初始密码
+      </Button>
       <Modal
         title={`${source.display_name} 的 DSM 初始密码`}
         open={modalOpen}
