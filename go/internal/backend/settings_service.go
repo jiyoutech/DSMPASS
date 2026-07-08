@@ -128,12 +128,6 @@ func (s *Server) planSettingsUpdate(update map[string]any, clientIP net.IP) (*se
 				return nil, badRequest("admin_allowed_cidrs must include current client IP")
 			}
 		}
-		if key == "idp_allowed_cidrs" {
-			value = strings.TrimSpace(asRuntimeString(value))
-			if err := validateCIDRList(value.(string), "idp_allowed_cidrs"); err != nil {
-				return nil, err
-			}
-		}
 		plan.set(draft, key, value)
 	}
 	return plan, nil

@@ -348,7 +348,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
         <div className="settings-section-head">
           <div>
             <h3>访问安全</h3>
-            <p>控制管理后台的访问来源；认证入口的公网访问以认证入口公网地址和反向代理策略为准。</p>
+            <p>管理后台访问范围可在此配置；认证入口固定只接受 DSMPASS 实际看到的本机和内网来源。</p>
           </div>
         </div>
         <Form.Item extra={fieldEffectHelp.adminAllowedCIDRs}>
@@ -631,7 +631,7 @@ const overviewConfigSections = [
   },
   {
     title: "访问安全",
-    keys: ["admin_allowed_cidrs"]
+    keys: ["admin_allowed_cidrs", "idp_access_boundary"]
   }
 ];
 

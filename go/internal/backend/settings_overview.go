@@ -87,6 +87,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 		Summary: []string{
 			"DSMPASS 有两个入口：管理后台用于配置、同步、审计和证书管理；认证入口用于 /idp 登录、OAuth 回调和跳转 DSM。两个入口默认使用不同端口，避免管理面和登录面混用。",
 			"监听端口分为两类：管理后台监听由套件启动参数决定，系统设置页仅展示当前值；认证入口本机监听可以在入口与域名中修改，保存后会立即尝试刷新 /idp 路由。",
+			"认证入口在 DSMPASS 边界固定只接受本机、内网或链路本地来源。公网扫码登录应通过同一内网内的反向代理转发到认证入口本机监听，不能把认证入口本机端口直接暴露给公网。",
 			"反向代理只改变用户浏览器和外部身份平台访问 DSMPASS 的公网地址，不会取消 DSMPASS 在 NAS 本机上的监听端口。反代必须转发到对应的本机监听。",
 			"系统设置页只允许修改运行期可安全调整的配置。套件启动参数、管理后台监听、证书文件路径等运行环境信息不在此处修改；如需调整，需要改套件环境并重启 DSMPASS 套件。",
 			"每个配置项都标明了修改入口、何时生效和影响范围。保存后立即生效表示后端内存配置和数据库会同步更新；刷新认证路由表示只重启 /idp listener，不重启管理后台。",
@@ -115,6 +116,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 					"端口必须大于 1024，不能与管理后台端口一致，且不能被其他进程占用。",
 					"保存时会先写入配置，再关闭旧 /idp listener 并绑定新端口。",
 					"如果刷新认证路由失败，页面会显示警告和失败原因；检查端口占用后可重新保存或手动重启认证路由。",
+					"该监听固定只接受 DSMPASS 实际看到的内网来源；公网访问应先经过内网反向代理。",
 				},
 			},
 			{
@@ -323,6 +325,20 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 				},
 			},
 			{
+				Key:          "idp_access_boundary",
+				Label:        "认证入口访问边界",
+				Value:        "仅本机和内网来源",
+				Configurable: false,
+				ChangeMethod: "固定策略，不在系统设置中开放修改",
+				Applies:      "始终生效",
+				Effect:       "限制 /idp 登录入口只接受 DSMPASS 实际连接来源为本机、内网或链路本地地址的请求。",
+				Notes: []string{
+					"该校验使用 TCP RemoteAddr，不信任 X-Forwarded-For。",
+					"认证入口公网地址只用于生成外部 URL 和校验访问 Host，不会放开公网来源。",
+					"企业微信、飞书、钉钉扫码登录需要通过内网反向代理把公网请求转发到认证入口本机监听。",
+				},
+			},
+			{
 				Key:          "helper_dsm_browser_login_ttl_seconds",
 				Label:        "直登 TTL",
 				Value:        strconv.Itoa(browserLoginTTL) + " 秒",
@@ -378,6 +394,7 @@ func (s *Server) buildSettingsOverview(settings map[string]any) settingsOverview
 		},
 		OperationalNotes: []string{
 			"企业微信、飞书、钉钉的回调域名应以认证入口公网地址为准，不以管理后台地址为准。",
+			"/idp 入口固定要求 DSMPASS 看到的连接来源是内网；外网扫码登录时，请让公网入口先到反向代理，再由反向代理从内网访问 DSMPASS。",
 			"如果外网只暴露 IDP 而不暴露 DSM，浏览器直登模式无法完成最终 DSM 登录；应改用 Helper 连接，或让用户浏览器可以访问 DSM 地址。",
 			"修改认证入口本机端口会刷新认证路由；刷新成功后新端口立即接管 /idp，刷新失败时页面会提示原因。",
 			"修改认证入口公网地址会立即影响新生成的登录链接、身份源展示和 OAuth 回调地址，但不会改变 NAS 本机监听端口。",
