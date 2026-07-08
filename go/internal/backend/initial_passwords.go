@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -29,9 +28,6 @@ func (s *Server) provisionUserInitialPassword(ctx context.Context, sourceSlug st
 		return "", errors.New("identity source is required for initial password")
 	}
 	if password, ok, err := s.lookupSourceInitialPassword(ctx, sourceSlug); err != nil || ok {
-		return password, err
-	}
-	if password, ok, err := s.migrateLegacySourceInitialPassword(ctx, sourceSlug); err != nil || ok {
 		return password, err
 	}
 	password := generatedInitialPassword()
@@ -62,39 +58,6 @@ WHERE source_slug = ?`, sourceSlug).Scan(&encrypted)
 		return "", false, nil
 	}
 	return "", false, err
-}
-
-func (s *Server) migrateLegacySourceInitialPassword(ctx context.Context, sourceSlug string) (string, bool, error) {
-	var accountID, encrypted string
-	err := s.store.DBTX().QueryRowContext(ctx, `
-SELECT dsm_account_id, encrypted_password
-FROM initial_password_secrets
-WHERE source_slug = ?
-ORDER BY created_at ASC
-LIMIT 1`, sourceSlug).Scan(&accountID, &encrypted)
-	if err == sql.ErrNoRows || isMissingInitialPasswordTableError(err) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	password, err := s.decryptInitialPassword(accountID, encrypted)
-	if err != nil {
-		log.Printf("legacy initial password migration skipped source=%s error=%v", sourceSlug, err)
-		return "", false, nil
-	}
-	if err := s.createSourceInitialPassword(ctx, sourceSlug, password); err != nil {
-		return "", false, err
-	}
-	password, ok, err := s.lookupSourceInitialPassword(ctx, sourceSlug)
-	if err != nil {
-		return "", false, err
-	}
-	return password, ok, nil
-}
-
-func isMissingInitialPasswordTableError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no such table: initial_password_secrets")
 }
 
 func (s *Server) createSourceInitialPassword(ctx context.Context, sourceSlug, password string) error {
