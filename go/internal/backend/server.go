@@ -35,7 +35,6 @@ type Server struct {
 	refreshTLS       func(string)
 }
 
-const defaultInitialPassword = "123456"
 const oauthStateTTL = 10 * time.Minute
 
 type oauthState struct {

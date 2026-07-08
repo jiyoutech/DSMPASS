@@ -122,9 +122,53 @@ func TestSourceConfigDefaultsEnablePermissionCleanupButNotMissingUserDisable(t *
 	if boolValue(defaults.DisableMissingUsers, true) || !boolValue(defaults.DeactivateMissingData, false) {
 		t.Fatalf("defaults should keep missing user disable off and permission cleanup on: %#v", defaults)
 	}
+	if defaults.InitialPassword != "" {
+		t.Fatalf("defaults should not set a fixed initial password: %#v", defaults)
+	}
 	explicit := decodeSourceConfig(`{"disable_missing_users":false,"deactivate_missing_data":false}`)
 	if boolValue(explicit.DisableMissingUsers, true) || boolValue(explicit.DeactivateMissingData, true) {
 		t.Fatalf("explicit missing cleanup settings should be preserved: %#v", explicit)
+	}
+}
+
+func TestPublicSourceConfigDoesNotExposeInitialPassword(t *testing.T) {
+	config := decodeSourceConfig(`{"initial_password":"secret-password"}`)
+	public := publicSourceConfig(config)
+	if _, ok := public["initial_password"]; ok {
+		t.Fatalf("public config must not expose initial_password: %#v", public)
+	}
+	if public["initial_password_configured"] != true {
+		t.Fatalf("public config should report configured initial password: %#v", public)
+	}
+	empty := publicSourceConfig(decodeSourceConfig(`{}`))
+	if empty["initial_password_configured"] != false {
+		t.Fatalf("public config should report missing initial password: %#v", empty)
+	}
+}
+
+func TestInitialPasswordForSourceUsesConfiguredValueOnly(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, testHelper{}, database, queries)
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO identity_sources (slug, provider_type, display_name, config_json)
+VALUES
+	('source-a', 'feishu', '公司飞书', '{"initial_password":"secret-password"}'),
+	('source-b', 'feishu', '公司飞书 2', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := server.initialPasswordForSource(ctx, "source-a"); got != "secret-password" {
+		t.Fatalf("expected configured password, got %q", got)
+	}
+	if got := server.initialPasswordForSource(ctx, "source-b"); got != "" {
+		t.Fatalf("expected empty password for helper-generated password, got %q", got)
+	}
+	if got := server.initialPasswordForSource(ctx, "missing"); got != "" {
+		t.Fatalf("expected empty password for missing source, got %q", got)
 	}
 }
 
@@ -1387,6 +1431,39 @@ func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 	uuidPattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	if !uuidPattern.MatchString(body.Slug) {
 		t.Fatalf("expected uuid slug, got %q", body.Slug)
+	}
+}
+
+func TestCreateProviderDoesNotExposeInitialPassword(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "feishu",
+		"display_name": "公司飞书",
+		"config": {
+			"client_id": "cli_test",
+			"client_secret": "secret",
+			"initial_password": "secret-password"
+		}
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "secret-password") {
+		t.Fatalf("provider response leaked initial password: %s", body)
+	}
+	if !strings.Contains(body, `"initial_password_configured":true`) {
+		t.Fatalf("provider response should report configured initial password: %s", body)
 	}
 }
 

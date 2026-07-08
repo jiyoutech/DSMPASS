@@ -511,11 +511,11 @@ func (s *Server) ensureRealDSMProvisioning(ctx context.Context) error {
 func (s *Server) initialPasswordForSource(ctx context.Context, sourceSlug string) string {
 	source, err := s.loadIdentitySource(ctx, sourceSlug)
 	if err != nil {
-		return defaultInitialPassword
+		return ""
 	}
 	password := strings.TrimSpace(decodeSourceConfigForType(source.ProviderType, source.ConfigJSON).InitialPassword)
 	if password == "" {
-		return defaultInitialPassword
+		return ""
 	}
 	return password
 }
@@ -530,7 +530,7 @@ WHERE a.id = ?
 ORDER BY e.updated_at DESC
 LIMIT 1`, accountID).Scan(&sourceSlug)
 	if err != nil {
-		return defaultInitialPassword
+		return ""
 	}
 	return s.initialPasswordForSource(ctx, sourceSlug)
 }
