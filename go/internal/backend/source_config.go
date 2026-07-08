@@ -16,6 +16,12 @@ import (
 const (
 	defaultWeComAuthorizeURL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
 	legacyWeComAuthorizeURL  = "https://open.weixin.qq.com/connect/oauth2/authorize"
+
+	defaultDingTalkAuthorizeURL   = "https://login.dingtalk.com/oauth2/auth"
+	defaultDingTalkUserTokenURL   = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
+	defaultDingTalkUserInfoURL    = "https://api.dingtalk.com/v1.0/contact/users/me"
+	defaultDingTalkAppTokenURL    = "https://oapi.dingtalk.com/gettoken"
+	defaultDingTalkContactBaseURL = "https://oapi.dingtalk.com/topapi"
 )
 
 type identitySourceConfig struct {
@@ -56,6 +62,8 @@ func (s *Server) directoryProviderForSource(source db.IdentitySource) (provider.
 		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
 	case "wecom":
 		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
+	case "dingtalk":
+		return provider.NewDingTalkWithSlug(s.dingTalkConfigForSource(source), source.Slug), true
 	default:
 		return nil, false
 	}
@@ -67,6 +75,8 @@ func (s *Server) oauthProviderForSource(source db.IdentitySource) (provider.OAut
 		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
 	case "wecom":
 		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
+	case "dingtalk":
+		return provider.NewDingTalkWithSlug(s.dingTalkConfigForSource(source), source.Slug), true
 	default:
 		return nil, false
 	}
@@ -120,6 +130,20 @@ func (s *Server) weComConfigForSource(source db.IdentitySource) provider.WeComCo
 	}
 }
 
+func (s *Server) dingTalkConfigForSource(source db.IdentitySource) provider.DingTalkConfig {
+	sourceConfig := decodeSourceConfigForType("dingtalk", source.ConfigJSON)
+	return provider.DingTalkConfig{
+		AppKey:            sourceConfig.ClientID,
+		AppSecret:         sourceConfig.ClientSecret,
+		AuthorizeURL:      sourceConfig.AuthorizeURL,
+		UserTokenURL:      sourceConfig.TokenURL,
+		UserInfoURL:       sourceConfig.UserInfoURL,
+		AppTokenURL:       sourceConfig.TenantTokenURL,
+		ContactBaseURL:    sourceConfig.ContactBaseURL,
+		DirectoryPageSize: sourceConfig.DirectoryPageSize,
+	}
+}
+
 func feishuAuthorizePreviewURL(clientID, redirectURI string) string {
 	values := url.Values{}
 	values.Set("client_id", clientID)
@@ -136,6 +160,16 @@ func weComAuthorizePreviewURL(corpID, agentID, redirectURI string) string {
 		values.Set("agentid", agentID)
 	}
 	return defaultWeComAuthorizeURL + "?" + values.Encode()
+}
+
+func dingTalkAuthorizePreviewURL(appKey, redirectURI string) string {
+	values := url.Values{}
+	values.Set("redirect_uri", redirectURI)
+	values.Set("response_type", "code")
+	values.Set("client_id", appKey)
+	values.Set("scope", "openid")
+	values.Set("prompt", "consent")
+	return defaultDingTalkAuthorizeURL + "?" + values.Encode()
 }
 
 func sourceResponse(source db.IdentitySource, config identitySourceConfig, publicBaseURL string) gin.H {
@@ -163,6 +197,8 @@ func sourceResponse(source db.IdentitySource, config identitySourceConfig, publi
 		response["feishu_authorize_url"] = feishuAuthorizePreviewURL(config.ClientID, callbackURL)
 	case "wecom":
 		response["wecom_authorize_url"] = weComAuthorizePreviewURL(config.ClientID, config.AgentID, callbackURL)
+	case "dingtalk":
+		response["dingtalk_authorize_url"] = dingTalkAuthorizePreviewURL(config.ClientID, callbackURL)
 	}
 	return response
 }
@@ -228,6 +264,22 @@ func withSourceDefaultsForType(providerType string, config identitySourceConfig)
 		}
 		if config.ContactBaseURL == "" {
 			config.ContactBaseURL = "https://qyapi.weixin.qq.com/cgi-bin"
+		}
+	case "dingtalk":
+		if config.AuthorizeURL == "" {
+			config.AuthorizeURL = defaultDingTalkAuthorizeURL
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = defaultDingTalkUserTokenURL
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = defaultDingTalkUserInfoURL
+		}
+		if config.TenantTokenURL == "" {
+			config.TenantTokenURL = defaultDingTalkAppTokenURL
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = defaultDingTalkContactBaseURL
 		}
 	default:
 		if config.AuthorizeURL == "" || config.AuthorizeURL == "https://open.feishu.cn/open-apis/authen/v1/index" {

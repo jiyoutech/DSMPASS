@@ -26,6 +26,11 @@ type Directory interface {
 	ListGroupMembers(groupSubject string) ([]string, error)
 }
 
+type SnapshotDirectory interface {
+	Directory
+	ListUsersAndGroups() ([]User, []Group, error)
+}
+
 type OAuth interface {
 	Slug() string
 	BuildAuthorizeURL(state, redirectURI string) string

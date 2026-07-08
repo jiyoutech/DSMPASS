@@ -345,13 +345,13 @@ function providerCredentialText(providerType?: string | null, providerName?: str
     case "dingtalk":
       return {
         clientIDLabel: "钉钉 AppKey",
-        clientIDHelp: "钉钉应用的 AppKey，用于登录和接口调用。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientIDHelp: "钉钉企业内部应用的 AppKey，用于发起扫码登录和调用通讯录接口。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
         clientIDPlaceholder: "请输入钉钉 AppKey",
         clientSecretLabel: "钉钉 AppSecret",
-        clientSecretHelp: "钉钉应用的 AppSecret，用于后端换取访问 token。留空保存会沿用旧密钥。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientSecretHelp: "钉钉企业内部应用的 AppSecret，用于后端换取扫码登录用户 token 和通讯录 access_token。留空保存会沿用旧密钥。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
         clientSecretPlaceholder: "请输入钉钉 AppSecret",
         agentIDLabel: "钉钉 AgentId",
-        agentIDHelp: "钉钉应用的 AgentId，用于构造钉钉应用访问入口。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 应用信息。",
+        agentIDHelp: "钉钉扫码登录不需要 AgentId。",
         agentIDPlaceholder: "请输入钉钉 AgentId"
       };
     default:

@@ -70,6 +70,7 @@ export interface ProviderItem {
   callback_url?: string;
   feishu_authorize_url?: string;
   wecom_authorize_url?: string;
+  dingtalk_authorize_url?: string;
   builtin?: boolean;
   config?: {
     public_base_url?: string;

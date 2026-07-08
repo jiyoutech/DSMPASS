@@ -263,6 +263,35 @@ func TestListGroupMembersReadsAllPages(t *testing.T) {
 	}
 }
 
+func TestListGroupMembersRejectsRepeatedPageToken(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 1,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/users/find_by_department":
+			return map[string]any{"data": map[string]any{
+				"items":      []map[string]any{{"open_id": "ou_1"}},
+				"has_more":   true,
+				"page_token": "same",
+			}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	_, err := feishu.ListGroupMembers("sup5")
+	if err == nil || !strings.Contains(err.Error(), "飞书部门用户分页游标重复") {
+		t.Fatalf("expected repeated cursor error, got %v", err)
+	}
+}
+
 func TestListGroupsReadsAllChildDepartmentPages(t *testing.T) {
 	feishu := NewFeishu(config.BackendConfig{
 		FeishuClientID:          "cli_test",
@@ -303,6 +332,35 @@ func TestListGroupsReadsAllChildDepartmentPages(t *testing.T) {
 	}
 	if got := strings.Join(subjects, ","); got != "sup1,sup2" {
 		t.Fatalf("groups got %q", got)
+	}
+}
+
+func TestListGroupsRejectsRepeatedChildPageToken(t *testing.T) {
+	feishu := NewFeishu(config.BackendConfig{
+		FeishuClientID:          "cli_test",
+		FeishuClientSecret:      "secret",
+		FeishuTenantTokenURL:    "https://feishu.test/tenant",
+		FeishuContactBaseURL:    "https://feishu.test",
+		FeishuDirectoryPageSize: 1,
+	})
+	feishu.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/tenant":
+			return map[string]any{"tenant_access_token": "tenant-token"}, http.StatusOK
+		case "/departments/0/children":
+			return map[string]any{"data": map[string]any{
+				"items":      []map[string]any{{"open_department_id": "sup1", "name": "sup1"}},
+				"has_more":   true,
+				"page_token": "same",
+			}}, http.StatusOK
+		default:
+			return map[string]any{"error": "not found"}, http.StatusNotFound
+		}
+	})}
+
+	_, err := feishu.ListGroups()
+	if err == nil || !strings.Contains(err.Error(), "飞书部门分页游标重复") {
+		t.Fatalf("expected repeated cursor error, got %v", err)
 	}
 }
 

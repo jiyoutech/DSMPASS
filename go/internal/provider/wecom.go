@@ -145,6 +145,23 @@ func (w WeCom) ListUsers() ([]User, error) {
 	return w.usersFromGroups(token, groups)
 }
 
+func (w WeCom) ListUsersAndGroups() ([]User, []Group, error) {
+	token, err := w.accessToken()
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, err := w.listGroups(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(groups) == 0 {
+		users, err := w.visibleUsers(token)
+		return users, groups, err
+	}
+	users, err := w.usersFromGroups(token, groups)
+	return users, groups, err
+}
+
 func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
 	for _, group := range groups {
