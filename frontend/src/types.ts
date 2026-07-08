@@ -319,7 +319,6 @@ export interface SystemSettingsDiscovery {
   admin_port: number;
   idp_port: number;
   admin_allowed_cidrs?: string;
-  idp_allowed_cidrs?: string;
   public_base_url: string;
   dsm_redirect_url: string;
   helper_dsm_login_api: string;
@@ -339,7 +338,7 @@ export interface CertificateInfo {
 }
 
 export type SystemSettingsUpdate = Partial<
-  Omit<SystemSettings, "helper_hmac_secret_configured"> & {
+  Omit<SystemSettings, "helper_hmac_secret_configured" | "idp_allowed_cidrs"> & {
     relay_helper_hmac_secret: string;
   }
 >;

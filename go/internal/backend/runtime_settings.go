@@ -10,6 +10,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/settings"
 )
 
+const fixedIDPAllowedCIDRs = "private"
+
 func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	rows, err := s.store.ListRuntimeSettings(ctx)
 	if err != nil {
@@ -22,6 +24,9 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	s.applyDeploymentSettings(deployment)
 	for _, row := range rows {
 		if isDeploymentSettingKey(row.Key) {
+			continue
+		}
+		if row.Key == "idp_allowed_cidrs" {
 			continue
 		}
 		var value any
@@ -60,7 +65,7 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
 		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
-		"idp_allowed_cidrs":                    s.cfg.IDPAllowedCIDRs,
+		"idp_allowed_cidrs":                    fixedIDPAllowedCIDRs,
 		"public_base_url":                      s.cfg.PublicBaseURL,
 		"dsm_redirect_url":                     s.cfg.DSMRedirectURL,
 		"dsm_cookie_name":                      s.cfg.DSMCookieName,
@@ -92,6 +97,9 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 			if row.Key == "relay_helper_hmac_secret" {
 				settings["helper_hmac_secret_configured"] = row.ValueJson != `""`
 			}
+			continue
+		}
+		if row.Key == "idp_allowed_cidrs" {
 			continue
 		}
 		if row.Key == "relay_helper_hmac_secret" {
@@ -157,8 +165,6 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 		}
 	case "admin_allowed_cidrs":
 		s.cfg.AdminAllowedCIDRs = asString()
-	case "idp_allowed_cidrs":
-		s.cfg.IDPAllowedCIDRs = asString()
 	case "dsm_redirect_url":
 		s.cfg.DSMRedirectURL = normalizeDSMBaseURL(asString())
 	case "helper_dsm_login_api":

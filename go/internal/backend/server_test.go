@@ -450,6 +450,16 @@ func TestIDPAccessControlRequiresIntranet(t *testing.T) {
 		t.Fatalf("expected forbidden, got %d body=%s", response.Code, response.Body.String())
 	}
 
+	spoofed := httptest.NewRecorder()
+	spoofedRequest := httptest.NewRequest("GET", "/idp/source-a/launch", nil)
+	spoofedRequest.Host = "nas.example.com:26000"
+	spoofedRequest.RemoteAddr = "203.0.113.10:12345"
+	spoofedRequest.Header.Set("X-Forwarded-For", "192.168.1.20")
+	router.ServeHTTP(spoofed, spoofedRequest)
+	if spoofed.Code != http.StatusForbidden {
+		t.Fatalf("expected spoofed forwarded address to be forbidden, got %d body=%s", spoofed.Code, spoofed.Body.String())
+	}
+
 	allowed := httptest.NewRecorder()
 	allowedRequest := httptest.NewRequest("GET", "/idp/source-a/launch", nil)
 	allowedRequest.Host = "nas.example.com:26000"
@@ -510,6 +520,75 @@ func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	router.ServeHTTP(accepted, acceptedRequest)
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("expected ok, got %d body=%s", accepted.Code, accepted.Body.String())
+	}
+}
+
+func TestSettingsReportsFixedIDPIntranetPolicy(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		IDPAllowedCIDRs:   "all",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	if err := server.saveSetting(ctx, "idp_allowed_cidrs", "all"); err != nil {
+		t.Fatal(err)
+	}
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/settings", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"idp_allowed_cidrs":"private"`) {
+		t.Fatalf("settings response should report fixed idp intranet policy: %s", body)
+	}
+	if strings.Contains(body, `"idp_allowed_cidrs":"all"`) {
+		t.Fatalf("settings response used deprecated idp cidr value: %s", body)
+	}
+}
+
+func TestSettingsDoesNotPersistIDPAllowedCIDRsUpdate(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"idp_allowed_cidrs":"all"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"idp_allowed_cidrs":"private"`) {
+		t.Fatalf("settings response should report fixed idp intranet policy: %s", response.Body.String())
+	}
+	rows, err := queries.ListRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Key == "idp_allowed_cidrs" {
+			t.Fatalf("deprecated idp cidr setting should not be persisted")
+		}
 	}
 }
 
@@ -1148,6 +1227,9 @@ func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing
 		`"change_method":"系统设置 \u003e 入口与域名 \u003e 认证入口公网地址"`,
 		`"applies":"保存后立即影响新生成的登录地址、回调地址和身份源展示"`,
 		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
+		`"key":"idp_access_boundary"`,
+		`"label":"认证入口访问边界"`,
+		`"value":"仅本机和内网来源"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("settings overview missing %q: %s", want, body)
