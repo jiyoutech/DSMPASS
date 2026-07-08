@@ -128,8 +128,8 @@ export interface ProviderUpsert {
 export interface InitialPasswordSecret {
   id: string;
   source_slug: string;
-  dsm_account_id: string;
-  dsm_username: string;
+  source_display_name: string;
+  provider_type: string;
   reveal_count: number;
   last_revealed_at: string | null;
   created_at: string;
@@ -138,8 +138,8 @@ export interface InitialPasswordSecret {
 
 export interface InitialPasswordReveal {
   id: string;
-  dsm_account_id: string;
-  dsm_username: string;
+  source_slug: string;
+  source_display_name: string;
   initial_password: string;
 }
 

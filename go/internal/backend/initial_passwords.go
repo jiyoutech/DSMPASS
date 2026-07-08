@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -22,60 +23,98 @@ func generatedInitialPassword() string {
 	return randomHex(generatedInitialPasswordBytes)
 }
 
-func (s *Server) provisionUserInitialPassword(ctx context.Context, sourceSlug, accountID, username string) (string, bool, error) {
+func (s *Server) provisionUserInitialPassword(ctx context.Context, sourceSlug string) (string, error) {
+	sourceSlug = strings.TrimSpace(sourceSlug)
+	if sourceSlug == "" {
+		return "", errors.New("identity source is required for initial password")
+	}
+	if password, ok, err := s.lookupSourceInitialPassword(ctx, sourceSlug); err != nil || ok {
+		return password, err
+	}
+	if password, ok, err := s.migrateLegacySourceInitialPassword(ctx, sourceSlug); err != nil || ok {
+		return password, err
+	}
+	password := generatedInitialPassword()
+	if err := s.createSourceInitialPassword(ctx, sourceSlug, password); err != nil {
+		return "", err
+	}
+	password, ok, err := s.lookupSourceInitialPassword(ctx, sourceSlug)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errors.New("initial password was not stored")
+	}
+	return password, nil
+}
+
+func (s *Server) lookupSourceInitialPassword(ctx context.Context, sourceSlug string) (string, bool, error) {
 	var encrypted string
 	err := s.store.DBTX().QueryRowContext(ctx, `
 SELECT encrypted_password
-FROM initial_password_secrets
-WHERE dsm_account_id = ?`, accountID).Scan(&encrypted)
+FROM source_initial_password_secrets
+WHERE source_slug = ?`, sourceSlug).Scan(&encrypted)
 	if err == nil {
-		password, err := s.decryptInitialPassword(accountID, encrypted)
-		return password, false, err
+		password, err := s.decryptInitialPassword(sourceSlug, encrypted)
+		return password, true, err
 	}
-	if err != sql.ErrNoRows {
-		return "", false, err
+	if err == sql.ErrNoRows {
+		return "", false, nil
 	}
-	password := generatedInitialPassword()
-	if err := s.storeInitialPassword(ctx, sourceSlug, accountID, username, password); err != nil {
-		return "", false, err
-	}
-	return password, true, nil
+	return "", false, err
 }
 
-func (s *Server) storeInitialPassword(ctx context.Context, sourceSlug, accountID, username, password string) error {
+func (s *Server) migrateLegacySourceInitialPassword(ctx context.Context, sourceSlug string) (string, bool, error) {
+	var accountID, encrypted string
+	err := s.store.DBTX().QueryRowContext(ctx, `
+SELECT dsm_account_id, encrypted_password
+FROM initial_password_secrets
+WHERE source_slug = ?
+ORDER BY created_at ASC
+LIMIT 1`, sourceSlug).Scan(&accountID, &encrypted)
+	if err == sql.ErrNoRows || isMissingInitialPasswordTableError(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	password, err := s.decryptInitialPassword(accountID, encrypted)
+	if err != nil {
+		log.Printf("legacy initial password migration skipped source=%s error=%v", sourceSlug, err)
+		return "", false, nil
+	}
+	if err := s.createSourceInitialPassword(ctx, sourceSlug, password); err != nil {
+		return "", false, err
+	}
+	password, ok, err := s.lookupSourceInitialPassword(ctx, sourceSlug)
+	if err != nil {
+		return "", false, err
+	}
+	return password, ok, nil
+}
+
+func isMissingInitialPasswordTableError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: initial_password_secrets")
+}
+
+func (s *Server) createSourceInitialPassword(ctx context.Context, sourceSlug, password string) error {
 	sourceSlug = strings.TrimSpace(sourceSlug)
-	accountID = strings.TrimSpace(accountID)
-	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
-	if sourceSlug == "" || accountID == "" || username == "" || password == "" {
+	if sourceSlug == "" || password == "" {
 		return errors.New("initial password metadata is incomplete")
 	}
-	encrypted, err := s.encryptInitialPassword(accountID, password)
+	encrypted, err := s.encryptInitialPassword(sourceSlug, password)
 	if err != nil {
 		return err
 	}
 	_, err = s.store.DBTX().ExecContext(ctx, `
-INSERT INTO initial_password_secrets (id, source_slug, dsm_account_id, dsm_username, encrypted_password, reveal_count, last_revealed_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-ON CONFLICT(dsm_account_id) DO UPDATE SET
-    source_slug = excluded.source_slug,
-    dsm_username = excluded.dsm_username,
-    encrypted_password = excluded.encrypted_password,
-    reveal_count = 0,
-    last_revealed_at = NULL,
-    updated_at = CURRENT_TIMESTAMP
-`, "pwd_"+randomHex(12), sourceSlug, accountID, username, encrypted)
+INSERT OR IGNORE INTO source_initial_password_secrets (id, source_slug, encrypted_password, reveal_count, last_revealed_at, created_at, updated_at)
+VALUES (?, ?, ?, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+`, "pwd_"+randomHex(12), sourceSlug, encrypted)
 	return err
 }
 
-func (s *Server) deleteInitialPassword(ctx context.Context, accountID string) {
-	if strings.TrimSpace(accountID) == "" || s.store == nil {
-		return
-	}
-	_, _ = s.store.DBTX().ExecContext(ctx, `DELETE FROM initial_password_secrets WHERE dsm_account_id = ?`, accountID)
-}
-
-func (s *Server) encryptInitialPassword(accountID, password string) (string, error) {
+func (s *Server) encryptInitialPassword(scope, password string) (string, error) {
 	aead, err := s.initialPasswordAEAD()
 	if err != nil {
 		return "", err
@@ -84,12 +123,12 @@ func (s *Server) encryptInitialPassword(accountID, password string) (string, err
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	ciphertext := aead.Seal(nil, nonce, []byte(password), []byte(accountID))
+	ciphertext := aead.Seal(nil, nonce, []byte(password), []byte(scope))
 	payload := append(nonce, ciphertext...)
 	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
-func (s *Server) decryptInitialPassword(accountID, encrypted string) (string, error) {
+func (s *Server) decryptInitialPassword(scope, encrypted string) (string, error) {
 	aead, err := s.initialPasswordAEAD()
 	if err != nil {
 		return "", err
@@ -102,7 +141,7 @@ func (s *Server) decryptInitialPassword(accountID, encrypted string) (string, er
 	if len(payload) <= nonceSize {
 		return "", errors.New("invalid encrypted initial password")
 	}
-	plaintext, err := aead.Open(nil, payload[:nonceSize], payload[nonceSize:], []byte(accountID))
+	plaintext, err := aead.Open(nil, payload[:nonceSize], payload[nonceSize:], []byte(scope))
 	if err != nil {
 		return "", err
 	}
@@ -125,32 +164,41 @@ func (s *Server) initialPasswords(c *gin.Context) {
 	args := []any{}
 	where := ""
 	if provider != "" && provider != "all" {
-		where = "WHERE source_slug = ?"
+		where = "WHERE p.source_slug = ?"
 		args = append(args, provider)
 	}
 	countArgs := append([]any{}, args...)
-	total, err := queryCount(c.Request.Context(), s.store, `SELECT COUNT(*) FROM initial_password_secrets `+where, countArgs...)
+	total, err := queryCount(c.Request.Context(), s.store, `SELECT COUNT(*) FROM source_initial_password_secrets p `+where, countArgs...)
 	if err != nil {
 		writeItems(c, nil, err)
 		return
 	}
 	args = append(args, paging.Limit, paging.Offset)
 	rows, err := queryJSON(c.Request.Context(), s.store, `
-SELECT id, source_slug, dsm_account_id, dsm_username, reveal_count, last_revealed_at, created_at, updated_at
-FROM initial_password_secrets
+SELECT p.id,
+       p.source_slug,
+       COALESCE(s.display_name, p.source_slug) AS source_display_name,
+       COALESCE(s.provider_type, '') AS provider_type,
+       p.reveal_count,
+       p.last_revealed_at,
+       p.created_at,
+       p.updated_at
+FROM source_initial_password_secrets p
+LEFT JOIN identity_sources s ON s.slug = p.source_slug
 `+where+`
-ORDER BY updated_at DESC
+ORDER BY p.updated_at DESC
 LIMIT ? OFFSET ?`, args...)
 	writePagedItems(c, rows, total, paging, err)
 }
 
 func (s *Server) revealInitialPassword(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
-	var accountID, username, encrypted string
+	var sourceSlug, sourceDisplayName, encrypted string
 	err := s.store.DBTX().QueryRowContext(c.Request.Context(), `
-SELECT dsm_account_id, dsm_username, encrypted_password
-FROM initial_password_secrets
-WHERE id = ?`, id).Scan(&accountID, &username, &encrypted)
+SELECT p.source_slug, COALESCE(s.display_name, p.source_slug), p.encrypted_password
+FROM source_initial_password_secrets p
+LEFT JOIN identity_sources s ON s.slug = p.source_slug
+WHERE p.id = ?`, id).Scan(&sourceSlug, &sourceDisplayName, &encrypted)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "initial password not found"})
 		return
@@ -159,19 +207,19 @@ WHERE id = ?`, id).Scan(&accountID, &username, &encrypted)
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	password, err := s.decryptInitialPassword(accountID, encrypted)
+	password, err := s.decryptInitialPassword(sourceSlug, encrypted)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "initial password cannot be decrypted"})
 		return
 	}
 	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `
-UPDATE initial_password_secrets
+UPDATE source_initial_password_secrets
 SET reveal_count = reveal_count + 1, last_revealed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?`, id)
 	c.JSON(http.StatusOK, gin.H{
-		"id":               id,
-		"dsm_account_id":   accountID,
-		"dsm_username":     username,
-		"initial_password": password,
+		"id":                  id,
+		"source_slug":         sourceSlug,
+		"source_display_name": sourceDisplayName,
+		"initial_password":    password,
 	})
 }

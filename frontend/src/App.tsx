@@ -228,12 +228,12 @@ function InitialPasswordPanel({ provider }: { provider?: string }) {
       const result = await api.revealInitialPassword(record.id);
       await passwords.reloadWithResult({ silent: true });
       modal.info({
-        title: `${result.dsm_username} 的初始密码`,
+        title: `${result.source_display_name} 的统一初始密码`,
         width: 560,
         okText: "关闭",
         content: (
           <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Alert type="warning" showIcon message="此密码可重复查看。只在需要交付给用户时打开，避免截图或转发到不可信渠道。" />
+            <Alert type="warning" showIcon message="此密码适用于这个身份源后续自动创建的 DSM 用户。只在需要交付给用户时打开，避免截图或转发到不可信渠道。" />
             <Input.Password value={result.initial_password} readOnly />
             <Button
               icon={<CopyOutlined />}
@@ -257,7 +257,7 @@ function InitialPasswordPanel({ provider }: { provider?: string }) {
 
   return (
     <Card
-      title={<Space><KeyOutlined />保存的初始密码</Space>}
+      title={<Space><KeyOutlined />身份源初始密码</Space>}
       className="module-card"
       extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => void passwords.reloadWithResult({ silent: true })}>刷新</Button>}
     >
@@ -265,7 +265,7 @@ function InitialPasswordPanel({ provider }: { provider?: string }) {
         <Alert
           type="info"
           showIcon
-          message="系统为新建 DSM 用户自动生成初始密码，并加密保存在本地数据库。后台登录后可随时查看。"
+          message={provider ? "这个身份源的新建 DSM 用户使用同一个随机初始密码，并加密保存在本地数据库。" : "每个身份源使用一个统一的随机初始密码，新建 DSM 用户时自动应用。后台登录后可随时查看。"}
         />
         {passwords.error && <Alert type="error" showIcon message={passwords.error} />}
         <Table
@@ -275,8 +275,8 @@ function InitialPasswordPanel({ provider }: { provider?: string }) {
           dataSource={items}
           pagination={false}
           columns={[
-            { title: "DSM 用户", dataIndex: "dsm_username", ellipsis: true },
-            ...(provider ? [] : [{ title: "身份源", dataIndex: "source_slug", ellipsis: true }]),
+            ...(provider ? [] : [{ title: "身份源", dataIndex: "source_display_name", ellipsis: true }]),
+            ...(provider ? [] : [{ title: "类型", dataIndex: "provider_type", width: 110, render: providerTypeLabel }]),
             { title: "查看次数", dataIndex: "reveal_count", width: 100 },
             { title: "最近查看", dataIndex: "last_revealed_at", width: 190, render: (value: string | null) => value ? formatLocalTime(value) : "-" },
             { title: "保存时间", dataIndex: "created_at", width: 190, render: formatLocalTime },

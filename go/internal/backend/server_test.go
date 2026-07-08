@@ -149,7 +149,7 @@ func TestSourceConfigIgnoresLegacyInitialPassword(t *testing.T) {
 	}
 }
 
-func TestProvisionDSMAccountStoresGeneratedInitialPassword(t *testing.T) {
+func TestProvisionDSMAccountUsesOneGeneratedInitialPasswordPerSource(t *testing.T) {
 	ctx := context.Background()
 	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
 	if err != nil {
@@ -161,24 +161,28 @@ func TestProvisionDSMAccountStoresGeneratedInitialPassword(t *testing.T) {
 	if _, err := database.ExecContext(ctx, `
 INSERT INTO identity_sources (slug, provider_type, display_name, config_json) VALUES ('source-a', 'feishu', '公司飞书', '{}');
 INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'Alice', 'alice@example.com');
+INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-b', 'Bob', 'bob@example.com');
 INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
 VALUES ('external-a', 'source-a', 'alice-open-id', 'alice-open-id', 'user', 'identity-a', 1);
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-b', 'source-a', 'bob-open-id', 'bob-open-id', 'user', 'identity-b', 1);
 INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
 VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-b', 'identity-b', 'bob', 'bob', 'pending', 1);
 `); err != nil {
 		t.Fatal(err)
 	}
 
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest("POST", "/api/admin/dsm-accounts/account-a/provision", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("unexpected provision status %d body=%s", response.Code, response.Body.String())
+	for _, accountID := range []string{"account-a", "account-b"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest("POST", "/api/admin/dsm-accounts/"+accountID+"/provision", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("unexpected provision status %d body=%s", response.Code, response.Body.String())
+		}
 	}
-	if len(helper.passwords) != 1 || len(helper.passwords[0]) < 32 {
+	if len(helper.passwords) != 2 || len(helper.passwords[0]) < 32 || helper.passwords[0] != helper.passwords[1] {
 		t.Fatalf("expected generated helper password, got %#v", helper.passwords)
-	}
-	if strings.Contains(response.Body.String(), helper.passwords[0]) {
-		t.Fatalf("provision response leaked password: %s", response.Body.String())
 	}
 
 	list := httptest.NewRecorder()
@@ -191,15 +195,19 @@ VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
 	}
 	var listed struct {
 		Items []struct {
-			ID          string `json:"id"`
-			DSMUsername string `json:"dsm_username"`
-			RevealCount int64  `json:"reveal_count"`
+			ID                string `json:"id"`
+			SourceSlug        string `json:"source_slug"`
+			SourceDisplayName string `json:"source_display_name"`
+			RevealCount       int64  `json:"reveal_count"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(list.Body).Decode(&listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Items) != 1 || listed.Items[0].DSMUsername != "alice" || listed.Items[0].RevealCount != 0 {
+	if len(listed.Items) != 1 ||
+		listed.Items[0].SourceSlug != "source-a" ||
+		listed.Items[0].SourceDisplayName != "公司飞书" ||
+		listed.Items[0].RevealCount != 0 {
 		t.Fatalf("unexpected initial password list: %#v", listed)
 	}
 
@@ -211,15 +219,72 @@ VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
 			t.Fatalf("unexpected reveal status %d body=%s", reveal.Code, reveal.Body.String())
 		}
 		var body struct {
-			DSMUsername     string `json:"dsm_username"`
-			InitialPassword string `json:"initial_password"`
+			SourceSlug        string `json:"source_slug"`
+			SourceDisplayName string `json:"source_display_name"`
+			InitialPassword   string `json:"initial_password"`
 		}
 		if err := json.NewDecoder(reveal.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body.DSMUsername != "alice" || body.InitialPassword != helper.passwords[0] {
+		if body.SourceSlug != "source-a" || body.SourceDisplayName != "公司飞书" || body.InitialPassword != helper.passwords[0] {
 			t.Fatalf("unexpected revealed password: %#v", body)
 		}
+	}
+}
+
+func TestProvisionDSMAccountMigratesLegacyInitialPasswordToSource(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &passwordRecordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	router := server.Router()
+	legacyPassword := "legacy-source-password"
+	legacyEncrypted, err := server.encryptInitialPassword("account-a", legacyPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `
+CREATE TABLE initial_password_secrets (
+    id TEXT PRIMARY KEY,
+    source_slug TEXT NOT NULL,
+    dsm_account_id TEXT NOT NULL UNIQUE,
+    dsm_username TEXT NOT NULL,
+    encrypted_password TEXT NOT NULL,
+    reveal_count INTEGER NOT NULL DEFAULT 0,
+    last_revealed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO identity_sources (slug, provider_type, display_name, config_json) VALUES ('source-a', 'feishu', '公司飞书', '{}');
+INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'Alice', 'alice@example.com');
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-a', 'source-a', 'alice-open-id', 'alice-open-id', 'user', 'identity-a', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
+INSERT INTO initial_password_secrets (id, source_slug, dsm_account_id, dsm_username, encrypted_password)
+VALUES ('pwd-legacy', 'source-a', 'account-a', 'alice', ?);
+`, legacyEncrypted); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("POST", "/api/admin/dsm-accounts/account-a/provision", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected provision status %d body=%s", response.Code, response.Body.String())
+	}
+	if len(helper.passwords) != 1 || helper.passwords[0] != legacyPassword {
+		t.Fatalf("expected migrated helper password, got %#v", helper.passwords)
+	}
+	var sourcePasswordCount int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM source_initial_password_secrets WHERE source_slug = 'source-a'`).Scan(&sourcePasswordCount); err != nil {
+		t.Fatal(err)
+	}
+	if sourcePasswordCount != 1 {
+		t.Fatalf("expected one source initial password row, got %d", sourcePasswordCount)
 	}
 }
 

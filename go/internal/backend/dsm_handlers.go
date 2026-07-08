@@ -548,24 +548,18 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 		return
 	}
 	sourceSlug := s.sourceSlugForAccount(c.Request.Context(), id)
-	password, newPasswordSecret, err := s.provisionUserInitialPassword(c.Request.Context(), sourceSlug, id, username)
+	password, err := s.provisionUserInitialPassword(c.Request.Context(), sourceSlug)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, password)
 	if err != nil {
-		if newPasswordSecret {
-			s.deleteInitialPassword(c.Request.Context(), id)
-		}
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
 	nextStatus := "created"
 	if !created {
-		if newPasswordSecret {
-			s.deleteInitialPassword(c.Request.Context(), id)
-		}
 		nextStatus = "linked_existing"
 	}
 	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
