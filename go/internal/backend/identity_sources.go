@@ -29,7 +29,12 @@ ORDER BY created_at`)
 			return
 		}
 		config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
-		items = append(items, sourceResponse(source, config, s.trustedPublicBaseURL()))
+		response, err := s.sourceResponse(c.Request.Context(), source, config, s.trustedPublicBaseURL())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		items = append(items, response)
 	}
 	if rows.Err() != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": rows.Err().Error()})
@@ -85,6 +90,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 `, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON))
 		if err != nil {
 			return http.StatusConflict, err.Error(), err
+		}
+		if err := s.ensureSourceInitialPassword(c.Request.Context(), q, slug); err != nil {
+			return http.StatusInternalServerError, err.Error(), err
 		}
 		return http.StatusOK, "", nil
 	}
@@ -209,6 +217,10 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
+	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM source_initial_password_secrets WHERE source_slug = ?`, slug); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 	sourceResult, err := tx.ExecContext(c.Request.Context(), `DELETE FROM identity_sources WHERE slug = ?`, slug)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
@@ -285,5 +297,10 @@ func (s *Server) getProvider(c *gin.Context, slug string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, sourceResponse(source, decodeSourceConfigForType(source.ProviderType, source.ConfigJSON), s.trustedPublicBaseURL()))
+	response, err := s.sourceResponse(c.Request.Context(), source, decodeSourceConfigForType(source.ProviderType, source.ConfigJSON), s.trustedPublicBaseURL())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }

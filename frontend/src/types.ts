@@ -72,6 +72,7 @@ export interface ProviderItem {
   wecom_authorize_url?: string;
   dingtalk_authorize_url?: string;
   builtin?: boolean;
+  initial_password?: SourceInitialPasswordStatus;
   config?: {
     public_base_url?: string;
     client_id?: string;
@@ -87,6 +88,14 @@ export interface ProviderItem {
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
   };
+}
+
+export interface SourceInitialPasswordStatus {
+  configured: boolean;
+  reveal_count?: number;
+  last_revealed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface ProviderTypeItem {
@@ -125,21 +134,10 @@ export interface ProviderUpsert {
   };
 }
 
-export interface InitialPasswordSecret {
-  id: string;
+export interface SourceInitialPasswordReveal {
   source_slug: string;
   source_display_name: string;
-  provider_type: string;
-  reveal_count: number;
-  last_revealed_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface InitialPasswordReveal {
-  id: string;
-  source_slug: string;
-  source_display_name: string;
+  status: SourceInitialPasswordStatus;
   initial_password: string;
 }
 

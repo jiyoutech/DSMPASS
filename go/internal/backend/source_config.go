@@ -171,12 +171,16 @@ func dingTalkAuthorizePreviewURL(appKey, redirectURI string) string {
 	return defaultDingTalkAuthorizeURL + "?" + values.Encode()
 }
 
-func sourceResponse(source db.IdentitySource, config identitySourceConfig, publicBaseURL string) gin.H {
+func (s *Server) sourceResponse(ctx context.Context, source db.IdentitySource, config identitySourceConfig, publicBaseURL string) (gin.H, error) {
 	publicBaseURL = strings.TrimRight(publicBaseURL, "/")
 	config.PublicBaseURL = ""
 	loginPath := "/idp/" + source.Slug + "/launch"
 	callbackPath := "/idp/" + source.Slug + "/callback"
 	callbackURL := strings.TrimRight(publicBaseURL, "/") + callbackPath
+	initialPassword, err := s.sourceInitialPasswordStatus(ctx, source.Slug)
+	if err != nil {
+		return nil, err
+	}
 	response := gin.H{
 		"slug":                   source.Slug,
 		"provider_type":          source.ProviderType,
@@ -190,6 +194,7 @@ func sourceResponse(source db.IdentitySource, config identitySourceConfig, publi
 		"updated_at":             source.UpdatedAt,
 		"login_url":              publicBaseURL + loginPath,
 		"callback_url":           callbackURL,
+		"initial_password":       initialPassword,
 	}
 	switch source.ProviderType {
 	case "feishu":
@@ -199,7 +204,7 @@ func sourceResponse(source db.IdentitySource, config identitySourceConfig, publi
 	case "dingtalk":
 		response["dingtalk_authorize_url"] = dingTalkAuthorizePreviewURL(config.ClientID, callbackURL)
 	}
-	return response
+	return response, nil
 }
 
 func (s *Server) CleanupIdentitySourcePublicBaseURLs(ctx context.Context) error {

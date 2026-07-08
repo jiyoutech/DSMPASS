@@ -151,7 +151,7 @@ func TestSourceConfigDoesNotExposeSubmittedInitialPassword(t *testing.T) {
 
 func TestProvisionDSMAccountUsesOneGeneratedInitialPasswordPerSource(t *testing.T) {
 	ctx := context.Background()
-	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	database, queries, err := OpenDatabase(ctx, "sqlite://file:initial_password_per_source?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,36 +185,36 @@ VALUES ('account-b', 'identity-b', 'bob', 'bob', 'pending', 1);
 		t.Fatalf("expected generated helper password, got %#v", helper.passwords)
 	}
 
-	list := httptest.NewRecorder()
-	router.ServeHTTP(list, httptest.NewRequest("GET", "/api/admin/initial-passwords?provider=source-a", nil))
-	if list.Code != http.StatusOK {
-		t.Fatalf("unexpected list status %d body=%s", list.Code, list.Body.String())
+	sourceResponse := httptest.NewRecorder()
+	router.ServeHTTP(sourceResponse, httptest.NewRequest("GET", "/api/admin/providers", nil))
+	if sourceResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected source list status %d body=%s", sourceResponse.Code, sourceResponse.Body.String())
 	}
-	if strings.Contains(list.Body.String(), helper.passwords[0]) {
-		t.Fatalf("list response leaked password: %s", list.Body.String())
+	if strings.Contains(sourceResponse.Body.String(), helper.passwords[0]) {
+		t.Fatalf("source response leaked password: %s", sourceResponse.Body.String())
 	}
-	var listed struct {
+	var listedSources struct {
 		Items []struct {
-			ID                string `json:"id"`
-			SourceSlug        string `json:"source_slug"`
-			SourceDisplayName string `json:"source_display_name"`
-			RevealCount       int64  `json:"reveal_count"`
+			Slug            string `json:"slug"`
+			InitialPassword struct {
+				Configured  bool  `json:"configured"`
+				RevealCount int64 `json:"reveal_count"`
+			} `json:"initial_password"`
 		} `json:"items"`
 	}
-	if err := json.NewDecoder(list.Body).Decode(&listed); err != nil {
+	if err := json.NewDecoder(sourceResponse.Body).Decode(&listedSources); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Items) != 1 ||
-		listed.Items[0].SourceSlug != "source-a" ||
-		listed.Items[0].SourceDisplayName != "公司飞书" ||
-		listed.Items[0].RevealCount != 0 {
-		t.Fatalf("unexpected initial password list: %#v", listed)
+	if len(listedSources.Items) != 1 ||
+		listedSources.Items[0].Slug != "source-a" ||
+		!listedSources.Items[0].InitialPassword.Configured ||
+		listedSources.Items[0].InitialPassword.RevealCount != 0 {
+		t.Fatalf("unexpected source initial password status: %#v", listedSources)
 	}
 
-	revealPath := "/api/admin/initial-passwords/" + listed.Items[0].ID + "/reveal"
 	for i := 1; i <= 2; i++ {
 		reveal := httptest.NewRecorder()
-		router.ServeHTTP(reveal, httptest.NewRequest("POST", revealPath, nil))
+		router.ServeHTTP(reveal, httptest.NewRequest("POST", "/api/admin/providers/source-a/initial-password/reveal", nil))
 		if reveal.Code != http.StatusOK {
 			t.Fatalf("unexpected reveal status %d body=%s", reveal.Code, reveal.Body.String())
 		}
@@ -1686,7 +1686,7 @@ func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 
 func TestCreateProviderIgnoresInitialPassword(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
-	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://file:create_provider_initial_password?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1721,6 +1721,17 @@ func TestCreateProviderIgnoresInitialPassword(t *testing.T) {
 	}
 	if strings.Contains(configJSON, "secret-password") || strings.Contains(configJSON, "initial_password") {
 		t.Fatalf("provider config stored initial password: %s", configJSON)
+	}
+	var storedPasswordCount int
+	if err := database.QueryRowContext(context.Background(), `
+SELECT COUNT(*)
+FROM source_initial_password_secrets p
+JOIN identity_sources s ON s.slug = p.source_slug
+WHERE s.display_name = '公司飞书'`).Scan(&storedPasswordCount); err != nil {
+		t.Fatal(err)
+	}
+	if storedPasswordCount != 1 {
+		t.Fatalf("expected generated source initial password, got %d", storedPasswordCount)
 	}
 }
 

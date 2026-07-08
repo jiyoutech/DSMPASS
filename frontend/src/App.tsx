@@ -49,7 +49,6 @@ import type {
   AdminAuthStatus,
   AdminLoginRequest,
   HelperStatus,
-  InitialPasswordSecret,
   OperationEvent,
   OperationRun,
   PagedResponse,
@@ -216,83 +215,63 @@ function OperationProgressPanel({ state }: { state: { run: OperationRun; events:
   );
 }
 
-function InitialPasswordPanel({ provider }: { provider?: string }) {
-  const { modal, message } = AntApp.useApp();
-  const passwords = useAsyncData(() => api.listInitialPasswords(provider ? { provider } : undefined), [provider ?? ""]);
-  const [revealingID, setRevealingID] = useState<string | null>(null);
-  const items = passwords.data?.items ?? [];
+function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderItem; onUpdated: (source: ProviderItem) => void }) {
+  const { message } = AntApp.useApp();
+  const [password, setPassword] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const status = source.initial_password;
+  const helper = status?.configured
+    ? `已保存${status.created_at ? `于 ${formatLocalTime(status.created_at)}` : ""}；查看次数 ${status.reveal_count ?? 0}${status.last_revealed_at ? `，最近查看 ${formatLocalTime(status.last_revealed_at)}` : ""}`
+    : "尚未生成；点击查看时会为这个身份源生成并保存一个随机初始密码。";
 
-  async function reveal(record: InitialPasswordSecret) {
-    setRevealingID(record.id);
+  useEffect(() => {
+    setPassword("");
+  }, [source.slug]);
+
+  async function reveal() {
+    setRevealing(true);
     try {
-      const result = await api.revealInitialPassword(record.id);
-      await passwords.reloadWithResult({ silent: true });
-      modal.info({
-        title: `${result.source_display_name} 的统一初始密码`,
-        width: 560,
-        okText: "关闭",
-        content: (
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Alert type="warning" showIcon message="此密码适用于这个身份源后续自动创建的 DSM 用户。只在需要交付给用户时打开，避免截图或转发到不可信渠道。" />
-            <Input.Password value={result.initial_password} readOnly />
-            <Button
-              icon={<CopyOutlined />}
-              onClick={() => {
-                void navigator.clipboard.writeText(result.initial_password)
-                  .then(() => message.success("已复制初始密码"))
-                  .catch(() => message.error("复制失败"));
-              }}
-            >
-              复制
-            </Button>
-          </Space>
-        )
-      });
+      const result = await api.revealSourceInitialPassword(source.slug);
+      setPassword(result.initial_password);
+      onUpdated({ ...source, initial_password: result.status });
+      message.success("已加载初始密码");
     } catch (err) {
       message.error(err instanceof Error ? err.message : "查看失败");
     } finally {
-      setRevealingID(null);
+      setRevealing(false);
     }
   }
 
+  function copy() {
+    if (!password) {
+      return;
+    }
+    void navigator.clipboard.writeText(password)
+      .then(() => message.success("已复制初始密码"))
+      .catch(() => message.error("复制失败"));
+  }
+
   return (
-    <Card
-      title={<Space><KeyOutlined />身份源初始密码</Space>}
-      className="module-card"
-      extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => void passwords.reloadWithResult({ silent: true })}>刷新</Button>}
+    <Form.Item
+      label={helpLabel("DSM 初始密码", "这个身份源自动创建 DSM 用户时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
     >
-      <Space direction="vertical" size={12} style={{ width: "100%" }}>
-        <Alert
-          type="info"
-          showIcon
-          message={provider ? "这个身份源的新建 DSM 用户使用同一个随机初始密码，并加密保存在本地数据库。" : "每个身份源使用一个统一的随机初始密码，新建 DSM 用户时自动应用。后台登录后可随时查看。"}
-        />
-        {passwords.error && <Alert type="error" showIcon message={passwords.error} />}
-        <Table
-          size="small"
-          rowKey="id"
-          loading={passwords.loading}
-          dataSource={items}
-          pagination={false}
-          columns={[
-            ...(provider ? [] : [{ title: "身份源", dataIndex: "source_display_name", ellipsis: true }]),
-            ...(provider ? [] : [{ title: "类型", dataIndex: "provider_type", width: 110, render: providerTypeLabel }]),
-            { title: "查看次数", dataIndex: "reveal_count", width: 100 },
-            { title: "最近查看", dataIndex: "last_revealed_at", width: 190, render: (value: string | null) => value ? formatLocalTime(value) : "-" },
-            { title: "保存时间", dataIndex: "created_at", width: 190, render: formatLocalTime },
-            {
-              title: "操作",
-              width: 110,
-              render: (_, record: InitialPasswordSecret) => (
-                <Button size="small" icon={<KeyOutlined />} loading={revealingID === record.id} onClick={() => void reveal(record)}>
-                  查看
-                </Button>
-              )
-            }
-          ]}
-        />
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Space.Compact style={{ width: "100%" }}>
+          <Input.Password
+            readOnly
+            value={password}
+            placeholder={status?.configured ? "已保存；点击查看后显示" : "未生成；点击查看时自动生成"}
+          />
+          <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
+            查看
+          </Button>
+          <Button icon={<CopyOutlined />} disabled={!password} onClick={copy}>
+            复制
+          </Button>
+        </Space.Compact>
+        <Typography.Text type="secondary">{helper}</Typography.Text>
       </Space>
-    </Card>
+    </Form.Item>
   );
 }
 
@@ -978,7 +957,6 @@ function Providers({
         }
       />
       {error && <Alert type="error" showIcon message={error} />}
-      <InitialPasswordPanel />
       <Card className="data-card">
         <Table
           rowKey="slug"
@@ -1990,7 +1968,6 @@ function SourceDetail({
             label: providerLabel,
             children: (
               <Space direction="vertical" size={16} className="page">
-                <InitialPasswordPanel provider={source.slug} />
                 <Card title="地址" className="module-card">
                   <div className="address-copy-list">
                     <div className="launch-copy-row">
@@ -2039,6 +2016,7 @@ function SourceDetail({
                       >
                         <Input.Password placeholder={sourceCredentialText.clientSecretPlaceholder} />
                       </Form.Item>
+                      <SourceInitialPasswordField source={source} onUpdated={onUpdated} />
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="directory_sync_enabled" label={helpLabel("同步", sourceFieldHelp.syncEnabled)} valuePropName="checked"><Switch /></Form.Item>
