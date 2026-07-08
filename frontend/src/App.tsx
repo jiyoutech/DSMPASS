@@ -218,6 +218,7 @@ function OperationProgressPanel({ state }: { state: { run: OperationRun; events:
 function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderItem; onUpdated: (source: ProviderItem) => void }) {
   const { message } = AntApp.useApp();
   const [password, setPassword] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const status = source.initial_password;
   const helper = status?.configured
@@ -226,6 +227,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
 
   useEffect(() => {
     setPassword("");
+    setModalOpen(false);
   }, [source.slug]);
 
   async function reveal() {
@@ -233,13 +235,18 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
     try {
       const result = await api.revealSourceInitialPassword(source.slug);
       setPassword(result.initial_password);
+      setModalOpen(true);
       onUpdated({ ...source, initial_password: result.status });
-      message.success("已加载初始密码");
     } catch (err) {
       message.error(err instanceof Error ? err.message : "查看失败");
     } finally {
       setRevealing(false);
     }
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setPassword("");
   }
 
   function copy() {
@@ -256,21 +263,35 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
       label={helpLabel("DSM 初始密码", "这个身份源自动创建 DSM 用户时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
     >
       <Space direction="vertical" size={6} style={{ width: "100%" }}>
-        <Space.Compact style={{ width: "100%" }}>
-          <Input.Password
-            readOnly
-            value={password}
-            placeholder={status?.configured ? "已保存；点击查看后显示" : "未生成；点击查看时自动生成"}
-          />
+        <Space wrap>
           <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
-            查看
+            查看初始密码
           </Button>
-          <Button icon={<CopyOutlined />} disabled={!password} onClick={copy}>
-            复制
-          </Button>
-        </Space.Compact>
+          <Tag color={status?.configured ? "success" : "default"}>{status?.configured ? "已保存" : "未生成"}</Tag>
+        </Space>
         <Typography.Text type="secondary">{helper}</Typography.Text>
       </Space>
+      <Modal
+        title={`${source.display_name} 的 DSM 初始密码`}
+        open={modalOpen}
+        onCancel={closeModal}
+        destroyOnHidden
+        footer={[
+          <Button key="copy" icon={<CopyOutlined />} disabled={!password} onClick={copy}>
+            复制
+          </Button>,
+          <Button key="close" type="primary" onClick={closeModal}>
+            关闭
+          </Button>
+        ]}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Text type="secondary">
+            此密码用于这个身份源自动创建的 DSM 用户。请只在交付给用户时查看和复制。
+          </Typography.Text>
+          <Input.Password value={password} readOnly />
+        </Space>
+      </Modal>
     </Form.Item>
   );
 }
