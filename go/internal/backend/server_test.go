@@ -1472,6 +1472,49 @@ func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 	}
 }
 
+func TestCreateProviderRejectsSecondIdentitySource(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	first := httptest.NewRecorder()
+	firstRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "feishu",
+		"display_name": "公司飞书",
+		"config": {
+			"client_id": "cli_test",
+			"client_secret": "secret"
+		}
+	}`))
+	firstRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(first, firstRequest)
+	if first.Code != http.StatusOK {
+		t.Fatalf("unexpected first create status %d body=%s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	secondRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "wecom",
+		"display_name": "企业微信",
+		"config": {
+			"client_id": "ww_test",
+			"client_secret": "secret"
+		}
+	}`))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(second, secondRequest)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("expected conflict, got %d body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), singleIdentitySourceLimitMessage) {
+		t.Fatalf("unexpected response: %s", second.Body.String())
+	}
+}
+
 func TestCreateProviderRejectsClientSlug(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
