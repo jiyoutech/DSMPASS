@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
@@ -33,6 +34,8 @@ type Server struct {
 	restartIDPNotice func(string)
 	tlsRefreshMu     sync.Mutex
 	refreshTLS       func(string)
+
+	allowMultipleIdentitySources bool
 }
 
 const oauthStateTTL = 10 * time.Minute
@@ -79,6 +82,8 @@ func newServer(cfg config.BackendConfig, helper helperclient.Client, database *s
 		states:      map[string]oauthState{},
 		syncRuns:    map[string]bool{},
 		autoSync:    map[string]time.Time{},
+
+		allowMultipleIdentitySources: buildinfo.MultipleIdentitySourcesAllowed(),
 	}
 }
 

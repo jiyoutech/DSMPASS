@@ -66,6 +66,7 @@ const appName = "DSM Pass";
 const defaultIDPPort = 26000;
 const sourceTablePageSize = 50;
 const sourceModalWidth = "min(1180px, calc(100vw - 32px))";
+const singleIdentitySourceLimitMessage = "当前 SPK 仅允许一个身份源";
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -891,7 +892,8 @@ function Providers({
   const selectedProviderType = Form.useWatch("provider_type", form) as string | undefined;
   const selectedProvider = providerTypeItems.find((item) => item.type === selectedProviderType);
   const selectedProviderCredentialText = providerCredentialText(selectedProviderType, selectedProvider?.display_name);
-  const canCreateSource = helperReady && !helperLoading;
+  const identitySourceLimitReached = providerTypes.data?.allow_multiple_identity_sources === false && (data?.items.length ?? 0) > 0;
+  const canCreateSource = helperReady && !helperLoading && !identitySourceLimitReached;
 
   useEffect(() => {
     if (open && providerTypeOptions.length > 0 && !form.getFieldValue("provider_type")) {
@@ -900,6 +902,10 @@ function Providers({
   }, [form, open, providerTypeOptions]);
 
   async function create(values: ProviderUpsert) {
+    if (identitySourceLimitReached) {
+      message.error(`${singleIdentitySourceLimitMessage}；如需更换，请先删除现有身份源`);
+      return;
+    }
     if (!canCreateSource) {
       message.error("请先完成 Helper 提权，并点击「重启并检查 Helper」，再新建身份源");
       return;
@@ -942,6 +948,14 @@ function Providers({
   }
 
   function openCreateSource() {
+    if (identitySourceLimitReached) {
+      modal.warning({
+        title: singleIdentitySourceLimitMessage,
+        content: "此限制在 SPK 打包时设定。如需更换平台，请先删除现有身份源后再新建。",
+        okText: "知道了"
+      });
+      return;
+    }
     if (!canCreateSource) {
       modal.warning({
         title: "修复 Helper 权限后才能新建身份源",
@@ -963,7 +977,7 @@ function Providers({
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              title={canCreateSource ? "新建身份源" : "请先修复 Helper 权限"}
+              title={identitySourceLimitReached ? singleIdentitySourceLimitMessage : canCreateSource ? "新建身份源" : "请先修复 Helper 权限"}
               onClick={openCreateSource}
             >
               新建

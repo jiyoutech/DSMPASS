@@ -7,7 +7,10 @@ import (
 )
 
 func (s *Server) providerTypes(c *gin.Context) {
-	c.JSON(200, gin.H{"items": supportedProviderTypes()})
+	c.JSON(200, gin.H{
+		"items":                           supportedProviderTypes(),
+		"allow_multiple_identity_sources": s.allowMultipleIdentitySources,
+	})
 }
 
 func supportedProviderType(providerType string) bool {

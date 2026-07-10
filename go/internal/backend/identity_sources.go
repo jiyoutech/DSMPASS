@@ -11,6 +11,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+const singleIdentitySourceLimitMessage = "当前 SPK 仅允许一个身份源；如需更换，请先删除现有身份源"
+
 func (s *Server) providers(c *gin.Context) {
 	items := []gin.H{}
 	rows, err := s.store.DBTX().QueryContext(c.Request.Context(), `
@@ -84,12 +86,22 @@ func (s *Server) createProvider(c *gin.Context) {
 		return
 	}
 	insert := func(q db.DBTX) (int, string, error) {
-		_, err := q.ExecContext(c.Request.Context(), `
+		result, err := q.ExecContext(c.Request.Context(), `
 INSERT INTO identity_sources (slug, provider_type, display_name, enabled, login_enabled, directory_sync_enabled, config_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON))
+SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+WHERE ? OR NOT EXISTS (SELECT 1 FROM identity_sources)
+`, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON), s.allowMultipleIdentitySources)
 		if err != nil {
 			return http.StatusConflict, err.Error(), err
+		}
+		if !s.allowMultipleIdentitySources {
+			rowsAffected, err := result.RowsAffected()
+			if err != nil {
+				return http.StatusInternalServerError, err.Error(), err
+			}
+			if rowsAffected == 0 {
+				return http.StatusConflict, singleIdentitySourceLimitMessage, nil
+			}
 		}
 		if err := s.ensureSourceInitialPassword(c.Request.Context(), q, slug); err != nil {
 			return http.StatusInternalServerError, err.Error(), err

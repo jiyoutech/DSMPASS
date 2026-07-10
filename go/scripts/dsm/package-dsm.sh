@@ -5,7 +5,20 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 GO_DIR="$ROOT_DIR/go"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 VERSION=$("$GO_DIR/scripts/dsm/version.sh")
-LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.FrontendVersion=$VERSION"
+ALLOW_MULTIPLE_IDENTITY_SOURCES=${DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES:-1}
+case "$ALLOW_MULTIPLE_IDENTITY_SOURCES" in
+  1|true|TRUE)
+    ALLOW_MULTIPLE_IDENTITY_SOURCES=true
+    ;;
+  0|false|FALSE)
+    ALLOW_MULTIPLE_IDENTITY_SOURCES=false
+    ;;
+  *)
+    echo "DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES must be 1, 0, true, or false" >&2
+    exit 1
+    ;;
+esac
+LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.FrontendVersion=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.AllowMultipleIdentitySources=$ALLOW_MULTIPLE_IDENTITY_SOURCES"
 export GOCACHE="${GOCACHE:-$GO_DIR/.gocache}"
 export GOMODCACHE="${GOMODCACHE:-$GO_DIR/.gomodcache}"
 
@@ -41,5 +54,6 @@ tar -czf dist/dsm/dsmpass-linux-amd64.tar.gz -C dist/dsm/package-linux-amd64 .
 tar -czf dist/dsm/dsmpass-linux-arm64.tar.gz -C dist/dsm/package-linux-arm64 .
 
 echo "version: $VERSION"
+echo "allow multiple identity sources: $ALLOW_MULTIPLE_IDENTITY_SOURCES"
 echo "amd64: $GO_DIR/dist/dsm/dsmpass-linux-amd64.tar.gz"
 echo "arm64: $GO_DIR/dist/dsm/dsmpass-linux-arm64.tar.gz"

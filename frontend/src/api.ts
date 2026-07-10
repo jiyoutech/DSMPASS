@@ -121,7 +121,7 @@ export const api = {
   provisionMember: (id: string) =>
     request<{ id: string; provision_status: string }>(`/api/admin/group-members/${id}/provision`, { method: "POST" }),
   listProviders: () => request<{ items: ProviderItem[] }>("/api/admin/providers"),
-  listProviderTypes: () => request<{ items: ProviderTypeItem[] }>("/api/admin/provider-types"),
+  listProviderTypes: () => request<{ items: ProviderTypeItem[]; allow_multiple_identity_sources: boolean }>("/api/admin/provider-types"),
   revealSourceInitialPassword: (slug: string) =>
     request<SourceInitialPasswordReveal>(`/api/admin/providers/${slug}/initial-password/reveal`, { method: "POST" }),
   createProvider: (payload: ProviderUpsert) =>

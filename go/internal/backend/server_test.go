@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -1838,6 +1839,123 @@ func TestCreateProviderAllowsMultipleIdentitySources(t *testing.T) {
 	}
 	if !strings.Contains(second.Body.String(), `"provider_type":"wecom"`) {
 		t.Fatalf("second response should be wecom source: %s", second.Body.String())
+	}
+}
+
+func TestCreateProviderRejectsSecondWhenPackageDisallowsMultiple(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	server.allowMultipleIdentitySources = false
+	router := server.Router()
+
+	typesResponse := httptest.NewRecorder()
+	router.ServeHTTP(typesResponse, httptest.NewRequest("GET", "/api/admin/provider-types", nil))
+	if typesResponse.Code != http.StatusOK || !strings.Contains(typesResponse.Body.String(), `"allow_multiple_identity_sources":false`) {
+		t.Fatalf("provider types should expose single-source package capability, got %d body=%s", typesResponse.Code, typesResponse.Body.String())
+	}
+
+	create := func(providerType, displayName, clientID string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(fmt.Sprintf(`{
+			"provider_type": %q,
+			"display_name": %q,
+			"config": {
+				"client_id": %q,
+				"client_secret": "secret"
+			}
+		}`, providerType, displayName, clientID)))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	first := create("feishu", "公司飞书", "cli_test")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first identity source should be allowed, got %d body=%s", first.Code, first.Body.String())
+	}
+	second := create("dingtalk", "公司钉钉", "ding_test")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second identity source should be rejected, got %d body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), singleIdentitySourceLimitMessage) {
+		t.Fatalf("unexpected second create response: %s", second.Body.String())
+	}
+
+	var count int
+	if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("stored identity source count = %d, want 1", count)
+	}
+}
+
+func TestCreateProviderSingleSourceLimitIsConcurrencySafe(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	databaseURL := "sqlite://" + filepath.Join(t.TempDir(), "dsmpass.db")
+	database, queries, err := OpenDatabase(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	server.allowMultipleIdentitySources = false
+	router := server.Router()
+
+	const requestCount = 8
+	start := make(chan struct{})
+	statuses := make(chan int, requestCount)
+	var wait sync.WaitGroup
+	for index := 0; index < requestCount; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(fmt.Sprintf(`{
+				"provider_type": "feishu",
+				"display_name": "source-%d",
+				"config": {
+					"client_id": "client-%d",
+					"client_secret": "secret"
+				}
+			}`, index, index)))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			statuses <- response.Code
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	close(statuses)
+
+	created := 0
+	rejected := 0
+	for status := range statuses {
+		switch status {
+		case http.StatusOK:
+			created++
+		case http.StatusConflict:
+			rejected++
+		default:
+			t.Fatalf("unexpected concurrent create status: %d", status)
+		}
+	}
+	if created != 1 || rejected != requestCount-1 {
+		t.Fatalf("created=%d rejected=%d, want 1 and %d", created, rejected, requestCount-1)
+	}
+
+	var count int
+	if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("stored identity source count = %d, want 1", count)
 	}
 }
 
