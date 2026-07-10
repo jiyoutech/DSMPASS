@@ -232,7 +232,7 @@ func TestWeComListUsersFallsBackToVisibleUserIDsWhenDepartmentsEmpty(t *testing.
 	}
 }
 
-func TestWeComListUsersPrefersAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T) {
+func TestWeComListUsersAndGroupsReturnsAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T) {
 	wecom := NewWeCom(WeComConfig{
 		CorpID:         "wwcorp",
 		CorpSecret:     "secret",
@@ -269,9 +269,12 @@ func TestWeComListUsersPrefersAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T
 		return map[string]any{"errcode": 404, "errmsg": "not found"}, http.StatusNotFound
 	})}
 
-	users, err := wecom.ListUsers()
+	users, groups, err := wecom.ListUsersAndGroups()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("groups length got %d, want 0", len(groups))
 	}
 	if len(users) != 2 {
 		t.Fatalf("users length got %d", len(users))
@@ -282,6 +285,9 @@ func TestWeComListUsersPrefersAgentVisibleUsersWhenDepartmentsEmpty(t *testing.T
 	}
 	if bySubject["mas"].DisplayName != "马少云" || bySubject["meikle"].DisplayName != "Meikle Hong" {
 		t.Fatalf("unexpected users: %#v", bySubject)
+	}
+	if len(bySubject["mas"].DepartmentSubjects) != 0 || len(bySubject["meikle"].DepartmentSubjects) != 0 {
+		t.Fatalf("expected user-only snapshot without departments: %#v", bySubject)
 	}
 }
 
@@ -355,5 +361,109 @@ func TestWeComAPIPermissionErrorIsActionable(t *testing.T) {
 	}
 	if strings.Contains(message, "可信 IP") {
 		t.Fatalf("48002 should not be classified as trusted IP error: %s", message)
+	}
+}
+
+func TestWeComDepartmentPermissionErrorIsActionable(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 60011, "errmsg": "no privilege to access/modify contact/party/agent"}, http.StatusOK
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		return nil, http.StatusNotFound
+	})}
+
+	_, _, err := wecom.ListUsersAndGroups()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"60011",
+		"读取通讯录部门失败",
+		"已中止同步",
+		"企业微信管理后台重新设置自建应用可见范围",
+		"用户及其所属部门",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message missing %q: %s", want, message)
+		}
+	}
+}
+
+func TestWeComDepartmentMemberPermissionErrorIsActionable(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 0, "department": []map[string]any{{"id": 1, "parentid": 0, "name": "root"}}}, http.StatusOK
+		case "/cgi-bin/user/list":
+			return map[string]any{"errcode": 60011, "errmsg": "no privilege to access department members"}, http.StatusOK
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		return nil, http.StatusNotFound
+	})}
+
+	_, _, err := wecom.ListUsersAndGroups()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, want := range []string{"60011", "读取通讯录部门成员失败", "重新设置自建应用可见范围", "用户及其所属部门"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message missing %q: %s", want, message)
+		}
+	}
+}
+
+func TestWeComDepartmentTrustedIPErrorKeepsTrustedIPAdvice(t *testing.T) {
+	wecom := NewWeCom(WeComConfig{
+		CorpID:         "wwcorp",
+		CorpSecret:     "secret",
+		TokenURL:       "https://wecom.test/cgi-bin/gettoken",
+		ContactBaseURL: "https://wecom.test/cgi-bin",
+	})
+	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		switch r.URL.Path {
+		case "/cgi-bin/gettoken":
+			return map[string]any{"errcode": 0, "access_token": "access-token"}, http.StatusOK
+		case "/cgi-bin/department/list":
+			return map[string]any{"errcode": 60020, "errmsg": "not allow to access from your ip"}, http.StatusOK
+		default:
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		return nil, http.StatusNotFound
+	})}
+
+	_, _, err := wecom.ListUsersAndGroups()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, want := range []string{"60020", "读取通讯录部门失败", "可信 IP"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("message missing %q: %s", want, message)
+		}
+	}
+	if strings.Contains(message, "重新设置自建应用可见范围") {
+		t.Fatalf("trusted IP error should not be classified as department permission error: %s", message)
 	}
 }

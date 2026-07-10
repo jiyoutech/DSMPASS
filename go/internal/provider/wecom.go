@@ -37,6 +37,15 @@ type weComErrorBody struct {
 	ErrMsg  string `json:"errmsg"`
 }
 
+type weComResponseError struct {
+	errCode int64
+	detail  string
+}
+
+func (e *weComResponseError) Error() string {
+	return e.detail
+}
+
 type WeCom struct {
 	cfg    WeComConfig
 	slug   string
@@ -137,12 +146,20 @@ func (w WeCom) ListUsers() ([]User, error) {
 	}
 	groups, err := w.listGroups(token)
 	if err != nil {
-		return nil, err
+		return nil, weComDirectorySyncError("读取通讯录部门", err)
 	}
 	if len(groups) == 0 {
-		return w.visibleUsers(token)
+		users, err := w.visibleUsers(token)
+		if err != nil {
+			return nil, weComDirectorySyncError("读取通讯录用户", err)
+		}
+		return users, nil
 	}
-	return w.usersFromGroups(token, groups)
+	users, err := w.usersFromGroups(token, groups)
+	if err != nil {
+		return nil, weComDirectorySyncError("读取通讯录部门成员", err)
+	}
+	return users, nil
 }
 
 func (w WeCom) ListUsersAndGroups() ([]User, []Group, error) {
@@ -152,14 +169,20 @@ func (w WeCom) ListUsersAndGroups() ([]User, []Group, error) {
 	}
 	groups, err := w.listGroups(token)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, weComDirectorySyncError("读取通讯录部门", err)
 	}
 	if len(groups) == 0 {
 		users, err := w.visibleUsers(token)
-		return users, groups, err
+		if err != nil {
+			return nil, nil, weComDirectorySyncError("读取通讯录用户", err)
+		}
+		return users, groups, nil
 	}
 	users, err := w.usersFromGroups(token, groups)
-	return users, groups, err
+	if err != nil {
+		return nil, nil, weComDirectorySyncError("读取通讯录部门成员", err)
+	}
+	return users, groups, nil
 }
 
 func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
@@ -520,16 +543,26 @@ func formatWeComHTTPError(statusCode int, body []byte) error {
 		return fmt.Errorf("企业微信接口请求失败：HTTP %d，响应内容：%s", statusCode, strings.TrimSpace(string(body)))
 	}
 	message := firstNonEmpty(parsed.ErrMsg, strings.TrimSpace(string(body)))
+	detail := ""
 	if parsed.ErrCode == 48002 {
-		return fmt.Errorf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。当前 Secret 无权调用本次同步所需的通讯录接口。请在企业微信管理后台确认 DSMPASS 使用的 Secret 具备读取通讯录/读取成员接口权限，并确认自建应用可见范围包含要同步的成员或部门。", statusCode, parsed.ErrCode, message)
+		detail = fmt.Sprintf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。当前 Secret 无权调用本次同步所需的通讯录接口。请在企业微信管理后台确认 DSMPASS 使用的 Secret 具备读取通讯录/读取成员接口权限，并确认自建应用可见范围包含要同步的成员或部门。", statusCode, parsed.ErrCode, message)
+	} else if parsed.ErrCode == 60020 {
+		detail = fmt.Sprintf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。请确认 DSMPASS 后端公网出口 IP 已加入企业微信应用的可信 IP，并检查 CorpID/Secret。", statusCode, parsed.ErrCode, message)
+	} else if parsed.ErrCode != 0 {
+		detail = fmt.Sprintf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。请检查 CorpID、AgentID、Secret、可信 IP、可信域名和应用可见范围。", statusCode, parsed.ErrCode, message)
+	} else {
+		detail = fmt.Sprintf("企业微信接口请求失败：HTTP %d，%s", statusCode, message)
 	}
-	if parsed.ErrCode == 60020 {
-		return fmt.Errorf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。请确认 DSMPASS 后端公网出口 IP 已加入企业微信应用的可信 IP，并检查 CorpID/Secret。", statusCode, parsed.ErrCode, message)
+	return &weComResponseError{errCode: parsed.ErrCode, detail: detail}
+}
+
+func weComDirectorySyncError(operation string, err error) error {
+	prefix := fmt.Sprintf("企业微信%s失败，已中止同步", operation)
+	var responseErr *weComResponseError
+	if errors.As(err, &responseErr) && (responseErr.errCode == 60011 || responseErr.errCode == 48002) {
+		return fmt.Errorf("%s。请到企业微信管理后台重新设置自建应用可见范围，确保包含需要同步的用户及其所属部门，并确认当前 Secret 具备读取通讯录部门和成员的权限：%w", prefix, err)
 	}
-	if parsed.ErrCode != 0 {
-		return fmt.Errorf("企业微信接口请求失败：HTTP %d，错误码：%d，%s。请检查 CorpID、AgentID、Secret、可信 IP、可信域名和应用可见范围。", statusCode, parsed.ErrCode, message)
-	}
-	return fmt.Errorf("企业微信接口请求失败：HTTP %d，%s", statusCode, message)
+	return fmt.Errorf("%s：%w", prefix, err)
 }
 
 func weComUserSubject(raw map[string]any) (string, string) {

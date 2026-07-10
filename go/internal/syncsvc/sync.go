@@ -3,6 +3,7 @@ package syncsvc
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -58,6 +59,10 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
+	if err := validateDirectorySnapshot(providerName, users, groups); err != nil {
+		return result, err
+	}
+	inactiveUserOnlyDirectory := len(users) > 0 && len(groups) == 0
 	e.report("写入用户映射", 0, len(users), "正在写入用户映射")
 	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
 	for index, user := range users {
@@ -126,16 +131,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		})
 		e.report("写入用户映射", index+1, len(users), user.DisplayName)
 	}
-	if len(users) == 0 && len(groups) == 0 {
-		return result, emptyDirectoryError(providerName)
-	}
-	userOnlyDirectory := len(users) > 0 && len(groups) == 0
-	if userOnlyDirectory {
+	if inactiveUserOnlyDirectory {
 		result.Items = append(result.Items, PlanItem{
 			Action:          "directory_warning",
 			ProviderSlug:    directory.Slug(),
 			Subject:         directory.Slug(),
-			DisplayName:     userOnlyDirectoryWarning(providerName),
+			DisplayName:     inactiveUserOnlyDirectoryWarning(providerName),
 			ProvisionStatus: "warning",
 		})
 	}
@@ -241,7 +242,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	}
 	if e.options.DeactivateMissingData {
 		mappingTypes := []string{}
-		if userOnlyDirectory {
+		if inactiveUserOnlyDirectory {
 			mappingTypes = []string{"user"}
 		}
 		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart, mappingTypes...); err != nil {
@@ -299,17 +300,69 @@ func providerDisplayName(directory provider.Directory) string {
 }
 
 func emptyDirectoryError(providerName string) error {
-	if providerName == "企业微信" {
-		return fmt.Errorf("%s通讯录没有返回任何部门或用户。请确认企业微信自建应用的可见范围包含至少一个有成员的部门；如果只在可见范围里单独指定成员，当前通讯录同步无法通过部门接口读取这些成员。还需确认应用具备读取通讯录的接口权限", providerName)
-	}
-	return fmt.Errorf("%s通讯录没有返回任何用户或部门，请检查应用可见范围、通讯录权限和同步配置", providerName)
+	return fmt.Errorf("%s通讯录没有返回任何用户或部门。请检查应用可见范围、通讯录权限和同步配置后重新同步", providerName)
 }
 
-func userOnlyDirectoryWarning(providerName string) string {
-	if providerName == "企业微信" {
-		return "企业微信通讯录没有返回部门，但通过成员 ID 列表读取到用户；已同步用户，不会创建 DSM 部门组或部门成员关系。如需同步部门组，请在企业微信自建应用可见范围加入至少一个有成员的部门"
+func validateDirectorySnapshot(providerName string, users []provider.User, groups []provider.Group) error {
+	if len(users) == 0 && len(groups) == 0 {
+		return emptyDirectoryError(providerName)
 	}
-	return fmt.Sprintf("%s通讯录只返回用户，没有返回部门；已同步用户，不会创建 DSM 部门组或部门成员关系", providerName)
+
+	groupSubjects := make(map[string]bool, len(groups))
+	for _, group := range groups {
+		if subject := strings.TrimSpace(group.Subject); subject != "" {
+			groupSubjects[subject] = true
+		}
+	}
+
+	invalidUsers := make([]string, 0)
+	for _, user := range users {
+		// Inactive users must still be synchronized so a departed user cannot retain login access.
+		if !user.Active || userHasVisibleDepartment(user, groupSubjects) {
+			continue
+		}
+		invalidUsers = append(invalidUsers, directoryUserLabel(user))
+	}
+	if len(invalidUsers) == 0 {
+		return nil
+	}
+
+	sort.Strings(invalidUsers)
+	const sampleLimit = 5
+	sample := invalidUsers
+	if len(sample) > sampleLimit {
+		sample = sample[:sampleLimit]
+	}
+	detail := strings.Join(sample, "、")
+	if len(invalidUsers) > sampleLimit {
+		detail += fmt.Sprintf(" 等 %d 人", len(invalidUsers))
+	}
+	return fmt.Errorf("%s通讯录校验失败：%d 个启用用户没有至少一个当前应用可见的所属部门（用户未设置部门，或所属部门不在应用可见范围内）：%s。请到%s管理后台检查这些用户：未设置部门的请重新设置部门；已有部门的请确保至少一个所属部门已加入应用可见范围，并开放相应通讯录权限，然后重新同步", providerName, len(invalidUsers), detail, providerName)
+}
+
+func userHasVisibleDepartment(user provider.User, groupSubjects map[string]bool) bool {
+	for _, departmentSubject := range user.DepartmentSubjects {
+		if groupSubjects[strings.TrimSpace(departmentSubject)] {
+			return true
+		}
+	}
+	return false
+}
+
+func directoryUserLabel(user provider.User) string {
+	displayName := strings.TrimSpace(user.DisplayName)
+	subject := strings.TrimSpace(user.Subject)
+	if displayName == "" || displayName == subject {
+		return subject
+	}
+	if subject == "" {
+		return displayName
+	}
+	return fmt.Sprintf("%s（%s）", displayName, subject)
+}
+
+func inactiveUserOnlyDirectoryWarning(providerName string) string {
+	return fmt.Sprintf("%s通讯录只返回停用用户，没有返回部门；已同步用户停用状态，并保留现有部门和成员关系", providerName)
 }
 
 func (e *Engine) report(phase string, current, total int, message string) {
