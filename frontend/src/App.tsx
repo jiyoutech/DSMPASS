@@ -1703,13 +1703,6 @@ function SourceDetail({
     )) {
       return;
     }
-    const unchangedRecords = records.filter((record) => (
-      (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim().toLowerCase() === record.dsm_groupname.trim().toLowerCase()
-    ));
-    if (unchangedRecords.length > 0) {
-      message.error("请先修改所有冲突部门的 DSM 部门组名");
-      return;
-    }
     setSavingConflictKey(batchKey);
     try {
       for (const record of records) {

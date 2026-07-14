@@ -410,8 +410,8 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名包含不支持的字符，请直接填写最终 DSM 部门组名"})
 		return
 	}
-	var currentGroupnameNorm, currentStatus string
-	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT dsm_groupname_norm, provision_status FROM dsm_groups WHERE id = ?`, id).Scan(&currentGroupnameNorm, &currentStatus)
+	var currentID string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE id = ?`, id).Scan(&currentID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "group not found"})
 		return
@@ -421,10 +421,6 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 		return
 	}
 	groupNorm := identity.Normalize(groupname)
-	if currentStatus == "conflict" && currentGroupnameNorm == groupNorm {
-		c.JSON(http.StatusConflict, gin.H{"detail": "部门冲突必须修改 DSM 部门组名后才能保存"})
-		return
-	}
 	var existingID string
 	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE dsm_groupname_norm = ? AND id <> ?`, groupNorm, id).Scan(&existingID)
 	if err == nil {

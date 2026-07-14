@@ -2560,14 +2560,6 @@ VALUES
 	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
 
-	unchanged := httptest.NewRecorder()
-	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"matrix_sup1_sup2_sup5"}`))
-	unchangedRequest.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(unchanged, unchangedRequest)
-	if unchanged.Code != http.StatusConflict {
-		t.Fatalf("unchanged conflict group name got %d body=%s", unchanged.Code, unchanged.Body.String())
-	}
-
 	duplicate := httptest.NewRecorder()
 	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
 	duplicateRequest.Header.Set("Content-Type", "application/json")
@@ -2583,6 +2575,13 @@ VALUES
 	if response.Code != http.StatusOK {
 		t.Fatalf("resolve group got %d body=%s", response.Code, response.Body.String())
 	}
+	unchanged := httptest.NewRecorder()
+	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-b/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
+	unchangedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(unchanged, unchangedRequest)
+	if unchanged.Code != http.StatusOK {
+		t.Fatalf("confirm unchanged conflict group name got %d body=%s", unchanged.Code, unchanged.Body.String())
+	}
 	var managed int
 	var status, conflictReason string
 	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-a'`).Scan(&managed, &status, &conflictReason); err != nil {
@@ -2590,6 +2589,12 @@ VALUES
 	}
 	if managed != 0 || status != "pending" || conflictReason != "" {
 		t.Fatalf("group conflict not resolved: managed=%d status=%s reason=%q", managed, status, conflictReason)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-b'`).Scan(&managed, &status, &conflictReason); err != nil {
+		t.Fatal(err)
+	}
+	if managed != 0 || status != "pending" || conflictReason != "" {
+		t.Fatalf("unchanged group conflict not confirmed: managed=%d status=%s reason=%q", managed, status, conflictReason)
 	}
 	var linkCount, memberCount int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_links WHERE id = 'link-a' AND provider_group_id = 'provider-group-a' AND dsm_group_id = 'group-a'`).Scan(&linkCount); err != nil {
