@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -422,7 +423,7 @@ func browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath string
 	}
 }
 
-func TestRestoreIfCurrentMatchesRewritesShadowWithoutSedPatterns(t *testing.T) {
+func TestRestoreIfCurrentMatchesAtomicallyReplacesShadowWithoutSedPatterns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shadow")
 	original := "alice:$y$j9T$abc#def&ghi\\jkl:19000:0:99999:7:::"
 	temp := "alice:$y$j9T$temp#def&ghi\\jkl:19000:0:99999:7:::"
@@ -449,8 +450,405 @@ func TestRestoreIfCurrentMatchesRewritesShadowWithoutSedPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !os.SameFile(before, after) {
-		t.Fatalf("shadow restore changed inode: before=%#v after=%#v", before, after)
+	if os.SameFile(before, after) {
+		t.Fatalf("shadow restore did not atomically replace inode: before=%#v after=%#v", before, after)
+	}
+	if before.Mode().Perm() != after.Mode().Perm() {
+		t.Fatalf("shadow permissions changed: before=%v after=%v", before.Mode().Perm(), after.Mode().Perm())
+	}
+}
+
+func TestRestoreIfCurrentMatchesRejectsDuplicateUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shadow")
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	original := "alice:$original:19000:0:99999:7:::"
+	content := temporary + "\n" + temporary + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreIfCurrentMatches(path, "alice", original, temporary); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("expected duplicate-user rejection, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Fatalf("shadow changed after duplicate rejection: %q", string(data))
+	}
+}
+
+func TestRewriteShadowAtomicallyRejectsStaleSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shadow")
+	current := []byte("alice:$current:19000:0:99999:7:::\n")
+	if err := os.WriteFile(path, current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := rewriteShadowAtomically(path, []byte("stale\n"), []byte("replacement\n"))
+	if !errors.Is(err, errShadowChanged) {
+		t.Fatalf("expected stale snapshot error, got %v", err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != string(current) {
+		t.Fatalf("shadow changed after stale snapshot: %q", string(data))
+	}
+}
+
+func TestRestorePendingJournalPreservesExternalPasswordChange(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	changed := "alice:$changed-by-user:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(changed+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.HelperConfig{
+		HMACSecret:     "journal-secret",
+		JournalDir:     journalDir,
+		LockDir:        lockDir,
+		ShadowLockPath: filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:     shadowPath,
+	}
+	j := journal{
+		RequestID:        "request-external-change",
+		DSMUsername:      "alice",
+		Status:           journalStatusActiveBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     "temporary-password",
+		TempLineHash:     lineHash(temporary),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePendingJournal(cfg, j.RequestID, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != changed {
+		t.Fatalf("external password change was overwritten: %q", line)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != journalStatusSuperseded {
+		t.Fatalf("journal status got %q want %q", stored.Status, journalStatusSuperseded)
+	}
+	if stored.TempPasswordEncrypted != "" || stored.TempPasswordNonce != "" {
+		t.Fatalf("superseded journal retained temporary password material: %#v", stored)
+	}
+	if _, found, err := browserLeaseForUser(cfg, "alice"); err != nil || found {
+		t.Fatalf("superseded lease still blocked new login: found=%v err=%v", found, err)
+	}
+}
+
+func TestRelayLoginPreservesPasswordChangedBeforeRestore(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	synouserPath := filepath.Join(dir, "synouser")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	changed := "alice:$changed-before-restore:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(original+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' '" + temporary + "' > '" + shadowPath + "'\n"
+	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("api") == "SYNO.API.Auth" {
+			if err := os.WriteFile(shadowPath, []byte(changed+"\n"), 0o600); err != nil {
+				http.Error(w, "failed to simulate external password change", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":true,"data":{"sid":"relay-session"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"isLogined" : true}`))
+	}))
+	defer auth.Close()
+	cfg := config.HelperConfig{
+		HMACSecret:         "journal-secret",
+		JournalDir:         journalDir,
+		LockDir:            lockDir,
+		ShadowLockPath:     filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:         shadowPath,
+		SynoUserPath:       synouserPath,
+		TempPasswordLength: 32,
+		DSMLoginAPI:        auth.URL,
+		DSMSession:         "webui",
+		DSMTimeoutSeconds:  2,
+	}
+	if _, err := relayLoginReal(cfg, "relay-external-change", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != changed {
+		t.Fatalf("external password change was overwritten: %q", line)
+	}
+	stored, err := loadJournal(cfg, "relay-external-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != journalStatusSuperseded {
+		t.Fatalf("journal status got %q want %q", stored.Status, journalStatusSuperseded)
+	}
+}
+
+func TestRestorePendingJournalVerifiesTempPasswordWhenHashWasNotSaved(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary-after-setpw:19000:0:99999:7:::"
+	tempPassword := "known-temporary-password"
+	if err := os.WriteFile(shadowPath, []byte(temporary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("account") != "alice" || r.URL.Query().Get("passwd") != tempPassword {
+			http.Error(w, "unexpected recovery credentials", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{"sid":"recovery-session"}}`))
+	}))
+	defer auth.Close()
+	cfg := config.HelperConfig{
+		HMACSecret:        "journal-secret",
+		JournalDir:        journalDir,
+		LockDir:           lockDir,
+		ShadowLockPath:    filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:        shadowPath,
+		DSMLoginAPI:       auth.URL,
+		DSMSession:        "webui",
+		DSMTimeoutSeconds: 2,
+	}
+	j := journal{
+		RequestID:        "request-interrupted-after-setpw",
+		DSMUsername:      "alice",
+		Status:           journalStatusPendingBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     tempPassword,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePendingJournal(cfg, j.RequestID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != original {
+		t.Fatalf("interrupted temporary password was not restored: %q", line)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "restored" {
+		t.Fatalf("journal status got %q want restored", stored.Status)
+	}
+}
+
+func TestRestorePendingJournalPreservesPasswordChangedDuringVerification(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary-after-setpw:19000:0:99999:7:::"
+	changed := "alice:$changed-during-verification:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(temporary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := os.WriteFile(shadowPath, []byte(changed+"\n"), 0o600); err != nil {
+			http.Error(w, "failed to simulate external password change", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{"sid":"recovery-session"}}`))
+	}))
+	defer auth.Close()
+	cfg := config.HelperConfig{
+		HMACSecret:        "journal-secret",
+		JournalDir:        journalDir,
+		LockDir:           lockDir,
+		ShadowLockPath:    filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:        shadowPath,
+		DSMLoginAPI:       auth.URL,
+		DSMSession:        "webui",
+		DSMTimeoutSeconds: 2,
+	}
+	j := journal{
+		RequestID:        "request-change-during-verification",
+		DSMUsername:      "alice",
+		Status:           journalStatusPendingBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     "temporary-password",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePendingJournal(cfg, j.RequestID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != changed {
+		t.Fatalf("password changed during verification was overwritten: %q", line)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != journalStatusSuperseded {
+		t.Fatalf("journal status got %q want %q", stored.Status, journalStatusSuperseded)
+	}
+}
+
+func TestRestorePendingJournalFailsClosedWhenTempPasswordCannotBeVerified(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	unknown := "alice:$unknown-current-password:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(unknown+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false,"error":{"code":400}}`))
+	}))
+	defer auth.Close()
+	cfg := config.HelperConfig{
+		HMACSecret:        "journal-secret",
+		JournalDir:        journalDir,
+		LockDir:           lockDir,
+		ShadowLockPath:    filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:        shadowPath,
+		DSMLoginAPI:       auth.URL,
+		DSMSession:        "webui",
+		DSMTimeoutSeconds: 2,
+	}
+	j := journal{
+		RequestID:        "request-unresolved",
+		DSMUsername:      "alice",
+		Status:           journalStatusPendingBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     "temporary-password",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePendingJournal(cfg, j.RequestID, "startup"); !errors.Is(err, errBrowserLoginUnresolved) {
+		t.Fatalf("expected unresolved recovery, got %v", err)
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != unknown {
+		t.Fatalf("unverified current password was overwritten: %q", line)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != journalStatusUnresolvedBrowser {
+		t.Fatalf("journal status got %q want %q", stored.Status, journalStatusUnresolvedBrowser)
+	}
+	if _, found, err := browserLeaseForUser(cfg, "alice"); err != nil || !found {
+		t.Fatalf("unresolved lease did not block new login: found=%v err=%v", found, err)
+	}
+}
+
+func TestRestorePendingJournalResolvesLegacyFailedJournalAlreadyRestored(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(original+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.HelperConfig{
+		HMACSecret:     "journal-secret",
+		JournalDir:     journalDir,
+		LockDir:        lockDir,
+		ShadowLockPath: filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:     shadowPath,
+	}
+	j := journal{
+		RequestID:        "legacy-failed-request",
+		DSMUsername:      "alice",
+		Status:           "failed",
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePendingJournal(cfg, j.RequestID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "restored" {
+		t.Fatalf("legacy journal status got %q want restored", stored.Status)
+	}
+}
+
+func TestRewriteShadowAtomicallyRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real-shadow")
+	linkPath := filepath.Join(dir, "shadow")
+	content := []byte("alice:$current:19000:0:99999:7:::\n")
+	if err := os.WriteFile(realPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteShadowAtomically(linkPath, content, []byte("replacement\n")); err == nil {
+		t.Fatal("expected symlink replacement to be rejected")
+	}
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("symlink target changed: %q", string(data))
 	}
 }
 

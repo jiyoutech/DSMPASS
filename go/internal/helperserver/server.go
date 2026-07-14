@@ -52,6 +52,9 @@ func (s *Server) Serve() error {
 		log.Printf("DSM Pass helper hmac secret generated and persisted")
 	}
 	startupCfg := settings.ApplyHelperRuntime(context.Background(), s.cfg, s.store)
+	if err := recoverPending(startupCfg); err != nil {
+		log.Printf("DSM Pass helper password recovery incomplete: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(startupCfg.SocketPath), 0o700); err != nil {
 		return err
 	}
@@ -66,7 +69,6 @@ func (s *Server) Serve() error {
 	if err := setSocketPermissions(startupCfg.SocketPath); err != nil {
 		return err
 	}
-	recoverPending(startupCfg)
 	log.Printf("DSM Pass helper listening on %s", startupCfg.SocketPath)
 	for {
 		conn, err := listener.Accept()
