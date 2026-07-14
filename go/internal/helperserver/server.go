@@ -171,6 +171,12 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		result, err := relayLoginReal(cfg, requestID, username)
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.error_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "error": err.Error()})
+			if errors.Is(err, errBrowserLoginInProgress) {
+				return errorResponse("DSM_LOGIN_ALREADY_IN_PROGRESS", err.Error())
+			}
+			if errors.Is(err, errBrowserLoginUnresolved) {
+				return errorResponse("DSM_LOGIN_RECOVERY_REQUIRED", err.Error())
+			}
 			return errorResponse("RELAY_LOGIN_FAILED", err.Error())
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "sid": result.SID, "cookies": result.Cookies})
@@ -192,6 +198,12 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		result, err := prepareBrowserLogin(cfg, requestID, username)
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.error_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "error": err.Error()})
+			if errors.Is(err, errBrowserLoginInProgress) {
+				return errorResponse("DSM_LOGIN_ALREADY_IN_PROGRESS", err.Error())
+			}
+			if errors.Is(err, errBrowserLoginUnresolved) {
+				return errorResponse("DSM_LOGIN_RECOVERY_REQUIRED", err.Error())
+			}
 			return errorResponse("PREPARE_BROWSER_LOGIN_FAILED", err.Error())
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "expires_at": result.ExpiresAt, "ttl_seconds": result.TTLSeconds})

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +202,223 @@ func TestSaveJournalEncryptsOriginalShadowLine(t *testing.T) {
 	}
 	if decrypted != original {
 		t.Fatalf("decrypted original line got %q want %q", decrypted, original)
+	}
+}
+
+func TestPrepareBrowserLoginRejectsConcurrentRequestForSameUser(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	countPath := filepath.Join(dir, "setpw-count")
+	synouserPath := filepath.Join(dir, "synouser")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(original+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf x >> '" + countPath + "'\nprintf '%s\\n' '" + temporary + "' > '" + shadowPath + "'\n"
+	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath)
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, requestID := range []string{"request-a", "request-b"} {
+		requestID := requestID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := prepareBrowserLogin(cfg, requestID, "alice")
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	succeeded := 0
+	rejected := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, errBrowserLoginInProgress):
+			rejected++
+		default:
+			t.Fatalf("unexpected prepare error: %v", err)
+		}
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("concurrent prepare results success=%d rejected=%d", succeeded, rejected)
+	}
+	count, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "x" {
+		t.Fatalf("synouser called %d times, content=%q", len(count), string(count))
+	}
+}
+
+func TestPrepareBrowserLoginIsIdempotentForSameRequest(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	countPath := filepath.Join(dir, "setpw-count")
+	synouserPath := filepath.Join(dir, "synouser")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(original+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf x >> '" + countPath + "'\nprintf '%s\\n' '" + temporary + "' > '" + shadowPath + "'\n"
+	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath)
+
+	first, err := prepareBrowserLogin(cfg, "request-idempotent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepareBrowserLogin(cfg, "request-idempotent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Username != second.Username || first.TempPassword != second.TempPassword || first.ExpiresAt != second.ExpiresAt {
+		t.Fatalf("idempotent result changed: first=%#v second=%#v", first, second)
+	}
+	count, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "x" {
+		t.Fatalf("synouser called %d times, content=%q", len(count), string(count))
+	}
+	data, err := os.ReadFile(filepath.Join(journalDir, "request-idempotent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), first.TempPassword) || strings.Contains(string(data), `"temp_password"`) {
+		t.Fatalf("journal leaked temporary password: %s", string(data))
+	}
+}
+
+func TestRelayLoginRejectsActiveBrowserLeaseForSameUser(t *testing.T) {
+	dir := t.TempDir()
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	cfg := config.HelperConfig{
+		HMACSecret:     "journal-secret",
+		JournalDir:     journalDir,
+		LockDir:        lockDir,
+		ShadowLockPath: filepath.Join(lockDir, "shadow.lock"),
+	}
+	original := "alice:$original:19000:0:99999:7:::"
+	j := journal{
+		RequestID:        "browser-request",
+		DSMUsername:      "alice",
+		Status:           journalStatusActiveBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     "temporary-password",
+		TempLineHash:     lineHash("alice:$temporary:19000:0:99999:7:::"),
+		ExpiresAt:        time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := relayLoginReal(cfg, "relay-request", "alice"); !errors.Is(err, errBrowserLoginInProgress) {
+		t.Fatalf("expected relay login to be blocked, got %v", err)
+	}
+}
+
+func TestRestorePendingJournalIsIdempotentUnderConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	original := "alice:$original:19000:0:99999:7:::"
+	temporary := "alice:$temporary:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(temporary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.HelperConfig{
+		HMACSecret:     "journal-secret",
+		JournalDir:     journalDir,
+		LockDir:        lockDir,
+		ShadowLockPath: filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:     shadowPath,
+	}
+	j := journal{
+		RequestID:        "request-restore",
+		DSMUsername:      "alice",
+		Status:           journalStatusActiveBrowser,
+		OriginalLine:     original,
+		OriginalLineHash: lineHash(original),
+		TempPassword:     "temporary-password",
+		TempLineHash:     lineHash(temporary),
+		ExpiresAt:        time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := saveJournal(cfg, j); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- restorePendingJournal(cfg, j.RequestID, "test")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent restore failed: %v", err)
+		}
+	}
+	line, err := shadowLine(shadowPath, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != original {
+		t.Fatalf("shadow line got %q want %q", line, original)
+	}
+	stored, err := loadJournal(cfg, j.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "restored" {
+		t.Fatalf("journal status got %q want restored", stored.Status)
+	}
+	if stored.TempPassword != "" || stored.TempPasswordEncrypted != "" || stored.TempPasswordNonce != "" {
+		t.Fatalf("restored journal retained temporary password material: %#v", stored)
+	}
+}
+
+func browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath string) config.HelperConfig {
+	return config.HelperConfig{
+		HMACSecret:                "journal-secret",
+		JournalDir:                journalDir,
+		LockDir:                   lockDir,
+		ShadowLockPath:            filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:                shadowPath,
+		SynoUserPath:              synouserPath,
+		TempPasswordLength:        32,
+		DSMBrowserLoginTTLSeconds: 3600,
 	}
 }
 
