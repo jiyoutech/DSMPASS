@@ -6,7 +6,7 @@
 
 DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把企业身份源、OAuth 登录、通讯录同步和 DSM 本地账号体系连接起来，让用户可以使用企业身份进入 DSM。
 
-当前主线实现为 **Go 后端 + Go DSM Helper + React 管理后台**，优先支持飞书企业自建应用。
+当前主线实现为 **Go 后端 + Go DSM Helper + React 管理后台**，支持飞书、企业微信和钉钉企业自建应用。公开 SPK 是不含 OIDC 的传统登录版，每套安装同时只允许配置一个身份源。
 
 > 项目仍处于 pre-1.0 阶段。DSM 登录中继、临时密码、Cookie 写入和 Helper 提权都属于高风险系统集成能力。生产使用前，请先在测试 NAS 上完整验证安装、升级、卸载、端口映射、登录和恢复流程。
 
@@ -28,8 +28,9 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把企业身份
 
 | 能力 | 状态 |
 | --- | --- |
-| 飞书 OAuth 登录 DSM | 已支持 |
-| 飞书通讯录用户、部门、成员同步 | 已支持 |
+| 飞书 OAuth 登录和通讯录同步 | 已支持 |
+| 企业微信 OAuth 登录和通讯录同步 | 已支持 |
+| 钉钉 OAuth 登录和通讯录同步 | 已支持 |
 | DSM 用户、部门组和成员关系自动开通 | 已支持 |
 | 用户级禁止登录 | 已支持 |
 | 身份源级登录和同步开关 | 已支持 |
@@ -52,7 +53,7 @@ Browser
       -> DSM Helper
         -> synouser / synogroup / DSM Auth API
 
-Feishu OAuth
+Feishu / WeCom / DingTalk OAuth
   -> DSM Pass IDP endpoint
     -> DSM login relay
 ```
@@ -97,12 +98,16 @@ Feishu OAuth
 
 ### 下载 SPK
 
+当前公开版本为 [`v0.8.45`](https://github.com/jiyoutech/DSMPASS/releases/tag/v0.8.45)。这是不含 OIDC 的传统登录版，飞书、企业微信和钉钉三种身份源可以任选其一；同一套安装不能同时创建多个身份源。
+
 获取与 NAS 架构匹配的安装包：
 
 | NAS 架构 | 文件 |
 | --- | --- |
-| Intel / AMD | `DSMPASS-<version>-linux-amd64.spk` |
-| ARMv8 / aarch64 | `DSMPASS-<version>-linux-arm64.spk` |
+| Intel / AMD | [`DSMPASS-0.8.45-linux-amd64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/DSMPASS-0.8.45-linux-amd64.spk) |
+| ARMv8 / aarch64 | [`DSMPASS-0.8.45-linux-arm64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/DSMPASS-0.8.45-linux-arm64.spk) |
+
+下载后可使用 Release 中的 [`SHA256SUMS`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/SHA256SUMS) 校验文件完整性。后续版本请以 [GitHub Releases](https://github.com/jiyoutech/DSMPASS/releases) 页面为准。
 
 ### 手动安装
 
@@ -179,6 +184,8 @@ DSM Pass 后端默认不以 root 权限运行。创建 DSM 用户、部门组、
    ![初始化系统设置](media/17795482410730/17799556832943.jpg)
 
 ## 配置飞书身份源
+
+下面以飞书企业自建应用为完整配置示例。使用企业微信或钉钉时，在管理后台选择对应的身份源类型，并根据表单提示填写平台应用凭证。
 
 ### 创建企业自建应用
 
@@ -391,7 +398,7 @@ GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" go test ./...
 
 ## 安全与公开发布
 
-- 不要提交真实飞书应用密钥、OAuth token、DSM SID、Cookie、临时密码、生产证书私钥、日志或数据库。
+- 不要提交真实身份源应用密钥、OAuth token、DSM SID、Cookie、临时密码、生产证书私钥、日志或数据库。
 - README 截图发布前需要人工确认已移除组织名、真实域名、真实用户信息和敏感配置。
 - 生产环境建议使用可信 HTTPS 证书，并限制管理后台访问范围。
 - 发现安全问题时，请先私下联系维护者，不要在公开 issue 中披露可利用细节。
