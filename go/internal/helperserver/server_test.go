@@ -612,6 +612,124 @@ func TestRelayLoginPreservesPasswordChangedBeforeRestore(t *testing.T) {
 	}
 }
 
+func TestRelayLoginAllowsDifferentUsersToAuthenticateConcurrently(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	journalDir := filepath.Join(dir, "journal")
+	lockDir := filepath.Join(dir, "locks")
+	synouserPath := filepath.Join(dir, "synouser")
+	synouserTempPath := filepath.Join(dir, "shadow-synouser-temp")
+	aliceOriginal := "alice:$alice-original:19000:0:99999:7:::"
+	bobOriginal := "bob:$bob-original:19000:0:99999:7:::"
+	aliceTemporary := "alice:$alice-temporary:19000:0:99999:7:::"
+	bobTemporary := "bob:$bob-temporary:19000:0:99999:7:::"
+	if err := os.WriteFile(shadowPath, []byte(aliceOriginal+"\n"+bobOriginal+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"username=\"$2\"\n" +
+		"case \"$username\" in\n" +
+		"  alice) replacement='" + aliceTemporary + "' ;;\n" +
+		"  bob) replacement='" + bobTemporary + "' ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n" +
+		"awk -F: -v username=\"$username\" -v replacement=\"$replacement\" '$1 == username { print replacement; next } { print }' '" + shadowPath + "' > '" + synouserTempPath + "'\n" +
+		"chmod 600 '" + synouserTempPath + "'\n" +
+		"mv '" + synouserTempPath + "' '" + shadowPath + "'\n"
+	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	authArrivals := make(chan string, 2)
+	releaseAuth := make(chan struct{})
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("api") != "SYNO.API.Auth" {
+			_, _ = w.Write([]byte(`{"isLogined" : true}`))
+			return
+		}
+		account := r.URL.Query().Get("account")
+		authArrivals <- account
+		<-releaseAuth
+		_, _ = w.Write([]byte(`{"success":true,"data":{"sid":"relay-session-` + account + `"}}`))
+	}))
+	defer auth.Close()
+	cfg := config.HelperConfig{
+		HMACSecret:         "journal-secret",
+		JournalDir:         journalDir,
+		LockDir:            lockDir,
+		ShadowLockPath:     filepath.Join(lockDir, "shadow.lock"),
+		ShadowPath:         shadowPath,
+		SynoUserPath:       synouserPath,
+		TempPasswordLength: 32,
+		DSMLoginAPI:        auth.URL,
+		DSMSession:         "webui",
+		DSMTimeoutSeconds:  2,
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, username := range []string{"alice", "bob"} {
+		username := username
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := relayLoginReal(cfg, "relay-"+username, username)
+			errs <- err
+		}()
+	}
+	close(start)
+
+	seen := map[string]bool{}
+	overlapped := true
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+
+waitForAuthentication:
+	for len(seen) < 2 {
+		select {
+		case username := <-authArrivals:
+			seen[username] = true
+		case <-timer.C:
+			overlapped = false
+			break waitForAuthentication
+		}
+	}
+	close(releaseAuth)
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("parallel relay login failed: %v", err)
+		}
+	}
+	if !overlapped {
+		t.Fatal("different users did not reach DSM authentication concurrently")
+	}
+	if !seen["alice"] || !seen["bob"] {
+		t.Fatalf("unexpected DSM authentication arrivals: %#v", seen)
+	}
+	data, err := os.ReadFile(shadowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := aliceOriginal + "\n" + bobOriginal + "\n"
+	if string(data) != want {
+		t.Fatalf("shadow content got %q want %q", string(data), want)
+	}
+	for _, requestID := range []string{"relay-alice", "relay-bob"} {
+		stored, err := loadJournal(cfg, requestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != "restored" {
+			t.Fatalf("journal %s status got %q want restored", requestID, stored.Status)
+		}
+	}
+}
+
 func TestRestorePendingJournalVerifiesTempPasswordWhenHashWasNotSaved(t *testing.T) {
 	dir := t.TempDir()
 	shadowPath := filepath.Join(dir, "shadow")
