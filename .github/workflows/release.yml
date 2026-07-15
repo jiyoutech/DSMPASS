@@ -30,7 +30,7 @@ jobs:
       - name: Build SPK
         run: |
           version="${GITHUB_REF_NAME#v}"
-          DSMPASS_VERSION="$version" make package-spk
+          DSMPASS_VERSION="$version" DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES=0 make package-spk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
