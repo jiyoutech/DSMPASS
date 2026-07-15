@@ -10,6 +10,14 @@
 DSMPASS_VERSION=0.8.27 make package-spk
 ```
 
+默认允许创建多个身份源。需要发行仅允许一个身份源的 SPK 时，在打包命令中关闭该能力：
+
+```bash
+DSMPASS_VERSION=0.8.27 DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES=0 make package-spk
+```
+
+`DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES` 支持 `1`、`0`、`true`、`false`，默认值为 `1`。该值会固化进 SPK 后端二进制，安装后不能通过 `dsmpass.env` 修改。关闭后允许创建第一个身份源；已有身份源时再次创建会返回冲突。升级到关闭该能力的 SPK 不会删除或停用已有身份源，只会阻止继续新建。
+
 产物输出到：
 
 ```text

@@ -321,7 +321,7 @@ func (s *Server) configuredAccessScheme() string {
 
 func (s *Server) persistPublicBaseURLPolicy(ctx context.Context) error {
 	scheme := s.configuredAccessScheme()
-	normalized := normalizeURLScheme(normalizePublicBaseURL(s.cfg.PublicBaseURL, scheme), scheme)
+	normalized := normalizePublicBaseURL(s.cfg.PublicBaseURL, scheme)
 	if normalized == "" || normalized == s.cfg.PublicBaseURL {
 		return nil
 	}

@@ -20,7 +20,10 @@ const statusLabels: Record<string, string> = {
   member: "成员",
   reachable: "可连接",
   unreachable: "不可连接",
-  socket: "本地套接字"
+  socket: "本地套接字",
+  feishu: "飞书",
+  wecom: "企业微信",
+  dingtalk: "钉钉"
 };
 
 const actionLabels: Record<string, string> = {
@@ -44,7 +47,8 @@ const actionLabels: Record<string, string> = {
   ensure_group_member: "准备成员关系",
   update_external_account: "更新外部账号",
   update_provider_group: "更新部门",
-  resolve_group_conflicts: "处理部门冲突"
+  resolve_group_conflicts: "处理部门冲突",
+  directory_warning: "同步提示"
 };
 
 export function labelOf(value: unknown) {
@@ -57,9 +61,11 @@ export function statusTag(status: ProvisionStatus) {
     status === "created" || status === "linked_existing"
       ? "success"
       : status === "pending"
-        ? "processing"
-        : status === "conflict"
-          ? "error"
+      ? "processing"
+      : status === "conflict"
+        ? "error"
+        : status === "warning"
+          ? "warning"
           : "default";
   return <Tag color={color}>{labelOf(status)}</Tag>;
 }

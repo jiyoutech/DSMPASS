@@ -410,8 +410,8 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名包含不支持的字符，请直接填写最终 DSM 部门组名"})
 		return
 	}
-	var currentGroupnameNorm, currentStatus string
-	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT dsm_groupname_norm, provision_status FROM dsm_groups WHERE id = ?`, id).Scan(&currentGroupnameNorm, &currentStatus)
+	var currentID string
+	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE id = ?`, id).Scan(&currentID)
 	if err == sql.ErrNoRows {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "group not found"})
 		return
@@ -421,10 +421,6 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 		return
 	}
 	groupNorm := identity.Normalize(groupname)
-	if currentStatus == "conflict" && currentGroupnameNorm == groupNorm {
-		c.JSON(http.StatusConflict, gin.H{"detail": "部门冲突必须修改 DSM 部门组名后才能保存"})
-		return
-	}
 	var existingID string
 	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT id FROM dsm_groups WHERE dsm_groupname_norm = ? AND id <> ?`, groupNorm, id).Scan(&existingID)
 	if err == nil {
@@ -508,19 +504,7 @@ func (s *Server) ensureRealDSMProvisioning(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) initialPasswordForSource(ctx context.Context, sourceSlug string) string {
-	source, err := s.loadIdentitySource(ctx, sourceSlug)
-	if err != nil {
-		return defaultInitialPassword
-	}
-	password := strings.TrimSpace(decodeSourceConfig(source.ConfigJSON).InitialPassword)
-	if password == "" {
-		return defaultInitialPassword
-	}
-	return password
-}
-
-func (s *Server) initialPasswordForAccount(ctx context.Context, accountID string) string {
+func (s *Server) sourceSlugForAccount(ctx context.Context, accountID string) string {
 	var sourceSlug string
 	err := s.store.DBTX().QueryRowContext(ctx, `
 SELECT e.provider_slug
@@ -530,9 +514,12 @@ WHERE a.id = ?
 ORDER BY e.updated_at DESC
 LIMIT 1`, accountID).Scan(&sourceSlug)
 	if err != nil {
-		return defaultInitialPassword
+		return "manual"
 	}
-	return s.initialPasswordForSource(ctx, sourceSlug)
+	if strings.TrimSpace(sourceSlug) == "" {
+		return "manual"
+	}
+	return sourceSlug
 }
 
 func (s *Server) provisionDSMAccount(c *gin.Context) {
@@ -556,7 +543,13 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 		c.JSON(http.StatusConflict, gin.H{"detail": "账号存在冲突，请先由管理员修改 DSM 用户名"})
 		return
 	}
-	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(c.Request.Context(), id))
+	sourceSlug := s.sourceSlugForAccount(c.Request.Context(), id)
+	password, err := s.provisionUserInitialPassword(c.Request.Context(), sourceSlug)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	created, err := s.helper.ProvisionUser(c.Request.Context(), "provision_"+randomHex(8), username, displayName, email, password)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return

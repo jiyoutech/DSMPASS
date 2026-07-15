@@ -60,6 +60,10 @@ func (f Feishu) Slug() string {
 	return f.slug
 }
 
+func (f Feishu) ProviderDisplayName() string {
+	return "飞书"
+}
+
 func (f Feishu) BuildAuthorizeURL(state, redirectURI string) string {
 	values := url.Values{}
 	values.Set("client_id", f.cfg.FeishuClientID)
@@ -117,15 +121,39 @@ func (f Feishu) FetchProfile(token map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
+func (f Feishu) ProfileSubject(profile map[string]any) (string, string) {
+	return feishuUserSubject(profile)
+}
+
 func (f Feishu) ListUsers() ([]User, error) {
 	token, err := f.tenantToken()
 	if err != nil {
 		return nil, err
 	}
-	departments, err := f.ListGroups()
+	departments, err := f.listGroups(token)
 	if err != nil {
 		return nil, err
 	}
+	return f.listUsers(token, departments)
+}
+
+func (f Feishu) ListUsersAndGroups() ([]User, []Group, error) {
+	token, err := f.tenantToken()
+	if err != nil {
+		return nil, nil, err
+	}
+	departments, err := f.listGroups(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := f.listUsers(token, departments)
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, departments, nil
+}
+
+func (f Feishu) listUsers(token string, departments []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
 	for _, department := range departments {
 		items, err := f.departmentUsers(token, department.Subject)
@@ -181,6 +209,10 @@ func (f Feishu) ListGroups() ([]Group, error) {
 	if err != nil {
 		return nil, err
 	}
+	return f.listGroups(token)
+}
+
+func (f Feishu) listGroups(token string) ([]Group, error) {
 	roots, err := f.departmentChildren(token, "0")
 	if err != nil {
 		return nil, err
@@ -271,6 +303,7 @@ func (f Feishu) ListGroupMembers(groupSubject string) ([]string, error) {
 func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, error) {
 	var result []map[string]any
 	pageToken := ""
+	seenPageTokens := map[string]bool{}
 	for {
 		endpoint := fmt.Sprintf("%s/users/find_by_department?department_id=%s&page_size=%d&department_id_type=open_department_id&user_id_type=open_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.QueryEscape(departmentID), f.cfg.FeishuDirectoryPageSize)
 		if pageToken != "" {
@@ -292,6 +325,10 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 		if !hasMore || pageToken == "" {
 			break
 		}
+		if seenPageTokens[pageToken] {
+			return nil, errors.New("飞书部门用户分页游标重复，请稍后重试")
+		}
+		seenPageTokens[pageToken] = true
 	}
 	return result, nil
 }
@@ -299,6 +336,7 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any, error) {
 	var result []map[string]any
 	pageToken := ""
+	seenPageTokens := map[string]bool{}
 	for {
 		endpoint := fmt.Sprintf("%s/departments/%s/children?page_size=%d&department_id_type=open_department_id", strings.TrimRight(f.cfg.FeishuContactBaseURL, "/"), url.PathEscape(departmentID), f.cfg.FeishuDirectoryPageSize)
 		if pageToken != "" {
@@ -320,6 +358,10 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 		if !hasMore || pageToken == "" {
 			break
 		}
+		if seenPageTokens[pageToken] {
+			return nil, errors.New("飞书部门分页游标重复，请稍后重试")
+		}
+		seenPageTokens[pageToken] = true
 	}
 	return result, nil
 }

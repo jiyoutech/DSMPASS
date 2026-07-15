@@ -8,6 +8,19 @@ type RuntimeSetting struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type DeploymentSetting struct {
+	ID                int64  `json:"id"`
+	Mode              string `json:"mode"`
+	AccessHost        string `json:"access_host"`
+	AccessScheme      string `json:"access_scheme"`
+	IDPPort           int64  `json:"idp_port"`
+	PublicBaseURL     string `json:"public_base_url"`
+	DSMRedirectURL    string `json:"dsm_redirect_url"`
+	HelperDSMLoginAPI string `json:"helper_dsm_login_api"`
+	CreatedAt         string `json:"created_at"`
+	UpdatedAt         string `json:"updated_at"`
+}
+
 type IdentitySource struct {
 	Slug                 string `json:"slug"`
 	ProviderType         string `json:"provider_type"`

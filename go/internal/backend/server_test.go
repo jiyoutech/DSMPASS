@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -97,6 +98,16 @@ func (h *recordingHelper) RemoveGroupMember(ctx context.Context, requestID, grou
 	return true, nil
 }
 
+type passwordRecordingHelper struct {
+	testHelper
+	passwords []string
+}
+
+func (h *passwordRecordingHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	h.passwords = append(h.passwords, initialPassword)
+	return true, nil
+}
+
 type provisioningOrderHelper struct {
 	testHelper
 	operations []string
@@ -125,6 +136,100 @@ func TestSourceConfigDefaultsEnablePermissionCleanupButNotMissingUserDisable(t *
 	explicit := decodeSourceConfig(`{"disable_missing_users":false,"deactivate_missing_data":false}`)
 	if boolValue(explicit.DisableMissingUsers, true) || boolValue(explicit.DeactivateMissingData, true) {
 		t.Fatalf("explicit missing cleanup settings should be preserved: %#v", explicit)
+	}
+}
+
+func TestSourceConfigDoesNotExposeSubmittedInitialPassword(t *testing.T) {
+	config := decodeSourceConfig(`{"initial_password":"secret-password"}`)
+	public := publicSourceConfig(config)
+	if _, ok := public["initial_password"]; ok {
+		t.Fatalf("public config must not expose initial_password: %#v", public)
+	}
+	if _, ok := public["initial_password_configured"]; ok {
+		t.Fatalf("public config must not expose initial_password_configured: %#v", public)
+	}
+}
+
+func TestProvisionDSMAccountUsesOneGeneratedInitialPasswordPerSource(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://file:initial_password_per_source?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &passwordRecordingHelper{}
+	router := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries).Router()
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO identity_sources (slug, provider_type, display_name, config_json) VALUES ('source-a', 'feishu', '公司飞书', '{}');
+INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-a', 'Alice', 'alice@example.com');
+INSERT INTO app_identities (id, display_name, primary_email) VALUES ('identity-b', 'Bob', 'bob@example.com');
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-a', 'source-a', 'alice-open-id', 'alice-open-id', 'user', 'identity-a', 1);
+INSERT INTO external_accounts (id, provider_slug, subject, subject_norm, subject_type, app_identity_id, active)
+VALUES ('external-b', 'source-a', 'bob-open-id', 'bob-open-id', 'user', 'identity-b', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-a', 'identity-a', 'alice', 'alice', 'pending', 1);
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, provision_status, allow_login)
+VALUES ('account-b', 'identity-b', 'bob', 'bob', 'pending', 1);
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, accountID := range []string{"account-a", "account-b"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest("POST", "/api/admin/dsm-accounts/"+accountID+"/provision", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("unexpected provision status %d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if len(helper.passwords) != 2 || len(helper.passwords[0]) < 32 || helper.passwords[0] != helper.passwords[1] {
+		t.Fatalf("expected generated helper password, got %#v", helper.passwords)
+	}
+
+	sourceResponse := httptest.NewRecorder()
+	router.ServeHTTP(sourceResponse, httptest.NewRequest("GET", "/api/admin/providers", nil))
+	if sourceResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected source list status %d body=%s", sourceResponse.Code, sourceResponse.Body.String())
+	}
+	if strings.Contains(sourceResponse.Body.String(), helper.passwords[0]) {
+		t.Fatalf("source response leaked password: %s", sourceResponse.Body.String())
+	}
+	var listedSources struct {
+		Items []struct {
+			Slug            string `json:"slug"`
+			InitialPassword struct {
+				Configured  bool  `json:"configured"`
+				RevealCount int64 `json:"reveal_count"`
+			} `json:"initial_password"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(sourceResponse.Body).Decode(&listedSources); err != nil {
+		t.Fatal(err)
+	}
+	if len(listedSources.Items) != 1 ||
+		listedSources.Items[0].Slug != "source-a" ||
+		!listedSources.Items[0].InitialPassword.Configured ||
+		listedSources.Items[0].InitialPassword.RevealCount != 0 {
+		t.Fatalf("unexpected source initial password status: %#v", listedSources)
+	}
+
+	for i := 1; i <= 2; i++ {
+		reveal := httptest.NewRecorder()
+		router.ServeHTTP(reveal, httptest.NewRequest("POST", "/api/admin/providers/source-a/initial-password/reveal", nil))
+		if reveal.Code != http.StatusOK {
+			t.Fatalf("unexpected reveal status %d body=%s", reveal.Code, reveal.Body.String())
+		}
+		var body struct {
+			SourceSlug        string `json:"source_slug"`
+			SourceDisplayName string `json:"source_display_name"`
+			InitialPassword   string `json:"initial_password"`
+		}
+		if err := json.NewDecoder(reveal.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.SourceSlug != "source-a" || body.SourceDisplayName != "公司飞书" || body.InitialPassword != helper.passwords[0] {
+			t.Fatalf("unexpected revealed password: %#v", body)
+		}
 	}
 }
 
@@ -182,6 +287,48 @@ func TestSyncSourceToDSMDisableMissingUsersPolicy(t *testing.T) {
 	}
 	if len(helper.disabled) != 1 || helper.disabled[0] != "alice" {
 		t.Fatalf("missing user was not disabled in DSM, got %#v", helper.disabled)
+	}
+}
+
+func TestSyncSourceToDSMPreservesMissingGroupsForUserOnlyDirectory(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	server := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, queries)
+	seedSyncedAccount(t, ctx, database, "wecom-main", "identity-1", "external-identity-1", "u1", "alice", "2000-01-01 00:00:00")
+	seedGroupMember(t, ctx, database, "wecom-main", "group-1", "dsm-group-1", "member-1", "g1", "engineering", "identity-1", 1, "created")
+	if _, err := database.ExecContext(ctx, `
+UPDATE provider_groups SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main';
+UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main';
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.syncSourceToDSM(ctx, "sync_test", "wecom-main", "2999-01-01 00:00:00", sourceSyncPolicy{DeactivateMissingData: true, PreserveMissingGroups: true}); err != nil {
+		t.Fatal(err)
+	}
+	var providerGroupActive, groupMappingActive, memberMappingActive, userMappingActive int
+	if err := database.QueryRowContext(ctx, `SELECT active FROM provider_groups WHERE id = 'group-1'`).Scan(&providerGroupActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-group-member-1'`).Scan(&groupMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-member-member-1'`).Scan(&memberMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT active FROM dsm_mapping_entries WHERE id = 'map-user-external-identity-1'`).Scan(&userMappingActive); err != nil {
+		t.Fatal(err)
+	}
+	if providerGroupActive != 1 || groupMappingActive != 1 || memberMappingActive != 1 {
+		t.Fatalf("group data should be preserved, providerGroup=%d groupMapping=%d memberMapping=%d", providerGroupActive, groupMappingActive, memberMappingActive)
+	}
+	if userMappingActive != 0 {
+		t.Fatalf("stale user mapping active=%d, want 0", userMappingActive)
 	}
 }
 
@@ -393,17 +540,6 @@ func TestServerServesFrontendAndAPI(t *testing.T) {
 	}
 }
 
-func TestFeishuProfileSubjectPrefersOpenID(t *testing.T) {
-	subject, subjectType := feishuProfileSubject(map[string]any{
-		"open_id":  "ou_login",
-		"user_id":  "ca32gc25",
-		"union_id": "on_union",
-	})
-	if subject != "ou_login" || subjectType != "feishu_open_id" {
-		t.Fatalf("expected open_id login subject, got subject=%q type=%q", subject, subjectType)
-	}
-}
-
 func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
 	cfg := config.BackendConfig{
 		RelayMode:         "socket",
@@ -459,6 +595,16 @@ func TestIDPAccessControlRequiresIntranet(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected forbidden, got %d body=%s", response.Code, response.Body.String())
+	}
+
+	spoofed := httptest.NewRecorder()
+	spoofedRequest := httptest.NewRequest("GET", "/idp/source-a/launch", nil)
+	spoofedRequest.Host = "nas.example.com:26000"
+	spoofedRequest.RemoteAddr = "203.0.113.10:12345"
+	spoofedRequest.Header.Set("X-Forwarded-For", "192.168.1.20")
+	router.ServeHTTP(spoofed, spoofedRequest)
+	if spoofed.Code != http.StatusForbidden {
+		t.Fatalf("expected spoofed forwarded address to be forbidden, got %d body=%s", spoofed.Code, spoofed.Body.String())
 	}
 
 	allowed := httptest.NewRecorder()
@@ -524,6 +670,75 @@ func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	}
 }
 
+func TestSettingsReportsFixedIDPIntranetPolicy(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		IDPAllowedCIDRs:   "all",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	if err := server.saveSetting(ctx, "idp_allowed_cidrs", "all"); err != nil {
+		t.Fatal(err)
+	}
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/settings", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"idp_allowed_cidrs":"private"`) {
+		t.Fatalf("settings response should report fixed idp intranet policy: %s", body)
+	}
+	if strings.Contains(body, `"idp_allowed_cidrs":"all"`) {
+		t.Fatalf("settings response used deprecated idp cidr value: %s", body)
+	}
+}
+
+func TestSettingsDoesNotPersistIDPAllowedCIDRsUpdate(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"idp_allowed_cidrs":"all"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"idp_allowed_cidrs":"private"`) {
+		t.Fatalf("settings response should report fixed idp intranet policy: %s", response.Body.String())
+	}
+	rows, err := queries.ListRuntimeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.Key == "idp_allowed_cidrs" {
+			t.Fatalf("deprecated idp cidr setting should not be persisted")
+		}
+	}
+}
+
 func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
 	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
 	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
@@ -546,6 +761,82 @@ func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
 	}
 	if server.cfg.RelayMode != "socket" || server.cfg.RelayHelperHMACSecret != "super-secret-value" {
 		t.Fatalf("runtime settings were not applied")
+	}
+}
+
+func TestSettingsUpdateDoesNotPersistPartialChangesWhenLaterValidationFails(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"access_scheme":"http","helper_dsm_login_mode":"invalid"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", response.Code, response.Body.String())
+	}
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.AccessScheme != "https" || server.cfg.AccessScheme != "https" {
+		t.Fatalf("partial settings update was persisted: row=%#v runtime_scheme=%q", row, server.cfg.AccessScheme)
+	}
+}
+
+func TestSettingsResponseReportsIDPRouteRestartError(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"access_scheme":"http","helper_dsm_login_mode":"helper"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"idp_route_restart_required":true`,
+		`"idp_route_restarted":false`,
+		"idp route restarter is not configured",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings response missing %q: %s", want, body)
+		}
 	}
 }
 
@@ -681,6 +972,216 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestWeComProviderRequiresAgentIDForConfiguredCredentials(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"wecom","display_name":"企业微信","config":{"client_id":" wwcorp ","client_secret":" secret "}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		Slug                  string `json:"slug"`
+		ProviderType          string `json:"provider_type"`
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		WeComAuthorizeURL     string `json:"wecom_authorize_url"`
+		Config                struct {
+			ClientID     string `json:"client_id"`
+			AgentID      string `json:"agent_id"`
+			AuthorizeURL string `json:"authorize_url"`
+			TokenURL     string `json:"token_url"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ProviderType != "wecom" || created.CredentialsConfigured {
+		t.Fatalf("wecom without agent_id should not be fully configured: %#v", created)
+	}
+	if created.Config.TokenURL != "https://qyapi.weixin.qq.com/cgi-bin/gettoken" {
+		t.Fatalf("unexpected wecom token URL: %s", created.Config.TokenURL)
+	}
+	if created.Config.ClientID != "wwcorp" {
+		t.Fatalf("wecom client_id should be trimmed, got %q", created.Config.ClientID)
+	}
+	if created.Config.AuthorizeURL != "https://open.work.weixin.qq.com/wwopen/sso/qrConnect" {
+		t.Fatalf("wecom default authorize URL should use QR login, got %q", created.Config.AuthorizeURL)
+	}
+	if !strings.Contains(created.WeComAuthorizeURL, "open.work.weixin.qq.com/wwopen/sso/qrConnect") || !strings.Contains(created.WeComAuthorizeURL, "appid=wwcorp") || strings.Contains(created.WeComAuthorizeURL, "agentid=") || strings.Contains(created.WeComAuthorizeURL, "wechat_redirect") {
+		t.Fatalf("unexpected authorize URL without agent_id: %s", created.WeComAuthorizeURL)
+	}
+
+	updateResponse := httptest.NewRecorder()
+	updateRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"agent_id":" 1000002 "}}`))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(updateResponse, updateRequest)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update provider got %d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+	var updated struct {
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		WeComAuthorizeURL     string `json:"wecom_authorize_url"`
+		Config                struct {
+			AgentID string `json:"agent_id"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(updateResponse.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.CredentialsConfigured || updated.Config.AgentID != "1000002" || !strings.Contains(updated.WeComAuthorizeURL, "open.work.weixin.qq.com/wwopen/sso/qrConnect") || !strings.Contains(updated.WeComAuthorizeURL, "agentid=1000002") {
+		t.Fatalf("wecom with agent_id should be fully configured: %#v", updated)
+	}
+}
+
+func TestUpdateProviderRejectsImmutableCredentialChanges(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"feishu","display_name":"飞书","config":{"client_id":"cli_original","client_secret":"secret_original"}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	clientIDResponse := httptest.NewRecorder()
+	clientIDRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"client_id":"cli_changed"}}`))
+	clientIDRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(clientIDResponse, clientIDRequest)
+	if clientIDResponse.Code != http.StatusBadRequest || !strings.Contains(clientIDResponse.Body.String(), "App ID cannot be changed") {
+		t.Fatalf("client_id update got %d body=%s", clientIDResponse.Code, clientIDResponse.Body.String())
+	}
+
+	secretResponse := httptest.NewRecorder()
+	secretRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"config":{"client_secret":"secret_changed"}}`))
+	secretRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(secretResponse, secretRequest)
+	if secretResponse.Code != http.StatusBadRequest || !strings.Contains(secretResponse.Body.String(), "App Secret cannot be changed") {
+		t.Fatalf("client_secret update got %d body=%s", secretResponse.Code, secretResponse.Body.String())
+	}
+
+	validResponse := httptest.NewRecorder()
+	validRequest := httptest.NewRequest("PUT", "/api/admin/providers/"+created.Slug, strings.NewReader(`{"display_name":"飞书主应用","config":{"sync_interval_minutes":15}}`))
+	validRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("allowed provider update got %d body=%s", validResponse.Code, validResponse.Body.String())
+	}
+
+	var configJSON string
+	var displayName string
+	if err := database.QueryRowContext(context.Background(), `SELECT display_name, config_json FROM identity_sources WHERE slug = ?`, created.Slug).Scan(&displayName, &configJSON); err != nil {
+		t.Fatal(err)
+	}
+	config := decodeSourceConfigForType("feishu", configJSON)
+	if displayName != "飞书主应用" || config.ClientID != "cli_original" || config.ClientSecret != "secret_original" || config.SyncIntervalMinutes != 15 {
+		t.Fatalf("unexpected stored source after updates: display_name=%q config=%#v", displayName, config)
+	}
+}
+
+func TestWeComSourceConfigUpgradesLegacyAuthorizeURL(t *testing.T) {
+	config := decodeSourceConfigForType("wecom", `{"authorize_url":"https://open.weixin.qq.com/connect/oauth2/authorize"}`)
+	if config.AuthorizeURL != "https://open.work.weixin.qq.com/wwopen/sso/qrConnect" {
+		t.Fatalf("legacy wecom authorize URL should upgrade to QR login, got %q", config.AuthorizeURL)
+	}
+}
+
+func TestDingTalkProviderUsesQRLoginAuthorizeURL(t *testing.T) {
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	typesResponse := httptest.NewRecorder()
+	router.ServeHTTP(typesResponse, httptest.NewRequest("GET", "/api/admin/provider-types", nil))
+	if typesResponse.Code != http.StatusOK {
+		t.Fatalf("provider types got %d body=%s", typesResponse.Code, typesResponse.Body.String())
+	}
+	if !strings.Contains(typesResponse.Body.String(), `"type":"dingtalk"`) || !strings.Contains(typesResponse.Body.String(), `"display_name":"钉钉"`) {
+		t.Fatalf("provider types missing dingtalk: %s", typesResponse.Body.String())
+	}
+
+	createResponse := httptest.NewRecorder()
+	createRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{"provider_type":"dingtalk","display_name":"钉钉","config":{"client_id":" ding-app-key ","client_secret":" secret "}}`))
+	createRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create provider got %d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	var created struct {
+		ProviderType          string `json:"provider_type"`
+		CredentialsConfigured bool   `json:"credentials_configured"`
+		DingTalkAuthorizeURL  string `json:"dingtalk_authorize_url"`
+		Config                struct {
+			ClientID       string `json:"client_id"`
+			AuthorizeURL   string `json:"authorize_url"`
+			TokenURL       string `json:"token_url"`
+			UserInfoURL    string `json:"user_info_url"`
+			TenantTokenURL string `json:"tenant_token_url"`
+			ContactBaseURL string `json:"contact_base_url"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ProviderType != "dingtalk" || !created.CredentialsConfigured {
+		t.Fatalf("unexpected dingtalk credentials state: %#v", created)
+	}
+	if created.Config.ClientID != "ding-app-key" {
+		t.Fatalf("dingtalk client_id should be trimmed, got %q", created.Config.ClientID)
+	}
+	if created.Config.AuthorizeURL != "https://login.dingtalk.com/oauth2/auth" {
+		t.Fatalf("dingtalk default authorize URL should use QR login, got %q", created.Config.AuthorizeURL)
+	}
+	if created.Config.TokenURL != "https://api.dingtalk.com/v1.0/oauth2/userAccessToken" || created.Config.UserInfoURL != "https://api.dingtalk.com/v1.0/contact/users/me" {
+		t.Fatalf("unexpected dingtalk oauth URLs: %#v", created.Config)
+	}
+	if created.Config.TenantTokenURL != "https://oapi.dingtalk.com/gettoken" || created.Config.ContactBaseURL != "https://oapi.dingtalk.com/topapi" {
+		t.Fatalf("unexpected dingtalk directory URLs: %#v", created.Config)
+	}
+	if !strings.Contains(created.DingTalkAuthorizeURL, "login.dingtalk.com/oauth2/auth") || !strings.Contains(created.DingTalkAuthorizeURL, "client_id=ding-app-key") || !strings.Contains(created.DingTalkAuthorizeURL, "scope=openid") {
+		t.Fatalf("unexpected dingtalk authorize URL: %s", created.DingTalkAuthorizeURL)
+	}
+}
+
 func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	cfg := config.BackendConfig{
 		Listen:            "0.0.0.0:25000",
@@ -711,7 +1212,7 @@ func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	}
 }
 
-func TestSettingsPublicBaseURLAllowsIndependentIDPHostPortButUsesDSMScheme(t *testing.T) {
+func TestSettingsPublicBaseURLAllowsIndependentIDPSchemeHostPort(t *testing.T) {
 	stubTCPPortAvailable(t)
 	idpPort := 26000
 	cfg := config.BackendConfig{
@@ -739,8 +1240,319 @@ func TestSettingsPublicBaseURLAllowsIndependentIDPHostPortButUsesDSMScheme(t *te
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), fmt.Sprintf(`"public_base_url":"https://idp.example.com:%d"`, idpPort)) {
-		t.Fatalf("public base url did not preserve independent IDP host/port with DSM scheme: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), fmt.Sprintf(`"public_base_url":"http://idp.example.com:%d"`, idpPort)) {
+		t.Fatalf("public base url did not preserve independent IDP scheme/host/port: %s", response.Body.String())
+	}
+}
+
+func TestRuntimeDeploymentSettingsMigrateToDeploymentSettings(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://default.example.com:25000",
+		AccessHost:        "default.example.com",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for key, value := range map[string]any{
+		"deployment_mode":      "reverse_proxy",
+		"access_host":          "nas.local",
+		"access_scheme":        "https",
+		"idp_port":             26000,
+		"public_base_url":      "https://login.example.com",
+		"dsm_redirect_url":     "https://nas.example.com:5001/",
+		"helper_dsm_login_api": "https://nas.example.com:5001/webapi/entry.cgi",
+	} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.ExecContext(ctx, `INSERT INTO runtime_settings (key, value_json) VALUES (?, ?)`, key, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Mode != "reverse_proxy" ||
+		row.AccessHost != "nas.local" ||
+		row.AccessScheme != "https" ||
+		row.IDPPort != 26000 ||
+		row.PublicBaseURL != "https://login.example.com" ||
+		row.DSMRedirectURL != "https://nas.example.com:5001/" ||
+		row.HelperDSMLoginAPI != "https://nas.example.com:5001/webapi/entry.cgi" {
+		t.Fatalf("unexpected migrated deployment settings: %#v", row)
+	}
+	if server.cfg.PublicBaseURL != "https://login.example.com" || server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("server did not apply migrated deployment settings: public=%q idp_listen=%q", server.cfg.PublicBaseURL, server.IDPListenAddress())
+	}
+}
+
+func TestSettingsWriteDeploymentSettingsTable(t *testing.T) {
+	stubTCPPortAvailable(t)
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{
+		"deployment_mode":"reverse_proxy",
+		"access_host":"nas.local",
+		"access_scheme":"https",
+		"idp_port":26000,
+		"public_base_url":"https://login.example.com",
+		"dsm_redirect_url":"https://nas.example.com:5001/",
+		"helper_dsm_login_api":"https://nas.example.com:5001/webapi/entry.cgi"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"deployment_mode":"reverse_proxy"`) ||
+		!strings.Contains(body, `"public_base_url":"https://login.example.com"`) ||
+		!strings.Contains(body, `"idp_port":26000`) {
+		t.Fatalf("settings response did not use deployment settings: %s", body)
+	}
+	row, err := queries.GetDeploymentSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Mode != "reverse_proxy" || row.IDPPort != 26000 || row.PublicBaseURL != "https://login.example.com" {
+		t.Fatalf("deployment settings were not persisted: %#v", row)
+	}
+	var legacyDeploymentRows int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_settings WHERE key IN ('deployment_mode', 'access_host', 'access_scheme', 'idp_port', 'public_base_url', 'dsm_redirect_url', 'helper_dsm_login_api')`).Scan(&legacyDeploymentRows); err != nil {
+		t.Fatal(err)
+	}
+	if legacyDeploymentRows != 0 {
+		t.Fatalf("deployment settings should not be written to runtime_settings, got %d rows", legacyDeploymentRows)
+	}
+}
+
+func TestSettingsPublicBaseURLPortDoesNotDriveIDPListenPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"public_base_url":"https://login.example.com:443"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("public_base_url port should not drive IDP listen port, got %q", server.IDPListenAddress())
+	}
+}
+
+func TestRuntimeDeploymentSettingsSeparatesLegacyIDPPortFromManagementPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO deployment_settings (
+			id, mode, access_host, access_scheme, idp_port, public_base_url, dsm_redirect_url, helper_dsm_login_api
+		) VALUES (
+			1, 'direct', '192.0.2.10', 'https', 25000, 'https://192.0.2.10:25000', 'https://192.0.2.10:5001/', 'https://192.0.2.10:5001/webapi/entry.cgi'
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("legacy idp port should be separated from management port, got %q", server.IDPListenAddress())
+	}
+	if server.cfg.PublicBaseURL != "https://192.0.2.10:26000" {
+		t.Fatalf("legacy direct public base url should follow separated idp port, got %q", server.cfg.PublicBaseURL)
+	}
+}
+
+func TestSettingsRejectsIDPPortMatchingManagementPort(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://192.0.2.10:26000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"idp_port":25000}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "idp_port must be different from the management port") {
+		t.Fatalf("unexpected error body: %s", response.Body.String())
+	}
+	if server.IDPListenAddress() != "0.0.0.0:26000" {
+		t.Fatalf("rejected idp_port update changed runtime listen: %q", server.IDPListenAddress())
+	}
+}
+
+func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		PublicBaseURL:     "https://login.example.com",
+		AccessHost:        "nas.example.com",
+		AccessScheme:      "https",
+		DSMRedirectURL:    "https://nas.example.com:5001/",
+		HelperDSMLoginAPI: "https://nas.example.com:5001/webapi/entry.cgi",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/api/admin/settings/overview", nil)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`"title":"系统说明"`,
+		`"title":"管理后台本机监听"`,
+		`"value":"0.0.0.0:25000"`,
+		`"title":"认证入口本机监听"`,
+		`"value":"0.0.0.0:26000"`,
+		`"change_method":"系统设置 \u003e 入口与域名 \u003e 认证入口本机端口"`,
+		`"applies":"保存后刷新认证路由；无需重启套件"`,
+		`"label":"认证入口公网地址"`,
+		`"change_method":"系统设置 \u003e 入口与域名 \u003e 认证入口公网地址"`,
+		`"applies":"保存后立即影响新生成的登录地址、回调地址和身份源展示"`,
+		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
+		`"key":"idp_access_boundary"`,
+		`"label":"认证入口访问边界"`,
+		`"value":"仅本机和内网来源"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("settings overview missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestSettingsPublicBaseURLSchemeDoesNotFollowInternalIDPScheme(t *testing.T) {
+	stubTCPPortAvailable(t)
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		PublicBaseURL:     "https://192.0.2.10:25000",
+		AccessHost:        "192.0.2.10",
+		AccessScheme:      "https",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{
+		"deployment_mode":"reverse_proxy",
+		"access_scheme":"http",
+		"idp_port":26000,
+		"public_base_url":"https://login.example.com",
+		"helper_dsm_login_mode":"helper"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"access_scheme":"http"`) || !strings.Contains(body, `"public_base_url":"https://login.example.com"`) {
+		t.Fatalf("reverse proxy public URL should keep its external scheme: %s", body)
+	}
+	if server.IDPTLSEnabled() {
+		t.Fatalf("internal IDP route should use access_scheme, not public_base_url scheme")
 	}
 }
 
@@ -933,6 +1745,217 @@ func TestCreateProviderGeneratesUUIDSlug(t *testing.T) {
 	uuidPattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	if !uuidPattern.MatchString(body.Slug) {
 		t.Fatalf("expected uuid slug, got %q", body.Slug)
+	}
+}
+
+func TestCreateProviderIgnoresInitialPassword(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://file:create_provider_initial_password?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "feishu",
+		"display_name": "公司飞书",
+		"config": {
+			"client_id": "cli_test",
+			"client_secret": "secret",
+			"initial_password": "secret-password"
+		}
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "secret-password") {
+		t.Fatalf("provider response leaked initial password: %s", body)
+	}
+	if strings.Contains(body, "initial_password_configured") {
+		t.Fatalf("provider response should not expose initial password config state: %s", body)
+	}
+	var configJSON string
+	if err := database.QueryRowContext(context.Background(), `SELECT config_json FROM identity_sources WHERE display_name = '公司飞书'`).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(configJSON, "secret-password") || strings.Contains(configJSON, "initial_password") {
+		t.Fatalf("provider config stored initial password: %s", configJSON)
+	}
+	var storedPasswordCount int
+	if err := database.QueryRowContext(context.Background(), `
+SELECT COUNT(*)
+FROM source_initial_password_secrets p
+JOIN identity_sources s ON s.slug = p.source_slug
+WHERE s.display_name = '公司飞书'`).Scan(&storedPasswordCount); err != nil {
+		t.Fatal(err)
+	}
+	if storedPasswordCount != 1 {
+		t.Fatalf("expected generated source initial password, got %d", storedPasswordCount)
+	}
+}
+
+func TestCreateProviderAllowsMultipleIdentitySources(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	first := httptest.NewRecorder()
+	firstRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "feishu",
+		"display_name": "公司飞书",
+		"config": {
+			"client_id": "cli_test",
+			"client_secret": "secret"
+		}
+	}`))
+	firstRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(first, firstRequest)
+	if first.Code != http.StatusOK {
+		t.Fatalf("unexpected first create status %d body=%s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	secondRequest := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(`{
+		"provider_type": "wecom",
+		"display_name": "企业微信",
+		"config": {
+			"client_id": "ww_test",
+			"client_secret": "secret"
+		}
+	}`))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(second, secondRequest)
+	if second.Code != http.StatusOK {
+		t.Fatalf("unexpected second create status %d body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), `"provider_type":"wecom"`) {
+		t.Fatalf("second response should be wecom source: %s", second.Body.String())
+	}
+}
+
+func TestCreateProviderRejectsSecondWhenPackageDisallowsMultiple(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	server.allowMultipleIdentitySources = false
+	router := server.Router()
+
+	typesResponse := httptest.NewRecorder()
+	router.ServeHTTP(typesResponse, httptest.NewRequest("GET", "/api/admin/provider-types", nil))
+	if typesResponse.Code != http.StatusOK || !strings.Contains(typesResponse.Body.String(), `"allow_multiple_identity_sources":false`) {
+		t.Fatalf("provider types should expose single-source package capability, got %d body=%s", typesResponse.Code, typesResponse.Body.String())
+	}
+
+	create := func(providerType, displayName, clientID string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(fmt.Sprintf(`{
+			"provider_type": %q,
+			"display_name": %q,
+			"config": {
+				"client_id": %q,
+				"client_secret": "secret"
+			}
+		}`, providerType, displayName, clientID)))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	first := create("feishu", "公司飞书", "cli_test")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first identity source should be allowed, got %d body=%s", first.Code, first.Body.String())
+	}
+	second := create("dingtalk", "公司钉钉", "ding_test")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second identity source should be rejected, got %d body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), singleIdentitySourceLimitMessage) {
+		t.Fatalf("unexpected second create response: %s", second.Body.String())
+	}
+
+	var count int
+	if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("stored identity source count = %d, want 1", count)
+	}
+}
+
+func TestCreateProviderSingleSourceLimitIsConcurrencySafe(t *testing.T) {
+	cfg := config.BackendConfig{RelayMode: "socket", DSMCookieName: "id"}
+	databaseURL := "sqlite://" + filepath.Join(t.TempDir(), "dsmpass.db")
+	database, queries, err := OpenDatabase(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	server.allowMultipleIdentitySources = false
+	router := server.Router()
+
+	const requestCount = 8
+	start := make(chan struct{})
+	statuses := make(chan int, requestCount)
+	var wait sync.WaitGroup
+	for index := 0; index < requestCount; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest("POST", "/api/admin/providers", strings.NewReader(fmt.Sprintf(`{
+				"provider_type": "feishu",
+				"display_name": "source-%d",
+				"config": {
+					"client_id": "client-%d",
+					"client_secret": "secret"
+				}
+			}`, index, index)))
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(response, request)
+			statuses <- response.Code
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	close(statuses)
+
+	created := 0
+	rejected := 0
+	for status := range statuses {
+		switch status {
+		case http.StatusOK:
+			created++
+		case http.StatusConflict:
+			rejected++
+		default:
+			t.Fatalf("unexpected concurrent create status: %d", status)
+		}
+	}
+	if created != 1 || rejected != requestCount-1 {
+		t.Fatalf("created=%d rejected=%d, want 1 and %d", created, rejected, requestCount-1)
+	}
+
+	var count int
+	if err := database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM identity_sources`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("stored identity source count = %d, want 1", count)
 	}
 }
 
@@ -1537,14 +2560,6 @@ VALUES
 	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
 
-	unchanged := httptest.NewRecorder()
-	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"matrix_sup1_sup2_sup5"}`))
-	unchangedRequest.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(unchanged, unchangedRequest)
-	if unchanged.Code != http.StatusConflict {
-		t.Fatalf("unchanged conflict group name got %d body=%s", unchanged.Code, unchanged.Body.String())
-	}
-
 	duplicate := httptest.NewRecorder()
 	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
 	duplicateRequest.Header.Set("Content-Type", "application/json")
@@ -1560,6 +2575,13 @@ VALUES
 	if response.Code != http.StatusOK {
 		t.Fatalf("resolve group got %d body=%s", response.Code, response.Body.String())
 	}
+	unchanged := httptest.NewRecorder()
+	unchangedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-b/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))
+	unchangedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(unchanged, unchangedRequest)
+	if unchanged.Code != http.StatusOK {
+		t.Fatalf("confirm unchanged conflict group name got %d body=%s", unchanged.Code, unchanged.Body.String())
+	}
 	var managed int
 	var status, conflictReason string
 	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-a'`).Scan(&managed, &status, &conflictReason); err != nil {
@@ -1567,6 +2589,12 @@ VALUES
 	}
 	if managed != 0 || status != "pending" || conflictReason != "" {
 		t.Fatalf("group conflict not resolved: managed=%d status=%s reason=%q", managed, status, conflictReason)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-b'`).Scan(&managed, &status, &conflictReason); err != nil {
+		t.Fatal(err)
+	}
+	if managed != 0 || status != "pending" || conflictReason != "" {
+		t.Fatalf("unchanged group conflict not confirmed: managed=%d status=%s reason=%q", managed, status, conflictReason)
 	}
 	var linkCount, memberCount int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_links WHERE id = 'link-a' AND provider_group_id = 'provider-group-a' AND dsm_group_id = 'group-a'`).Scan(&linkCount); err != nil {
@@ -1630,17 +2658,21 @@ func TestLogDirectoryLinkPlanRecordsCrossSourceLinks(t *testing.T) {
 	server.logDirectoryLinkPlan(ctx, "sync-a", "source-b", []syncsvc.PlanItem{
 		{Action: "link_existing_dsm_user", Subject: "user-b", DSMUsername: "alice"},
 		{Action: "link_existing_dsm_group", Subject: "group-b", DSMGroupname: "engineering"},
+		{Action: "directory_warning", Subject: "source-b", DisplayName: "只同步用户，没有部门组"},
 	})
 
-	var userLinks, groupLinks int
+	var userLinks, groupLinks, warnings int
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_user' AND status = 'success' AND error LIKE '%跨身份源同名用户%'`).Scan(&userLinks); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'link_existing_dsm_group' AND status = 'success' AND error LIKE '%跨身份源同名部门%'`).Scan(&groupLinks); err != nil {
 		t.Fatal(err)
 	}
-	if userLinks != 1 || groupLinks != 1 {
-		t.Fatalf("expected cross-source link logs, got user=%d group=%d", userLinks, groupLinks)
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'directory_warning' AND status = 'warning' AND object_type = 'identity_source' AND error LIKE '%只同步用户%'`).Scan(&warnings); err != nil {
+		t.Fatal(err)
+	}
+	if userLinks != 1 || groupLinks != 1 || warnings != 1 {
+		t.Fatalf("expected link and warning logs, got user=%d group=%d warning=%d", userLinks, groupLinks, warnings)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -127,6 +128,9 @@ ON CONFLICT(id) DO NOTHING
 		progress.message(ctx, "写入同步日志", "正在记录映射结果")
 	}
 	s.logDirectoryLinkPlanWithBuffer(logBuffer, runID, directory.Slug(), result.Items)
+	if syncResultHasDirectoryWarning(result) {
+		policy.PreserveMissingGroups = true
+	}
 	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
 	if err != nil {
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
@@ -152,8 +156,23 @@ func (s *Server) logDirectoryLinkPlanWithBuffer(buffer *syncLogBuffer, runID, so
 			s.writeSyncOperation(buffer, runID, sourceSlug, "user", item.Subject, item.DSMUsername, item.Action, "success", "unlinked", "linked_existing", "跨身份源同名用户，自动按同一人关联")
 		case "link_existing_dsm_group":
 			s.writeSyncOperation(buffer, runID, sourceSlug, "group", item.Subject, item.DSMGroupname, item.Action, "success", "unlinked", "linked_existing", "跨身份源同名部门，自动按同一部门关联")
+		case "directory_warning":
+			message := strings.TrimSpace(item.DisplayName)
+			if message == "" {
+				message = "身份源同步提示"
+			}
+			s.writeSyncOperation(buffer, runID, sourceSlug, "identity_source", item.Subject, "", item.Action, "warning", "", "warning", message)
 		}
 	}
+}
+
+func syncResultHasDirectoryWarning(result syncsvc.Result) bool {
+	for _, item := range result.Items {
+		if item.Action == "directory_warning" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) beginSourceSync(slug string) bool {
@@ -178,6 +197,7 @@ func (s *Server) endSourceSync(slug string) {
 type sourceSyncPolicy struct {
 	DisableMissingUsers   bool
 	DeactivateMissingData bool
+	PreserveMissingGroups bool
 }
 
 func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) sourceSyncPolicy {
@@ -185,7 +205,7 @@ func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) source
 	if err != nil {
 		return sourceSyncPolicy{DisableMissingUsers: false, DeactivateMissingData: true}
 	}
-	cfg := decodeSourceConfig(source.ConfigJSON)
+	cfg := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	return sourceSyncPolicy{
 		DisableMissingUsers:   boolValue(cfg.DisableMissingUsers, false),
 		DeactivateMissingData: boolValue(cfg.DeactivateMissingData, true),
@@ -202,9 +222,14 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		return operations, err
 	}
 	if policy.DeactivateMissingData {
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		if policy.PreserveMissingGroups {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND mapping_type = 'user' AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		} else {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		}
 	}
 	var groupConflicts, accountConflicts int
 	if err := s.store.DBTX().QueryRowContext(ctx, `
@@ -222,8 +247,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'`, sourceSlug).Scan(&accountConflicts); err != nil {
 		return operations, err
 	}
+	providerName := s.providerDisplayNameForSourceSlug(ctx, sourceSlug)
 	if groupConflicts > 0 {
-		err := errors.New("存在飞书部门名冲突，请先由管理员处理部门组名后再同步 DSM")
+		err := errors.New("存在" + providerName + "部门名冲突，请先由管理员处理部门组名后再同步 DSM")
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", sourceSlug, "", "resolve_group_conflicts", "blocked", "conflict", "conflict", err.Error())
 		if progress != nil {
 			progress.message(ctx, "等待冲突处理", err.Error())
@@ -231,7 +257,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		return operations, err
 	}
 	if accountConflicts > 0 {
-		err := errors.New("存在飞书用户冲突，请先由管理员处理 DSM 用户名后再同步 DSM")
+		err := errors.New("存在" + providerName + "用户冲突，请先由管理员处理 DSM 用户名后再同步 DSM")
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", sourceSlug, "", "resolve_user_conflicts", "blocked", "conflict", "conflict", err.Error())
 		if progress != nil {
 			progress.message(ctx, "等待冲突处理", err.Error())
@@ -331,7 +357,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	for _, item := range pendingAccounts {
 		id, username, displayName, email, status := item.id, item.username, item.displayName, item.email, item.status
 		err := error(nil)
-		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, s.initialPasswordForAccount(ctx, id))
+		password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
+		if err != nil {
+			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
+			return operations, err
+		}
+		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
 		if err != nil {
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())

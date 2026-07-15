@@ -129,7 +129,7 @@ func SanitizeGroupName(value string) (string, error) {
 	value = strings.NewReplacer("/", "_", "\\", "_", ">", "_").Replace(value)
 	groupName, err := SanitizeRequiredNameBase(value, 32)
 	if err != nil {
-		return "", fmt.Errorf("DSM 群组名不可用：飞书部门名称 %q 清洗后为空，请修改部门名称或开启正确字段权限后重试", value)
+		return "", fmt.Errorf("DSM 群组名不可用：部门名称 %q 清洗后为空，请修改部门名称或开启正确字段权限后重试", value)
 	}
 	return groupName, nil
 }

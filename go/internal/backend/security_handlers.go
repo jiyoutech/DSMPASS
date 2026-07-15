@@ -27,7 +27,7 @@ func (s *Server) securityCheck(c *gin.Context) {
 
 func (s *Server) identitySourcePublicURLsUseHTTPS(ctx context.Context) bool {
 	rows, err := s.store.DBTX().QueryContext(ctx, `
-SELECT config_json
+SELECT provider_type, config_json
 FROM identity_sources
 WHERE enabled = 1 AND login_enabled = 1`)
 	if err != nil {
@@ -35,11 +35,11 @@ WHERE enabled = 1 AND login_enabled = 1`)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var providerType, raw string
+		if err := rows.Scan(&providerType, &raw); err != nil {
 			return false
 		}
-		config := decodeSourceConfig(raw)
+		config := decodeSourceConfigForType(providerType, raw)
 		publicBaseURL := strings.TrimSpace(config.PublicBaseURL)
 		if publicBaseURL == "" {
 			publicBaseURL = s.cfg.PublicBaseURL

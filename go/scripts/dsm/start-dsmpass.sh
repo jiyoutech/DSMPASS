@@ -9,6 +9,17 @@ fi
 DATA_DIR=${DSMPASS_DATA_DIR:-"$APP_DIR/data"}
 RUN_DIR=${DSMPASS_RUN_DIR:-/run/dsmpass}
 LISTEN=${DSMPASS_GO_LISTEN:-0.0.0.0:25000}
+
+default_idp_listen() {
+  listen_port=${LISTEN##*:}
+  idp_port=26000
+  if [ "$listen_port" = "$idp_port" ]; then
+    idp_port=26001
+  fi
+  printf '0.0.0.0:%s\n' "$idp_port"
+}
+
+IDP_LISTEN=${DSMPASS_IDP_LISTEN:-$(default_idp_listen)}
 DATABASE_URL=${DSMPASS_DATABASE_URL:-"sqlite://$DATA_DIR/dsmpass.db"}
 HELPER_SOCKET=${DSMPASS_HELPER_SOCKET:-"$RUN_DIR/helper.sock"}
 HELPER_HMAC_SECRET=${DSMPASS_HELPER_HMAC_SECRET:-}
@@ -58,15 +69,16 @@ detect_dsm_host() {
 
 DSM_HOST=$(detect_dsm_host)
 LISTEN_PORT=${LISTEN##*:}
+IDP_LISTEN_PORT=${IDP_LISTEN##*:}
 ADMIN_PORTAL_PORT=${DSMPASS_ADMIN_PORTAL_PORT:-25000}
 if [ "$LISTEN_PORT" != "$ADMIN_PORTAL_PORT" ] && [ -z "${DSMPASS_ADMIN_REDIRECT_LISTEN:-}" ]; then
   DSMPASS_ADMIN_REDIRECT_LISTEN="0.0.0.0:$ADMIN_PORTAL_PORT"
 fi
 if [ "$TLS_ENABLED" = "0" ] || [ "$TLS_ENABLED" = "false" ] || [ "$TLS_ENABLED" = "no" ] || [ "$TLS_ENABLED" = "off" ]; then
-  DEFAULT_PUBLIC_BASE_URL="http://$DSM_HOST:$LISTEN_PORT"
+  DEFAULT_PUBLIC_BASE_URL="http://$DSM_HOST:$IDP_LISTEN_PORT"
   DEFAULT_DSM_REDIRECT_URL="http://$DSM_HOST:5000/"
 else
-  DEFAULT_PUBLIC_BASE_URL="https://$DSM_HOST:$LISTEN_PORT"
+  DEFAULT_PUBLIC_BASE_URL="https://$DSM_HOST:$IDP_LISTEN_PORT"
   DEFAULT_DSM_REDIRECT_URL="https://$DSM_HOST:5001/"
 fi
 PUBLIC_BASE_URL=${DSMPASS_PUBLIC_BASE_URL:-"$DEFAULT_PUBLIC_BASE_URL"}
@@ -86,6 +98,7 @@ chmod +x "$APP_DIR/bin/dsmpass-backend" 2>/dev/null || true
 chmod +x "$APP_DIR/bin/dsmpass-helper" 2>/dev/null || true
 
 export DSMPASS_GO_LISTEN="$LISTEN"
+export DSMPASS_IDP_LISTEN="$IDP_LISTEN"
 export DSMPASS_DATABASE_URL="$DATABASE_URL"
 export DSMPASS_DATA_DIR="$DATA_DIR"
 export DSMPASS_FRONTEND_DIST_DIR="$FRONTEND_DIST_DIR"
@@ -125,6 +138,7 @@ run_backend() {
     backend_env="$RUN_DIR/backend.env"
     cat > "$backend_env" <<EOF
 export DSMPASS_GO_LISTEN='$DSMPASS_GO_LISTEN'
+export DSMPASS_IDP_LISTEN='$DSMPASS_IDP_LISTEN'
 export DSMPASS_DATABASE_URL='$DSMPASS_DATABASE_URL'
 export DSMPASS_DATA_DIR='$DSMPASS_DATA_DIR'
 export DSMPASS_FRONTEND_DIST_DIR='$DSMPASS_FRONTEND_DIST_DIR'
@@ -199,6 +213,7 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 echo "backend listen preference: $LISTEN"
+echo "idp listen preference: $IDP_LISTEN"
 echo "admin redirect listen: ${DSMPASS_ADMIN_REDIRECT_LISTEN:-disabled}"
 echo "frontend: $FRONTEND_DIST_DIR"
 echo "database: $DATABASE_URL"

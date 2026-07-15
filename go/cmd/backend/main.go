@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"log"
 	"math/big"
 	"net"
@@ -105,11 +107,14 @@ func main() {
 }
 
 func serve(server *backend.Server, adminListener net.Listener, adminListen, adminRedirectListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile, idpCertFile, idpKeyFile string) {
+	tlsConnections := newTLSConnectionRefresher()
+	server.SetTLSConnectionRefresher(tlsConnections.Refresh)
 	idpRoutes := &idpRouteService{
-		server:      server,
-		adminListen: adminListen,
-		certFile:    idpCertFile,
-		keyFile:     idpKeyFile,
+		server:         server,
+		adminListen:    adminListen,
+		certFile:       idpCertFile,
+		keyFile:        idpKeyFile,
+		tlsConnections: tlsConnections,
 	}
 	server.SetIDPRouteRestarter(idpRoutes.Restart, func(message string) {
 		log.Printf("%s", message)
@@ -121,7 +126,10 @@ func serve(server *backend.Server, adminListener net.Listener, adminListen, admi
 			_ = adminListener.Close()
 			log.Fatal("idp protocol differs from the management protocol; configure an idp_port different from the management port")
 		}
-		if err := serveHTTP(adminListener, server.Router(), tlsEnabled, certFile, keyFile); err != nil {
+		httpServer := newManagedHTTPServer(server.Router())
+		tlsConnections.Register("admin", httpServer)
+		tlsConnections.Register("idp", httpServer)
+		if err := serveHTTPServer(httpServer.server, adminListener, tlsEnabled, certFile, keyFile); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -130,15 +138,17 @@ func serve(server *backend.Server, adminListener net.Listener, adminListen, admi
 		_ = adminListener.Close()
 		log.Fatal(err)
 	}
-	startAdminRedirect(adminRedirectListen, adminListen, publicBaseURL, tlsEnabled, certFile, keyFile)
+	startAdminRedirect(adminRedirectListen, adminListen, publicBaseURL, tlsEnabled, certFile, keyFile, tlsConnections)
 	errCh := make(chan error, 2)
+	adminServer := newManagedHTTPServer(server.AdminRouter())
+	tlsConnections.Register("admin", adminServer)
 	go func() {
-		errCh <- serveHTTP(adminListener, server.AdminRouter(), tlsEnabled, certFile, keyFile)
+		errCh <- serveHTTPServer(adminServer.server, adminListener, tlsEnabled, certFile, keyFile)
 	}()
 	log.Fatal(<-errCh)
 }
 
-func startAdminRedirect(redirectListen, adminListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile string) {
+func startAdminRedirect(redirectListen, adminListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile string, tlsConnections *tlsConnectionRefresher) {
 	if strings.TrimSpace(redirectListen) == "" || listenAddressEqual(redirectListen, adminListen) {
 		return
 	}
@@ -151,29 +161,143 @@ func startAdminRedirect(redirectListen, adminListen, publicBaseURL string, tlsEn
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, targetBase+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 	})
+	httpServer := newManagedHTTPServer(handler)
+	tlsConnections.Register("admin", httpServer)
 	log.Printf("DSM Pass admin redirect listening on %s -> %s", actualListen, targetBase)
 	go func() {
-		if err := serveHTTP(listener, handler, tlsEnabled, certFile, keyFile); err != nil {
+		if err := serveHTTPServer(httpServer.server, listener, tlsEnabled, certFile, keyFile); err != nil {
 			log.Printf("DSM Pass admin redirect stopped: %v", err)
 		}
 	}()
 }
 
+type tlsConnectionRefresher struct {
+	mu      sync.Mutex
+	servers map[string]map[*managedHTTPServer]struct{}
+}
+
+func newTLSConnectionRefresher() *tlsConnectionRefresher {
+	return &tlsConnectionRefresher{servers: map[string]map[*managedHTTPServer]struct{}{}}
+}
+
+func (r *tlsConnectionRefresher) Register(scope string, server *managedHTTPServer) {
+	if r == nil || scope == "" || server == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.servers[scope] == nil {
+		r.servers[scope] = map[*managedHTTPServer]struct{}{}
+	}
+	r.servers[scope][server] = struct{}{}
+}
+
+func (r *tlsConnectionRefresher) Unregister(scope string, server *managedHTTPServer) {
+	if r == nil || scope == "" || server == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.servers[scope], server)
+	if len(r.servers[scope]) == 0 {
+		delete(r.servers, scope)
+	}
+}
+
+func (r *tlsConnectionRefresher) Refresh(scope string) {
+	for _, server := range r.serversFor(scope) {
+		server.CloseIdleConnections()
+	}
+}
+
+func (r *tlsConnectionRefresher) serversFor(scope string) []*managedHTTPServer {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := map[*managedHTTPServer]bool{}
+	var servers []*managedHTTPServer
+	addScope := func(item string) {
+		for server := range r.servers[item] {
+			if seen[server] {
+				continue
+			}
+			seen[server] = true
+			servers = append(servers, server)
+		}
+	}
+	if scope == "all" {
+		for item := range r.servers {
+			addScope(item)
+		}
+		return servers
+	}
+	addScope(scope)
+	return servers
+}
+
+type managedHTTPServer struct {
+	server *http.Server
+	mu     sync.Mutex
+	idle   map[net.Conn]struct{}
+}
+
+func newManagedHTTPServer(handler http.Handler) *managedHTTPServer {
+	managed := &managedHTTPServer{idle: map[net.Conn]struct{}{}}
+	managed.server = &http.Server{
+		Handler:   handler,
+		ConnState: managed.trackConnState,
+	}
+	return managed
+}
+
+func (s *managedHTTPServer) trackConnState(conn net.Conn, state http.ConnState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch state {
+	case http.StateIdle:
+		s.idle[conn] = struct{}{}
+	case http.StateActive, http.StateHijacked, http.StateClosed:
+		delete(s.idle, conn)
+	}
+}
+
+func (s *managedHTTPServer) CloseIdleConnections() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	conns := make([]net.Conn, 0, len(s.idle))
+	for conn := range s.idle {
+		conns = append(conns, conn)
+		delete(s.idle, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
 type idpRouteService struct {
-	mu          sync.Mutex
-	server      *backend.Server
-	adminListen string
-	certFile    string
-	keyFile     string
-	httpServer  *http.Server
-	listener    net.Listener
+	mu             sync.Mutex
+	server         *backend.Server
+	adminListen    string
+	certFile       string
+	keyFile        string
+	tlsConnections *tlsConnectionRefresher
+	httpServer     *managedHTTPServer
+	listener       net.Listener
 }
 
 func (s *idpRouteService) Restart() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.httpServer != nil {
-		_ = s.httpServer.Close()
+		if s.tlsConnections != nil {
+			s.tlsConnections.Unregister("idp", s.httpServer)
+		}
+		_ = s.httpServer.server.Close()
 	}
 	if s.listener != nil {
 		_ = s.listener.Close()
@@ -191,17 +315,20 @@ func (s *idpRouteService) Restart() error {
 	if err != nil {
 		return err
 	}
-	httpServer := &http.Server{Handler: s.server.IDPRouter()}
+	httpServer := newManagedHTTPServer(s.server.IDPRouter())
 	idpTLSEnabled := s.server.IDPTLSEnabled()
 	s.listener = listener
 	s.httpServer = httpServer
+	if s.tlsConnections != nil {
+		s.tlsConnections.Register("idp", httpServer)
+	}
 	log.Printf("DSM Pass idp listening on %s tls=%t", actualListen, idpTLSEnabled)
 	go func() {
 		var err error
 		if idpTLSEnabled {
-			err = httpServer.ServeTLS(listener, s.certFile, s.keyFile)
+			err = serveHTTPServer(httpServer.server, listener, true, s.certFile, s.keyFile)
 		} else {
-			err = httpServer.Serve(listener)
+			err = httpServer.server.Serve(listener)
 		}
 		if err != nil && err != http.ErrServerClosed {
 			log.Printf("DSM Pass idp route stopped: %v", err)
@@ -211,14 +338,22 @@ func (s *idpRouteService) Restart() error {
 }
 
 func serveHTTP(listener net.Listener, handler http.Handler, tlsEnabled bool, certFile, keyFile string) error {
+	return serveHTTPServer(&http.Server{Handler: handler}, listener, tlsEnabled, certFile, keyFile)
+}
+
+func serveHTTPServer(server *http.Server, listener net.Listener, tlsEnabled bool, certFile, keyFile string) error {
 	if tlsEnabled {
-		return http.ServeTLS(listener, handler, certFile, keyFile)
+		server.TLSConfig = dynamicTLSConfig(certFile, keyFile)
+		return server.ServeTLS(listener, "", "")
 	}
-	return http.Serve(listener, handler)
+	return server.Serve(listener)
 }
 
 func ensureCertificate(certFile, keyFile, accessHost string) error {
 	if fileExists(certFile) && fileExists(keyFile) {
+		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return fmt.Errorf("existing tls certificate and private key are invalid or do not match: %w", err)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(certFile), 0o700); err != nil {

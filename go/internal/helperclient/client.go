@@ -283,10 +283,10 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.read.error", c.DiagnosticsEnabled, diaglog.Event{"action": action, "error": err.Error(), "duration_ms": time.Since(start).Milliseconds()})
 		return nil, err
 	}
-	diaglog.Append(c.DataDir, requestID, "backend.helper.socket.read.success", c.DiagnosticsEnabled, diaglog.Event{"action": action, "raw_response": string(line), "duration_ms": time.Since(start).Milliseconds()})
+	diaglog.Append(c.DataDir, requestID, "backend.helper.socket.read.success", c.DiagnosticsEnabled, diaglog.Event{"action": action, "raw_response": diagnosticRawResponse(line), "duration_ms": time.Since(start).Milliseconds()})
 	var response map[string]any
 	if err := json.Unmarshal(line, &response); err != nil {
-		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.decode.error", c.DiagnosticsEnabled, diaglog.Event{"action": action, "error": err.Error(), "raw_response": string(line)})
+		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.decode.error", c.DiagnosticsEnabled, diaglog.Event{"action": action, "error": err.Error(), "raw_response": diagnosticRawResponse(line)})
 		return nil, err
 	}
 	if success, _ := response["success"].(bool); !success {
@@ -301,6 +301,14 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	}
 	diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.success", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 	return response, nil
+}
+
+func diagnosticRawResponse(line []byte) any {
+	var response map[string]any
+	if err := json.Unmarshal(line, &response); err != nil {
+		return map[string]any{"valid_json": false, "bytes": len(line)}
+	}
+	return response
 }
 
 func randomNonce() string {

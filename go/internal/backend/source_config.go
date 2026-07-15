@@ -13,10 +13,22 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/provider"
 )
 
+const (
+	defaultWeComAuthorizeURL = "https://open.work.weixin.qq.com/wwopen/sso/qrConnect"
+	legacyWeComAuthorizeURL  = "https://open.weixin.qq.com/connect/oauth2/authorize"
+
+	defaultDingTalkAuthorizeURL   = "https://login.dingtalk.com/oauth2/auth"
+	defaultDingTalkUserTokenURL   = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
+	defaultDingTalkUserInfoURL    = "https://api.dingtalk.com/v1.0/contact/users/me"
+	defaultDingTalkAppTokenURL    = "https://oapi.dingtalk.com/gettoken"
+	defaultDingTalkContactBaseURL = "https://oapi.dingtalk.com/topapi"
+)
+
 type identitySourceConfig struct {
 	PublicBaseURL         string `json:"public_base_url"`
 	ClientID              string `json:"client_id"`
 	ClientSecret          string `json:"client_secret,omitempty"`
+	AgentID               string `json:"agent_id"`
 	AuthorizeURL          string `json:"authorize_url"`
 	TokenURL              string `json:"token_url"`
 	UserInfoURL           string `json:"user_info_url"`
@@ -26,14 +38,11 @@ type identitySourceConfig struct {
 	SyncIntervalMinutes   int    `json:"sync_interval_minutes"`
 	DisableMissingUsers   *bool  `json:"disable_missing_users,omitempty"`
 	DeactivateMissingData *bool  `json:"deactivate_missing_data,omitempty"`
-	InitialPassword       string `json:"initial_password,omitempty"`
 }
 
 func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
 	if source, err := s.loadIdentitySource(context.Background(), slug); err == nil && source.Enabled == 1 && source.DirectorySyncEnabled == 1 {
-		if source.ProviderType == "feishu" {
-			return provider.NewFeishuWithSlug(s.configForSource(source), source.Slug), true
-		}
+		return s.directoryProviderForSource(source)
 	}
 	switch slug {
 	case "feishu":
@@ -46,6 +55,40 @@ func (s *Server) directoryProvider(slug string) (provider.Directory, bool) {
 	}
 }
 
+func (s *Server) directoryProviderForSource(source db.IdentitySource) (provider.Directory, bool) {
+	switch source.ProviderType {
+	case "feishu":
+		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
+	case "wecom":
+		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
+	case "dingtalk":
+		return provider.NewDingTalkWithSlug(s.dingTalkConfigForSource(source), source.Slug), true
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) oauthProviderForSource(source db.IdentitySource) (provider.OAuth, bool) {
+	switch source.ProviderType {
+	case "feishu":
+		return provider.NewFeishuWithSlug(s.feishuConfigForSource(source), source.Slug), true
+	case "wecom":
+		return provider.NewWeComWithSlug(s.weComConfigForSource(source), source.Slug), true
+	case "dingtalk":
+		return provider.NewDingTalkWithSlug(s.dingTalkConfigForSource(source), source.Slug), true
+	default:
+		return nil, false
+	}
+}
+
+func (s *Server) providerDisplayNameForSourceSlug(ctx context.Context, slug string) string {
+	source, err := s.loadIdentitySource(ctx, slug)
+	if err == nil {
+		return providerTypeDisplayName(source.ProviderType)
+	}
+	return providerTypeDisplayName(slug)
+}
+
 func (s *Server) loadIdentitySource(ctx context.Context, slug string) (db.IdentitySource, error) {
 	row := s.store.DBTX().QueryRowContext(ctx, `
 SELECT slug, provider_type, display_name, enabled, login_enabled, directory_sync_enabled, config_json, created_at, updated_at
@@ -56,9 +99,9 @@ WHERE slug = ?`, slug)
 	return source, err
 }
 
-func (s *Server) configForSource(source db.IdentitySource) config.BackendConfig {
+func (s *Server) feishuConfigForSource(source db.IdentitySource) config.BackendConfig {
 	cfg := s.cfg
-	sourceConfig := withSourceDefaults(decodeSourceConfig(source.ConfigJSON))
+	sourceConfig := decodeSourceConfigForType("feishu", source.ConfigJSON)
 	cfg.FeishuEnabled = source.Enabled == 1
 	cfg.PublicBaseURL = strings.TrimRight(s.cfg.PublicBaseURL, "/")
 	cfg.FeishuClientID = sourceConfig.ClientID
@@ -72,6 +115,34 @@ func (s *Server) configForSource(source db.IdentitySource) config.BackendConfig 
 	return cfg
 }
 
+func (s *Server) weComConfigForSource(source db.IdentitySource) provider.WeComConfig {
+	sourceConfig := decodeSourceConfigForType("wecom", source.ConfigJSON)
+	return provider.WeComConfig{
+		CorpID:            sourceConfig.ClientID,
+		CorpSecret:        sourceConfig.ClientSecret,
+		AgentID:           sourceConfig.AgentID,
+		AuthorizeURL:      sourceConfig.AuthorizeURL,
+		TokenURL:          sourceConfig.TokenURL,
+		UserInfoURL:       sourceConfig.UserInfoURL,
+		ContactBaseURL:    sourceConfig.ContactBaseURL,
+		DirectoryPageSize: sourceConfig.DirectoryPageSize,
+	}
+}
+
+func (s *Server) dingTalkConfigForSource(source db.IdentitySource) provider.DingTalkConfig {
+	sourceConfig := decodeSourceConfigForType("dingtalk", source.ConfigJSON)
+	return provider.DingTalkConfig{
+		AppKey:            sourceConfig.ClientID,
+		AppSecret:         sourceConfig.ClientSecret,
+		AuthorizeURL:      sourceConfig.AuthorizeURL,
+		UserTokenURL:      sourceConfig.TokenURL,
+		UserInfoURL:       sourceConfig.UserInfoURL,
+		AppTokenURL:       sourceConfig.TenantTokenURL,
+		ContactBaseURL:    sourceConfig.ContactBaseURL,
+		DirectoryPageSize: sourceConfig.DirectoryPageSize,
+	}
+}
+
 func feishuAuthorizePreviewURL(clientID, redirectURI string) string {
 	values := url.Values{}
 	values.Set("client_id", clientID)
@@ -80,27 +151,60 @@ func feishuAuthorizePreviewURL(clientID, redirectURI string) string {
 	return "https://accounts.feishu.cn/open-apis/authen/v1/authorize?" + values.Encode()
 }
 
-func sourceResponse(source db.IdentitySource, config identitySourceConfig, publicBaseURL string) gin.H {
+func weComAuthorizePreviewURL(corpID, agentID, redirectURI string) string {
+	values := url.Values{}
+	values.Set("appid", corpID)
+	values.Set("redirect_uri", redirectURI)
+	if strings.TrimSpace(agentID) != "" {
+		values.Set("agentid", agentID)
+	}
+	return defaultWeComAuthorizeURL + "?" + values.Encode()
+}
+
+func dingTalkAuthorizePreviewURL(appKey, redirectURI string) string {
+	values := url.Values{}
+	values.Set("redirect_uri", redirectURI)
+	values.Set("response_type", "code")
+	values.Set("client_id", appKey)
+	values.Set("scope", "openid")
+	values.Set("prompt", "consent")
+	return defaultDingTalkAuthorizeURL + "?" + values.Encode()
+}
+
+func (s *Server) sourceResponse(ctx context.Context, source db.IdentitySource, config identitySourceConfig, publicBaseURL string) (gin.H, error) {
 	publicBaseURL = strings.TrimRight(publicBaseURL, "/")
 	config.PublicBaseURL = ""
 	loginPath := "/idp/" + source.Slug + "/launch"
 	callbackPath := "/idp/" + source.Slug + "/callback"
 	callbackURL := strings.TrimRight(publicBaseURL, "/") + callbackPath
-	return gin.H{
+	initialPassword, err := s.sourceInitialPasswordStatus(ctx, source.Slug)
+	if err != nil {
+		return nil, err
+	}
+	response := gin.H{
 		"slug":                   source.Slug,
 		"provider_type":          source.ProviderType,
 		"display_name":           source.DisplayName,
 		"enabled":                source.Enabled == 1,
 		"login_enabled":          source.LoginEnabled == 1,
 		"directory_sync_enabled": source.DirectorySyncEnabled == 1,
-		"credentials_configured": config.ClientID != "" && config.ClientSecret != "",
+		"credentials_configured": credentialsConfigured(source.ProviderType, config),
 		"config":                 publicSourceConfig(config),
 		"created_at":             source.CreatedAt,
 		"updated_at":             source.UpdatedAt,
 		"login_url":              publicBaseURL + loginPath,
 		"callback_url":           callbackURL,
-		"feishu_authorize_url":   feishuAuthorizePreviewURL(config.ClientID, callbackURL),
+		"initial_password":       initialPassword,
 	}
+	switch source.ProviderType {
+	case "feishu":
+		response["feishu_authorize_url"] = feishuAuthorizePreviewURL(config.ClientID, callbackURL)
+	case "wecom":
+		response["wecom_authorize_url"] = weComAuthorizePreviewURL(config.ClientID, config.AgentID, callbackURL)
+	case "dingtalk":
+		response["dingtalk_authorize_url"] = dingTalkAuthorizePreviewURL(config.ClientID, callbackURL)
+	}
+	return response, nil
 }
 
 func (s *Server) CleanupIdentitySourcePublicBaseURLs(ctx context.Context) error {
@@ -145,27 +249,61 @@ func (s *Server) CleanupIdentitySourcePublicBaseURLs(ctx context.Context) error 
 }
 
 func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
+	return withSourceDefaultsForType("feishu", config)
+}
+
+func withSourceDefaultsForType(providerType string, config identitySourceConfig) identitySourceConfig {
+	config = trimSourceConfig(config)
 	config.PublicBaseURL = ""
-	if config.AuthorizeURL == "" || config.AuthorizeURL == "https://open.feishu.cn/open-apis/authen/v1/index" {
-		config.AuthorizeURL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-	}
-	if config.TokenURL == "" {
-		config.TokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-	}
-	if config.UserInfoURL == "" {
-		config.UserInfoURL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
-	}
-	if config.TenantTokenURL == "" {
-		config.TenantTokenURL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-	}
-	if config.ContactBaseURL == "" {
-		config.ContactBaseURL = "https://open.feishu.cn/open-apis/contact/v3"
+	switch providerType {
+	case "wecom":
+		if config.AuthorizeURL == "" || config.AuthorizeURL == legacyWeComAuthorizeURL {
+			config.AuthorizeURL = defaultWeComAuthorizeURL
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = "https://qyapi.weixin.qq.com/cgi-bin/auth/getuserinfo"
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = "https://qyapi.weixin.qq.com/cgi-bin"
+		}
+	case "dingtalk":
+		if config.AuthorizeURL == "" {
+			config.AuthorizeURL = defaultDingTalkAuthorizeURL
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = defaultDingTalkUserTokenURL
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = defaultDingTalkUserInfoURL
+		}
+		if config.TenantTokenURL == "" {
+			config.TenantTokenURL = defaultDingTalkAppTokenURL
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = defaultDingTalkContactBaseURL
+		}
+	default:
+		if config.AuthorizeURL == "" || config.AuthorizeURL == "https://open.feishu.cn/open-apis/authen/v1/index" {
+			config.AuthorizeURL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+		}
+		if config.TokenURL == "" {
+			config.TokenURL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+		}
+		if config.UserInfoURL == "" {
+			config.UserInfoURL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
+		}
+		if config.TenantTokenURL == "" {
+			config.TenantTokenURL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+		}
+		if config.ContactBaseURL == "" {
+			config.ContactBaseURL = "https://open.feishu.cn/open-apis/contact/v3"
+		}
 	}
 	if config.DirectoryPageSize <= 0 {
 		config.DirectoryPageSize = 50
-	}
-	if strings.TrimSpace(config.InitialPassword) == "" {
-		config.InitialPassword = defaultInitialPassword
 	}
 	if config.DisableMissingUsers == nil {
 		config.DisableMissingUsers = boolPointer(false)
@@ -177,14 +315,19 @@ func withSourceDefaults(config identitySourceConfig) identitySourceConfig {
 }
 
 func decodeSourceConfig(raw string) identitySourceConfig {
+	return decodeSourceConfigForType("feishu", raw)
+}
+
+func decodeSourceConfigForType(providerType, raw string) identitySourceConfig {
 	var config identitySourceConfig
 	_ = json.Unmarshal([]byte(raw), &config)
-	return withSourceDefaults(config)
+	return withSourceDefaultsForType(providerType, config)
 }
 
 func publicSourceConfig(config identitySourceConfig) gin.H {
 	return gin.H{
 		"client_id":                config.ClientID,
+		"agent_id":                 config.AgentID,
 		"client_secret_configured": config.ClientSecret != "",
 		"authorize_url":            config.AuthorizeURL,
 		"token_url":                config.TokenURL,
@@ -195,32 +338,38 @@ func publicSourceConfig(config identitySourceConfig) gin.H {
 		"sync_interval_minutes":    config.SyncIntervalMinutes,
 		"disable_missing_users":    boolValue(config.DisableMissingUsers, false),
 		"deactivate_missing_data":  boolValue(config.DeactivateMissingData, true),
-		"initial_password":         config.InitialPassword,
 	}
 }
 
 func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConfig {
+	return mergeSourceConfigForType("feishu", existing, update)
+}
+
+func mergeSourceConfigForType(providerType string, existing, update identitySourceConfig) identitySourceConfig {
 	existing.PublicBaseURL = ""
-	if update.ClientID != "" {
-		existing.ClientID = update.ClientID
+	if value := strings.TrimSpace(update.ClientID); value != "" {
+		existing.ClientID = value
 	}
-	if update.ClientSecret != "" {
-		existing.ClientSecret = update.ClientSecret
+	if value := strings.TrimSpace(update.AgentID); value != "" {
+		existing.AgentID = value
 	}
-	if update.AuthorizeURL != "" {
-		existing.AuthorizeURL = update.AuthorizeURL
+	if value := strings.TrimSpace(update.ClientSecret); value != "" {
+		existing.ClientSecret = value
 	}
-	if update.TokenURL != "" {
-		existing.TokenURL = update.TokenURL
+	if value := strings.TrimSpace(update.AuthorizeURL); value != "" {
+		existing.AuthorizeURL = value
 	}
-	if update.UserInfoURL != "" {
-		existing.UserInfoURL = update.UserInfoURL
+	if value := strings.TrimSpace(update.TokenURL); value != "" {
+		existing.TokenURL = value
 	}
-	if update.TenantTokenURL != "" {
-		existing.TenantTokenURL = update.TenantTokenURL
+	if value := strings.TrimSpace(update.UserInfoURL); value != "" {
+		existing.UserInfoURL = value
 	}
-	if update.ContactBaseURL != "" {
-		existing.ContactBaseURL = update.ContactBaseURL
+	if value := strings.TrimSpace(update.TenantTokenURL); value != "" {
+		existing.TenantTokenURL = value
+	}
+	if value := strings.TrimSpace(update.ContactBaseURL); value != "" {
+		existing.ContactBaseURL = value
 	}
 	if update.DirectoryPageSize > 0 {
 		existing.DirectoryPageSize = update.DirectoryPageSize
@@ -228,16 +377,35 @@ func mergeSourceConfig(existing, update identitySourceConfig) identitySourceConf
 	if update.SyncIntervalMinutes >= 0 {
 		existing.SyncIntervalMinutes = update.SyncIntervalMinutes
 	}
-	if strings.TrimSpace(update.InitialPassword) != "" {
-		existing.InitialPassword = strings.TrimSpace(update.InitialPassword)
-	}
 	if update.DisableMissingUsers != nil {
 		existing.DisableMissingUsers = update.DisableMissingUsers
 	}
 	if update.DeactivateMissingData != nil {
 		existing.DeactivateMissingData = update.DeactivateMissingData
 	}
-	return withSourceDefaults(existing)
+	return withSourceDefaultsForType(providerType, existing)
+}
+
+func trimSourceConfig(config identitySourceConfig) identitySourceConfig {
+	config.ClientID = strings.TrimSpace(config.ClientID)
+	config.ClientSecret = strings.TrimSpace(config.ClientSecret)
+	config.AgentID = strings.TrimSpace(config.AgentID)
+	config.AuthorizeURL = strings.TrimSpace(config.AuthorizeURL)
+	config.TokenURL = strings.TrimSpace(config.TokenURL)
+	config.UserInfoURL = strings.TrimSpace(config.UserInfoURL)
+	config.TenantTokenURL = strings.TrimSpace(config.TenantTokenURL)
+	config.ContactBaseURL = strings.TrimSpace(config.ContactBaseURL)
+	return config
+}
+
+func credentialsConfigured(providerType string, config identitySourceConfig) bool {
+	if strings.TrimSpace(config.ClientID) == "" || strings.TrimSpace(config.ClientSecret) == "" {
+		return false
+	}
+	if providerType == "wecom" {
+		return strings.TrimSpace(config.AgentID) != ""
+	}
+	return true
 }
 
 func boolPointer(value bool) *bool {

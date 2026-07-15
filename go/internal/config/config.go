@@ -6,6 +6,7 @@ import (
 )
 
 const defaultAccessHost = "127.0.0.1"
+const defaultIDPListen = "0.0.0.0:26000"
 const defaultAdminAllowedCIDRs = "all"
 const defaultIDPAllowedCIDRs = "all"
 
@@ -28,6 +29,7 @@ type BackendConfig struct {
 	AdminJWTSecret             string
 	AdminSetupRequired         bool
 	LoginDiagnosticsEnabled    bool
+	DeploymentMode             string
 	AccessHost                 string
 	AccessScheme               string
 	PublicBaseURL              string
@@ -88,10 +90,19 @@ func LoadBackend() BackendConfig {
 	accessHost := env("DSMPASS_ACCESS_HOST", defaultAccessHost)
 	dataDir := env("DSMPASS_DATA_DIR", "/volume1/docker/dsmpass/data")
 	listen := env("DSMPASS_GO_LISTEN", "0.0.0.0:25000")
-	idpListen := env("DSMPASS_IDP_LISTEN", "")
-	publicPort := listenPort(listen)
+	idpListen := os.Getenv("DSMPASS_IDP_LISTEN")
+	if idpListen == "" {
+		idpListen = defaultIDPListen
+		if listenPort(idpListen) == listenPort(listen) {
+			idpListen = "0.0.0.0:26001"
+		}
+	}
+	publicPort := listenPort(idpListen)
 	if publicPort == "" {
-		publicPort = "25000"
+		publicPort = listenPort(listen)
+	}
+	if publicPort == "" {
+		publicPort = "26000"
 	}
 	tlsEnabled := envBool("DSMPASS_TLS_ENABLED", true)
 	scheme := "https"
@@ -116,6 +127,7 @@ func LoadBackend() BackendConfig {
 		AdminPassword:              env("DSMPASS_ADMIN_PASSWORD", ""),
 		AdminJWTSecret:             env("DSMPASS_ADMIN_JWT_SECRET", ""),
 		LoginDiagnosticsEnabled:    envBool("DSMPASS_LOGIN_DIAGNOSTICS", false),
+		DeploymentMode:             env("DSMPASS_DEPLOYMENT_MODE", "direct"),
 		AccessHost:                 accessHost,
 		AccessScheme:               scheme,
 		PublicBaseURL:              env("DSMPASS_PUBLIC_BASE_URL", scheme+"://"+accessHost+":"+publicPort),

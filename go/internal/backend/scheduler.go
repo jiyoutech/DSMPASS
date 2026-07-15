@@ -27,7 +27,7 @@ func (s *Server) syncScheduler(ctx context.Context) {
 
 func (s *Server) runDueScheduledSyncs(ctx context.Context) {
 	rows, err := s.store.DBTX().QueryContext(ctx, `
-SELECT slug, config_json
+SELECT slug, provider_type, config_json
 FROM identity_sources
 WHERE enabled = 1 AND directory_sync_enabled = 1
 `)
@@ -38,12 +38,12 @@ WHERE enabled = 1 AND directory_sync_enabled = 1
 	defer rows.Close()
 	now := time.Now()
 	for rows.Next() {
-		var slug, rawConfig string
-		if err := rows.Scan(&slug, &rawConfig); err != nil {
+		var slug, providerType, rawConfig string
+		if err := rows.Scan(&slug, &providerType, &rawConfig); err != nil {
 			log.Printf("scheduled sync scan failed: %v", err)
 			continue
 		}
-		sourceConfig := decodeSourceConfig(rawConfig)
+		sourceConfig := decodeSourceConfigForType(providerType, rawConfig)
 		if sourceConfig.SyncIntervalMinutes <= 0 {
 			continue
 		}

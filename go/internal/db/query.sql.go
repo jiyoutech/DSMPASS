@@ -59,6 +59,76 @@ func (q *Queries) UpsertRuntimeSetting(ctx context.Context, arg UpsertRuntimeSet
 	return err
 }
 
+const getDeploymentSettings = `-- name: GetDeploymentSettings :one
+SELECT id, mode, access_host, access_scheme, idp_port, public_base_url, dsm_redirect_url, helper_dsm_login_api, created_at, updated_at
+FROM deployment_settings
+WHERE id = 1
+`
+
+func (q *Queries) GetDeploymentSettings(ctx context.Context) (DeploymentSetting, error) {
+	row := q.db.QueryRowContext(ctx, getDeploymentSettings)
+	var item DeploymentSetting
+	err := row.Scan(
+		&item.ID,
+		&item.Mode,
+		&item.AccessHost,
+		&item.AccessScheme,
+		&item.IDPPort,
+		&item.PublicBaseURL,
+		&item.DSMRedirectURL,
+		&item.HelperDSMLoginAPI,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+type UpsertDeploymentSettingsParams struct {
+	Mode              string `json:"mode"`
+	AccessHost        string `json:"access_host"`
+	AccessScheme      string `json:"access_scheme"`
+	IDPPort           int64  `json:"idp_port"`
+	PublicBaseURL     string `json:"public_base_url"`
+	DSMRedirectURL    string `json:"dsm_redirect_url"`
+	HelperDSMLoginAPI string `json:"helper_dsm_login_api"`
+}
+
+const upsertDeploymentSettings = `-- name: UpsertDeploymentSettings :exec
+INSERT INTO deployment_settings (
+    id,
+    mode,
+    access_host,
+    access_scheme,
+    idp_port,
+    public_base_url,
+    dsm_redirect_url,
+    helper_dsm_login_api,
+    updated_at
+) VALUES (1, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+ON CONFLICT(id) DO UPDATE SET
+    mode = excluded.mode,
+    access_host = excluded.access_host,
+    access_scheme = excluded.access_scheme,
+    idp_port = excluded.idp_port,
+    public_base_url = excluded.public_base_url,
+    dsm_redirect_url = excluded.dsm_redirect_url,
+    helper_dsm_login_api = excluded.helper_dsm_login_api,
+    updated_at = excluded.updated_at
+`
+
+func (q *Queries) UpsertDeploymentSettings(ctx context.Context, arg UpsertDeploymentSettingsParams) error {
+	_, err := q.db.ExecContext(ctx, upsertDeploymentSettings,
+		arg.Mode,
+		arg.AccessHost,
+		arg.AccessScheme,
+		arg.IDPPort,
+		arg.PublicBaseURL,
+		arg.DSMRedirectURL,
+		arg.HelperDSMLoginAPI,
+	)
+	return err
+}
+
 type CreateLoginAuditLogParams struct {
 	ID                string         `json:"id"`
 	RequestID         string         `json:"request_id"`

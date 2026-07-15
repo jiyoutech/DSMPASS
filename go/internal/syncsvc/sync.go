@@ -2,6 +2,8 @@ package syncsvc
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -47,19 +49,25 @@ func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Optio
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
+	providerName := providerDisplayName(directory)
 	result := Result{ProviderSlug: directory.Slug()}
 	syncStart := e.options.SyncStart
 	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
 		_ = e.q.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
 	}
-	users, err := directory.ListUsers()
+	users, groups, err := listDirectorySnapshot(directory)
 	if err != nil {
 		return result, err
 	}
+	if err := validateDirectorySnapshot(providerName, users, groups); err != nil {
+		return result, err
+	}
+	inactiveUserOnlyDirectory := len(users) > 0 && len(groups) == 0
 	e.report("写入用户映射", 0, len(users), "正在写入用户映射")
-	duplicateUserNames := duplicateUserNameCounts(users, e.cfg)
+	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
 	for index, user := range users {
 		verified := true
+		active := user.Active
 		subjectType := strings.TrimSpace(user.SubjectType)
 		if subjectType == "" {
 			subjectType = "directory_subject"
@@ -72,9 +80,21 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			Email:         user.Email,
 			EmailVerified: &verified,
 			Mobile:        user.Mobile,
+			Active:        &active,
 		})
 		if err != nil {
 			return result, err
+		}
+		if !user.Active {
+			result.Items = append(result.Items, PlanItem{
+				Action:          "skip_inactive_user",
+				ProviderSlug:    user.ProviderSlug,
+				Subject:         user.Subject,
+				DisplayName:     user.DisplayName,
+				ProvisionStatus: "inactive",
+			})
+			e.report("写入用户映射", index+1, len(users), user.DisplayName)
+			continue
 		}
 		appIdentity, identityLinkedExisting, err := identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
 		if err != nil {
@@ -85,7 +105,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			return result, err
 		}
 		if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
-			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, "冲突类型：飞书通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名")
+			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名", providerName))
 			if err != nil {
 				return result, err
 			}
@@ -111,9 +131,14 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		})
 		e.report("写入用户映射", index+1, len(users), user.DisplayName)
 	}
-	groups, err := directory.ListGroups()
-	if err != nil {
-		return result, err
+	if inactiveUserOnlyDirectory {
+		result.Items = append(result.Items, PlanItem{
+			Action:          "directory_warning",
+			ProviderSlug:    directory.Slug(),
+			Subject:         directory.Slug(),
+			DisplayName:     inactiveUserOnlyDirectoryWarning(providerName),
+			ProvisionStatus: "warning",
+		})
 	}
 	e.report("写入部门映射", 0, len(groups), "正在写入部门映射")
 	duplicateGroupSubjects := duplicateGroupSubjects(groups)
@@ -128,7 +153,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			return result, err
 		}
 		if duplicateGroupSubjects[group.Subject] && dsmGroup.Managed == 1 {
-			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, "飞书部门名重名，请管理员根据飞书部门路径手动指定 DSM 部门组名")
+			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, fmt.Sprintf("%s部门名重名，请管理员根据%s部门路径手动指定 DSM 部门组名", providerName, providerName))
 			if err != nil {
 				return result, err
 			}
@@ -165,7 +190,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if err != nil {
 		return result, err
 	}
-	membersByGroup := usersDepartmentMemberships(users, groups)
+	membersByGroup := usersDepartmentMemberships(activeDirectoryUsers(users), groups)
 	memberTotal := 0
 	if len(membersByGroup) > 0 {
 		for _, members := range membersByGroup {
@@ -216,7 +241,11 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		}
 	}
 	if e.options.DeactivateMissingData {
-		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart); err != nil {
+		mappingTypes := []string{}
+		if inactiveUserOnlyDirectory {
+			mappingTypes = []string{"user"}
+		}
+		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart, mappingTypes...); err != nil {
 			return result, err
 		}
 	}
@@ -224,6 +253,116 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		return result, err
 	}
 	return result, nil
+}
+
+func listDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
+	if snapshot, ok := directory.(provider.SnapshotDirectory); ok {
+		return snapshot.ListUsersAndGroups()
+	}
+	users, err := directory.ListUsers()
+	if err != nil {
+		return nil, nil, err
+	}
+	groups, err := directory.ListGroups()
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, groups, nil
+}
+
+func activeDirectoryUsers(users []provider.User) []provider.User {
+	active := make([]provider.User, 0, len(users))
+	for _, user := range users {
+		if user.Active {
+			active = append(active, user)
+		}
+	}
+	return active
+}
+
+func providerDisplayName(directory provider.Directory) string {
+	if named, ok := directory.(provider.Named); ok {
+		if name := strings.TrimSpace(named.ProviderDisplayName()); name != "" {
+			return name
+		}
+	}
+	slug := strings.TrimSpace(directory.Slug())
+	if strings.HasPrefix(slug, "feishu") {
+		return "飞书"
+	}
+	if strings.HasPrefix(slug, "wecom") {
+		return "企业微信"
+	}
+	if strings.HasPrefix(slug, "dingtalk") {
+		return "钉钉"
+	}
+	return "身份源"
+}
+
+func emptyDirectoryError(providerName string) error {
+	return fmt.Errorf("%s通讯录没有返回任何用户或部门。请检查应用可见范围、通讯录权限和同步配置后重新同步", providerName)
+}
+
+func validateDirectorySnapshot(providerName string, users []provider.User, groups []provider.Group) error {
+	if len(users) == 0 && len(groups) == 0 {
+		return emptyDirectoryError(providerName)
+	}
+
+	groupSubjects := make(map[string]bool, len(groups))
+	for _, group := range groups {
+		if subject := strings.TrimSpace(group.Subject); subject != "" {
+			groupSubjects[subject] = true
+		}
+	}
+
+	invalidUsers := make([]string, 0)
+	for _, user := range users {
+		// Inactive users must still be synchronized so a departed user cannot retain login access.
+		if !user.Active || userHasVisibleDepartment(user, groupSubjects) {
+			continue
+		}
+		invalidUsers = append(invalidUsers, directoryUserLabel(user))
+	}
+	if len(invalidUsers) == 0 {
+		return nil
+	}
+
+	sort.Strings(invalidUsers)
+	const sampleLimit = 5
+	sample := invalidUsers
+	if len(sample) > sampleLimit {
+		sample = sample[:sampleLimit]
+	}
+	detail := strings.Join(sample, "、")
+	if len(invalidUsers) > sampleLimit {
+		detail += fmt.Sprintf(" 等 %d 人", len(invalidUsers))
+	}
+	return fmt.Errorf("%s通讯录校验失败：%d 个启用用户没有至少一个当前应用可见的所属部门（用户未设置部门，或所属部门不在应用可见范围内）：%s。请到%s管理后台检查这些用户：未设置部门的请重新设置部门；已有部门的请确保至少一个所属部门已加入应用可见范围，并开放相应通讯录权限，然后重新同步", providerName, len(invalidUsers), detail, providerName)
+}
+
+func userHasVisibleDepartment(user provider.User, groupSubjects map[string]bool) bool {
+	for _, departmentSubject := range user.DepartmentSubjects {
+		if groupSubjects[strings.TrimSpace(departmentSubject)] {
+			return true
+		}
+	}
+	return false
+}
+
+func directoryUserLabel(user provider.User) string {
+	displayName := strings.TrimSpace(user.DisplayName)
+	subject := strings.TrimSpace(user.Subject)
+	if displayName == "" || displayName == subject {
+		return subject
+	}
+	if subject == "" {
+		return displayName
+	}
+	return fmt.Sprintf("%s（%s）", displayName, subject)
+}
+
+func inactiveUserOnlyDirectoryWarning(providerName string) string {
+	return fmt.Sprintf("%s通讯录只返回停用用户，没有返回部门；已同步用户停用状态，并保留现有部门和成员关系", providerName)
 }
 
 func (e *Engine) report(phase string, current, total int, message string) {

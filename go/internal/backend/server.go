@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
@@ -31,9 +32,12 @@ type Server struct {
 	idpRouteMu       sync.Mutex
 	restartIDPRoute  func() error
 	restartIDPNotice func(string)
+	tlsRefreshMu     sync.Mutex
+	refreshTLS       func(string)
+
+	allowMultipleIdentitySources bool
 }
 
-const defaultInitialPassword = "123456"
 const oauthStateTTL = 10 * time.Minute
 
 type oauthState struct {
@@ -78,6 +82,8 @@ func newServer(cfg config.BackendConfig, helper helperclient.Client, database *s
 		states:      map[string]oauthState{},
 		syncRuns:    map[string]bool{},
 		autoSync:    map[string]time.Time{},
+
+		allowMultipleIdentitySources: buildinfo.MultipleIdentitySourcesAllowed(),
 	}
 }
 
@@ -100,9 +106,6 @@ func (s *Server) IDPListenAddress() string {
 	if s.cfg.IDPListen != "" {
 		return s.cfg.IDPListen
 	}
-	if port := parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)); port > 0 {
-		return replaceListenPort("", s.cfg.Listen, port)
-	}
 	return ""
 }
 
@@ -117,25 +120,25 @@ func (s *Server) SetIDPRouteRestarter(restart func() error, notice func(string))
 	s.restartIDPNotice = notice
 }
 
-func (s *Server) restartIDPRouteOnly(reason string) {
-	s.idpRouteMu.Lock()
-	restart := s.restartIDPRoute
-	notice := s.restartIDPNotice
-	s.idpRouteMu.Unlock()
-	if restart == nil {
-		if notice != nil {
-			notice("idp route restart requested but no idp route restarter is configured")
-		}
-		return
+func (s *Server) SetTLSConnectionRefresher(refresh func(string)) {
+	s.tlsRefreshMu.Lock()
+	defer s.tlsRefreshMu.Unlock()
+	s.refreshTLS = refresh
+}
+
+func (s *Server) refreshTLSConnections(scope string) bool {
+	s.tlsRefreshMu.Lock()
+	refresh := s.refreshTLS
+	s.tlsRefreshMu.Unlock()
+	if refresh == nil {
+		return false
 	}
+	refresh(scope)
 	go func() {
-		if notice != nil {
-			notice("restarting idp route: " + reason)
-		}
-		if err := restart(); err != nil && notice != nil {
-			notice("failed to restart idp route: " + err.Error())
-		}
+		time.Sleep(500 * time.Millisecond)
+		refresh(scope)
 	}()
+	return true
 }
 
 func (s *Server) restartIDPRouteNow(reason string) error {

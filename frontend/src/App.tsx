@@ -66,6 +66,7 @@ const appName = "DSM Pass";
 const defaultIDPPort = 26000;
 const sourceTablePageSize = 50;
 const sourceModalWidth = "min(1180px, calc(100vw - 32px))";
+const singleIdentitySourceLimitMessage = "当前 SPK 仅允许一个身份源";
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -215,6 +216,77 @@ function OperationProgressPanel({ state }: { state: { run: OperationRun; events:
   );
 }
 
+function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderItem; onUpdated: (source: ProviderItem) => void }) {
+  const { message } = AntApp.useApp();
+  const [password, setPassword] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+
+  useEffect(() => {
+    setPassword("");
+    setModalOpen(false);
+  }, [source.slug]);
+
+  async function reveal() {
+    setRevealing(true);
+    try {
+      const result = await api.revealSourceInitialPassword(source.slug);
+      setPassword(result.initial_password);
+      setModalOpen(true);
+      onUpdated({ ...source, initial_password: result.status });
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "查看失败");
+    } finally {
+      setRevealing(false);
+    }
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setPassword("");
+  }
+
+  function copy() {
+    if (!password) {
+      return;
+    }
+    void navigator.clipboard.writeText(password)
+      .then(() => message.success("已复制初始密码"))
+      .catch(() => message.error("复制失败"));
+  }
+
+  return (
+    <Form.Item
+      label={helpLabel("DSM 初始密码", "这个身份源自动创建 DSM 用户时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
+    >
+      <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
+        查看初始密码
+      </Button>
+      <Modal
+        title={`${source.display_name} 的 DSM 初始密码`}
+        open={modalOpen}
+        onCancel={closeModal}
+        destroyOnHidden
+        footer={[
+          <Button key="copy" icon={<CopyOutlined />} disabled={!password} onClick={copy}>
+            复制
+          </Button>,
+          <Button key="close" type="primary" onClick={closeModal}>
+            关闭
+          </Button>
+        ]}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Text type="secondary">
+            此密码用于这个身份源自动创建的 DSM 用户。请只在交付给用户时查看和复制。
+          </Typography.Text>
+          <Input.Password value={password} readOnly />
+        </Space>
+      </Modal>
+    </Form.Item>
+  );
+}
+
 function preferredInitialIDPPort(settings: SystemSettings | null) {
   const idpPort = Number(settings?.idp_port || 0);
   const adminPort = Number(settings?.admin_port || 0);
@@ -241,6 +313,10 @@ function accountContactText(record: DSMAccount) {
   return [record.primary_email || record.external_emails, record.mobile_masked].filter(Boolean).join(" / ");
 }
 
+function configuredSourceValue(value?: string | null) {
+  return Boolean((value || "").trim());
+}
+
 type PageKey = "providers" | "source-detail" | "settings";
 const pageKeys: PageKey[] = ["providers", "source-detail", "settings"];
 type SourceTabKey = "addresses" | "users" | "groups" | "sync-logs" | "audit-logs";
@@ -249,8 +325,8 @@ type EnrichedDSMAccount = DSMAccount & { groups: string[]; member_records: Group
 
 function accountConflictKind(record: DSMAccount) {
   const reason = record.conflict_reason || "";
-  if (reason.includes("飞书用户姓名重名") || reason.includes("飞书通讯录内用户姓名重名")) {
-    return "feishu_duplicate";
+  if (reason.includes("通讯录内用户姓名重名") || reason.includes("飞书用户姓名重名")) {
+    return "provider_duplicate";
   }
   if (reason.includes("DSM 用户名已存在") || reason.includes("DSM 本地已存在同名用户")) {
     return "dsm_existing";
@@ -261,10 +337,10 @@ function accountConflictKind(record: DSMAccount) {
   return "other";
 }
 
-function accountConflictLabel(record: DSMAccount) {
+function accountConflictLabel(record: DSMAccount, providerLabel: string) {
   switch (accountConflictKind(record)) {
-    case "feishu_duplicate":
-      return "飞书内重名";
+    case "provider_duplicate":
+      return `${providerLabel}内重名`;
     case "dsm_existing":
       return "DSM 已有同名旧记录";
     case "dsmpass_existing":
@@ -278,18 +354,94 @@ function BridgeLogo() {
   return <img src="/favicon.svg" alt={appName} />;
 }
 
+function providerTypeLabel(providerType?: string | null) {
+  switch (providerType) {
+    case "feishu":
+      return "飞书";
+    case "wecom":
+      return "企业微信";
+    case "dingtalk":
+      return "钉钉";
+    default:
+      return "身份源";
+  }
+}
+
 const sourceFieldHelp = {
-  displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到飞书或 DSM。",
-  providerType: "选择这个身份源连接的上游系统。当前用于飞书登录和通讯录同步。",
-  clientID: "飞书开放平台应用的 App ID，用于发起飞书 OAuth 登录和调用通讯录接口。",
-  clientSecret: "飞书应用密钥，用于后端向飞书换取访问 token。留空保存会沿用旧密钥。",
-  initialPassword: "同步创建新的 DSM 用户时使用的初始密码。已有 DSM 用户通常不会被改密码。",
+  displayName: "后台里显示的身份源名称，只影响管理界面展示，不会同步到外部身份平台或 DSM。",
+  providerType: "选择这个身份源连接的外部身份平台，用于登录和通讯录同步。",
   enabled: "身份源总开关。关闭后，这个身份源整体不可用，登录和同步都会停止。",
-  loginEnabled: "控制这个身份源是否允许用户通过飞书登录 DSM。关闭后同步功能仍可单独使用。",
-  syncEnabled: "控制是否允许从飞书通讯录同步用户、部门和成员关系到本地映射/DSM。",
+  loginEnabled: "控制这个身份源是否允许用户通过外部身份平台登录 DSM。关闭后同步功能仍可单独使用。",
+  syncEnabled: "控制是否允许从身份源通讯录同步用户、部门和成员关系到本地映射/DSM。",
   syncInterval: "自动同步间隔。0 表示不自动同步，只能手动点击同步。",
-  disableMissingUsers: "同步时如果用户已不在飞书通讯录中，就禁用对应 DSM 用户登录。"
+  disableMissingUsers: "同步时如果用户已不在身份源通讯录中，就禁用对应 DSM 用户登录。"
 };
+
+type ProviderCredentialText = {
+  clientIDLabel: string;
+  clientIDHelp: string;
+  clientIDPlaceholder: string;
+  clientSecretLabel: string;
+  clientSecretHelp: string;
+  clientSecretPlaceholder: string;
+  agentIDLabel: string;
+  agentIDHelp: string;
+  agentIDPlaceholder: string;
+};
+
+function providerCredentialText(providerType?: string | null, providerName?: string): ProviderCredentialText {
+  const label = providerName || providerTypeLabel(providerType);
+  switch (providerType) {
+    case "feishu":
+      return {
+        clientIDLabel: "飞书 App ID",
+        clientIDHelp: "飞书应用的 App ID，用于发起 OAuth 登录和读取通讯录。创建后不可修改。位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientIDPlaceholder: "cli_xxx",
+        clientSecretLabel: "飞书 App Secret",
+        clientSecretHelp: "飞书应用的 App Secret，用于后端换取访问 token。创建后不可修改。位置：飞书开放平台 -> 开发者后台 -> 企业自建应用 -> 选择应用 -> 凭证与基础信息。",
+        clientSecretPlaceholder: "请输入飞书 App Secret",
+        agentIDLabel: "飞书 Agent ID",
+        agentIDHelp: "飞书当前不需要 Agent ID。",
+        agentIDPlaceholder: ""
+      };
+    case "wecom":
+      return {
+        clientIDLabel: "企业微信企业ID / CorpID",
+        clientIDHelp: "企业微信企业ID，用于 OAuth appid 和服务端 gettoken 的 corpid。创建后不可修改。位置：企业微信管理后台 -> 我的企业 -> 企业信息 -> 企业ID。",
+        clientIDPlaceholder: "wwxxxxxxxxxxxxxxxx",
+        clientSecretLabel: "企业微信应用 Secret",
+        clientSecretHelp: "企业微信自建应用 Secret，用于后端换取 access_token。创建后不可修改。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> Secret。",
+        clientSecretPlaceholder: "请输入企业微信应用 Secret",
+        agentIDLabel: "企业微信 AgentId",
+        agentIDHelp: "企业微信自建应用的 AgentId，用于构造企业微信扫码登录链接。创建后不可修改。位置：企业微信管理后台 -> 应用管理 -> 自建应用 -> 选择应用 -> AgentId。",
+        agentIDPlaceholder: "1000002"
+      };
+    case "dingtalk":
+      return {
+        clientIDLabel: "钉钉 AppKey",
+        clientIDHelp: "钉钉企业内部应用的 AppKey，用于发起扫码登录和调用通讯录接口。创建后不可修改。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientIDPlaceholder: "请输入钉钉 AppKey",
+        clientSecretLabel: "钉钉 AppSecret",
+        clientSecretHelp: "钉钉企业内部应用的 AppSecret，用于后端换取扫码登录用户 token 和通讯录 access_token。创建后不可修改。位置：钉钉开放平台 -> 应用开发 -> 企业内部应用 -> 选择应用 -> 基础信息 / 凭证。",
+        clientSecretPlaceholder: "请输入钉钉 AppSecret",
+        agentIDLabel: "钉钉 AgentId",
+        agentIDHelp: "钉钉扫码登录不需要 AgentId。",
+        agentIDPlaceholder: "请输入钉钉 AgentId"
+      };
+    default:
+      return {
+        clientIDLabel: `${label} Client ID`,
+        clientIDHelp: `${label}应用的 Client ID，用于发起 OAuth 登录和调用通讯录接口。创建后不可修改。位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientIDPlaceholder: "请输入 Client ID",
+        clientSecretLabel: `${label} Client Secret`,
+        clientSecretHelp: `${label}应用密钥，用于后端换取访问 token。创建后不可修改。位置：进入${label}开发者后台，打开对应应用的凭证或基础信息页面。`,
+        clientSecretPlaceholder: "请输入 Client Secret",
+        agentIDLabel: `${label} Agent ID`,
+        agentIDHelp: `${label}应用的 Agent ID。创建后不可修改。位置：进入${label}开发者后台，打开对应应用的应用信息页面。`,
+        agentIDPlaceholder: "请输入 Agent ID"
+      };
+  }
+}
 
 function helpLabel(label: string, help: string) {
   return <HelpLabel label={label} help={help} />;
@@ -429,12 +581,15 @@ function Onboarding({
   useEffect(() => {
     if (settings) {
       const idpPort = preferredInitialIDPPort(settings);
+      const deploymentMode = settings.deployment_mode || "direct";
       systemForm.setFieldsValue({
+        deployment_mode: deploymentMode,
+        admin_port: settings.admin_port,
         access_host: settings.access_host,
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
         admin_allowed_cidrs: settings.admin_allowed_cidrs,
-        public_base_url: withPreferredPort(settings.public_base_url, idpPort),
+        public_base_url: deploymentMode === "direct" ? withPreferredPort(settings.public_base_url, idpPort) : settings.public_base_url,
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
         helper_dsm_login_mode: settings.helper_dsm_login_mode || "browser",
@@ -447,9 +602,15 @@ function Onboarding({
   async function saveSystem(values: SystemSettingsUpdate) {
     setSaving(true);
     try {
-      await api.updateSystemSettings({ ...values, setup_completed: true });
+      const result = await api.updateSystemSettings({ ...values, setup_completed: true });
       await reloadSettings();
-      message.success("已保存");
+      if (result.idp_route_restart_required && result.idp_route_restarted === false) {
+        message.warning(`配置已保存，但认证路由刷新失败：${result.idp_route_restart_error || "请检查端口占用后重试"}`);
+      } else if (result.idp_route_restart_required) {
+        message.success("已保存，认证路由已刷新");
+      } else {
+        message.success("已保存");
+      }
     } catch (err) {
       message.error(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -475,6 +636,7 @@ function Onboarding({
           layout="vertical"
           onFinish={(values) => void saveSystem(values)}
           initialValues={{
+            deployment_mode: "direct",
             access_scheme: "https",
             idp_port: defaultIDPPort,
             admin_allowed_cidrs: "all",
@@ -729,7 +891,9 @@ function Providers({
   const providerTypeOptions = useMemo(() => providerTypeItems.map((item) => ({ label: item.display_name, value: item.type })), [providerTypeItems]);
   const selectedProviderType = Form.useWatch("provider_type", form) as string | undefined;
   const selectedProvider = providerTypeItems.find((item) => item.type === selectedProviderType);
-  const canCreateSource = helperReady && !helperLoading;
+  const selectedProviderCredentialText = providerCredentialText(selectedProviderType, selectedProvider?.display_name);
+  const identitySourceLimitReached = providerTypes.data?.allow_multiple_identity_sources === false && (data?.items.length ?? 0) > 0;
+  const canCreateSource = helperReady && !helperLoading && !identitySourceLimitReached;
 
   useEffect(() => {
     if (open && providerTypeOptions.length > 0 && !form.getFieldValue("provider_type")) {
@@ -738,6 +902,10 @@ function Providers({
   }, [form, open, providerTypeOptions]);
 
   async function create(values: ProviderUpsert) {
+    if (identitySourceLimitReached) {
+      message.error(`${singleIdentitySourceLimitMessage}；如需更换，请先删除现有身份源`);
+      return;
+    }
     if (!canCreateSource) {
       message.error("请先完成 Helper 提权，并点击「重启并检查 Helper」，再新建身份源");
       return;
@@ -780,6 +948,14 @@ function Providers({
   }
 
   function openCreateSource() {
+    if (identitySourceLimitReached) {
+      modal.warning({
+        title: singleIdentitySourceLimitMessage,
+        content: "此限制在 SPK 打包时设定。如需更换平台，请先删除现有身份源后再新建。",
+        okText: "知道了"
+      });
+      return;
+    }
     if (!canCreateSource) {
       modal.warning({
         title: "修复 Helper 权限后才能新建身份源",
@@ -801,7 +977,7 @@ function Providers({
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              title={canCreateSource ? "新建身份源" : "请先修复 Helper 权限"}
+              title={identitySourceLimitReached ? singleIdentitySourceLimitMessage : canCreateSource ? "新建身份源" : "请先修复 Helper 权限"}
               onClick={openCreateSource}
             >
               新建
@@ -822,7 +998,7 @@ function Providers({
           })}
           columns={[
             { title: "名称", dataIndex: "display_name" },
-            { title: "Provider", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? labelOf(value) },
+            { title: "平台", dataIndex: "provider_type", render: (value) => providerTypeLabels.get(String(value)) ?? providerTypeLabel(String(value)) },
             { title: "状态", dataIndex: "enabled", render: (value) => value ? <Tag color="success">运行中</Tag> : <Tag color="default">已暂停</Tag> },
             { title: "登录", dataIndex: "login_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
             { title: "同步", dataIndex: "directory_sync_enabled", render: (value) => value ? <Tag color="success">启用</Tag> : <Tag>停用</Tag> },
@@ -857,14 +1033,29 @@ function Providers({
             <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}>
               <Input />
             </Form.Item>
-            <Form.Item name={["config", "client_id"]} label={helpLabel("App ID", sourceFieldHelp.clientID)} rules={[{ required: selectedProvider?.requires_client_id }]}>
-              <Input />
+            <Form.Item
+              name={["config", "client_id"]}
+              label={helpLabel(selectedProviderCredentialText.clientIDLabel, selectedProviderCredentialText.clientIDHelp)}
+              rules={[{ required: selectedProvider?.requires_client_id }]}
+            >
+              <Input placeholder={selectedProviderCredentialText.clientIDPlaceholder} />
             </Form.Item>
-            <Form.Item name={["config", "client_secret"]} label={helpLabel("App Secret", sourceFieldHelp.clientSecret)} rules={[{ required: selectedProvider?.requires_secret }]}>
-              <Input.Password />
-            </Form.Item>
-            <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} initialValue="123456" rules={[{ required: true }]}>
-              <Input.Password />
+            {selectedProvider?.requires_agent_id && (
+              <Form.Item
+                name={["config", "agent_id"]}
+                label={helpLabel(selectedProviderCredentialText.agentIDLabel, selectedProviderCredentialText.agentIDHelp)}
+                preserve={false}
+                rules={[{ required: true }]}
+              >
+                <Input placeholder={selectedProviderCredentialText.agentIDPlaceholder} />
+              </Form.Item>
+            )}
+            <Form.Item
+              name={["config", "client_secret"]}
+              label={helpLabel(selectedProviderCredentialText.clientSecretLabel, selectedProviderCredentialText.clientSecretHelp)}
+              rules={[{ required: selectedProvider?.requires_secret }]}
+            >
+              <Input.Password placeholder={selectedProviderCredentialText.clientSecretPlaceholder} />
             </Form.Item>
             <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked" initialValue>
               <Switch />
@@ -941,6 +1132,13 @@ function SourceDetail({
   const members = useAsyncData(() => api.listGroupMembers(source.slug), [source.slug]);
   const syncLogs = useAsyncData(() => api.sourceSyncLogs(source.slug, { q: syncLogQuery, status: syncStatusFilter, page: syncLogPage, limit: sourceTablePageSize }), [source.slug, syncLogQuery, syncStatusFilter, syncLogPage]);
   const auditLogs = useAsyncData(() => api.loginAuditLogs({ provider: source.slug, q: auditQuery, result: auditResultFilter, page: auditPage, limit: sourceTablePageSize }), [source.slug, auditQuery, auditResultFilter, auditPage]);
+  const providerLabel = providerTypeLabel(source.provider_type);
+  const sourceRequiresAgentID = source.provider_type === "wecom";
+  const sourceCredentialText = providerCredentialText(source.provider_type, providerLabel);
+  const sourceClientIDLocked = configuredSourceValue(source.config?.client_id);
+  const sourceAgentIDLocked = sourceRequiresAgentID && configuredSourceValue(source.config?.agent_id);
+  const sourceSecretLocked = source.config?.client_secret_configured === true;
+  const sourceSecretPlaceholder = sourceSecretLocked ? "已配置，创建后不可修改" : sourceCredentialText.clientSecretPlaceholder;
 
   useEffect(() => {
     setAccountPage(1);
@@ -966,10 +1164,10 @@ function SourceDetail({
       directory_sync_enabled: source.directory_sync_enabled,
       config: {
         client_id: source.config?.client_id,
+        agent_id: source.config?.agent_id,
         sync_interval_minutes: source.config?.sync_interval_minutes ?? 0,
         disable_missing_users: source.config?.disable_missing_users ?? true,
-        deactivate_missing_data: source.config?.deactivate_missing_data ?? true,
-        initial_password: source.config?.initial_password ?? "123456"
+        deactivate_missing_data: source.config?.deactivate_missing_data ?? true
       }
     });
   }, [form, source]);
@@ -983,8 +1181,8 @@ function SourceDetail({
       modal.success({
         title: `${label} 地址已复制`,
         content: label === "Launch"
-          ? "请粘贴到飞书开放平台网页应用的入口地址/桌面端主页配置位置。"
-          : "请粘贴到飞书开放平台 OAuth 重定向 URL / 回调地址配置位置。"
+          ? `请粘贴到${providerLabel}应用的入口地址/主页配置位置。`
+          : `请粘贴到${providerLabel}应用的登录回调地址配置位置。`
       });
     } catch {
       message.error("复制失败");
@@ -994,10 +1192,25 @@ function SourceDetail({
   async function save(values: ProviderUpsert) {
     setSaving(true);
     try {
-      if (!values.config?.client_secret) {
-        delete values.config?.client_secret;
+      const payload: ProviderUpsert = { ...values };
+      if (values.config) {
+        const config = { ...values.config };
+        if (sourceClientIDLocked) {
+          delete config.client_id;
+        }
+        if (sourceAgentIDLocked) {
+          delete config.agent_id;
+        }
+        if (sourceSecretLocked || !config.client_secret) {
+          delete config.client_secret;
+        }
+        if (Object.keys(config).length > 0) {
+          payload.config = config;
+        } else {
+          delete payload.config;
+        }
       }
-      const updated = await api.updateProvider(source.slug, values);
+      const updated = await api.updateProvider(source.slug, payload);
       onUpdated(updated);
       message.success("已保存");
     } catch (err) {
@@ -1078,6 +1291,10 @@ function SourceDetail({
 
   function progressRunning() {
     return !activeOperation || activeOperation.run.status === "running";
+  }
+
+  function operationDisplaysError() {
+    return (operationModalOpen || conflictModalOpen) && (activeOperation?.run.status === "failed" || activeOperation?.run.status === "fail");
   }
 
   function operationOkText() {
@@ -1242,7 +1459,7 @@ function SourceDetail({
   const feishuDuplicateAccountGroups = useMemo(() => {
     const groupsByName = new Map<string, EnrichedDSMAccount[]>();
     for (const account of conflictAccounts) {
-      if (accountConflictKind(account) !== "feishu_duplicate") {
+      if (accountConflictKind(account) !== "provider_duplicate") {
         continue;
       }
       const name = (account.display_name || account.dsm_username || "未命名用户").trim();
@@ -1255,7 +1472,7 @@ function SourceDetail({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [conflictAccounts]);
   const nonFeishuDuplicateConflictAccounts = useMemo(() => {
-    return conflictAccounts.filter((account) => accountConflictKind(account) !== "feishu_duplicate");
+    return conflictAccounts.filter((account) => accountConflictKind(account) !== "provider_duplicate");
   }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichGroups(conflictGroupData.data?.items ?? []), [conflictGroupData.data?.items, enrichGroups]);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
@@ -1361,7 +1578,7 @@ function SourceDetail({
       cancelText: "取消",
       content: (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <Typography.Text type="secondary">飞书身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
+          <Typography.Text type="secondary">{providerLabel}身份：{record.external_subjects || record.app_identity_id}</Typography.Text>
           {accountContactText(record) && <Typography.Text type="secondary">邮箱 / 手机号：{accountContactText(record)}</Typography.Text>}
           {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
           <Input defaultValue={record.dsm_username} onChange={(event) => { nextUsername = event.target.value; }} />
@@ -1400,7 +1617,7 @@ function SourceDetail({
       cancelText: "取消",
       content: (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <Typography.Text type="secondary">飞书部门：{record.provider_group_path || record.provider_group_name || record.dsm_groupname}</Typography.Text>
+          <Typography.Text type="secondary">{providerLabel}部门：{record.provider_group_path || record.provider_group_name || record.dsm_groupname}</Typography.Text>
           {record.conflict_reason && <Alert type="warning" showIcon message={record.conflict_reason} />}
           <Input defaultValue={record.dsm_groupname} onChange={(event) => { nextGroupname = event.target.value; }} />
         </Space>
@@ -1486,13 +1703,6 @@ function SourceDetail({
     )) {
       return;
     }
-    const unchangedRecords = records.filter((record) => (
-      (groupConflictDrafts[record.id] ?? record.dsm_groupname).trim().toLowerCase() === record.dsm_groupname.trim().toLowerCase()
-    ));
-    if (unchangedRecords.length > 0) {
-      message.error("请先修改所有冲突部门的 DSM 部门组名");
-      return;
-    }
     setSavingConflictKey(batchKey);
     try {
       for (const record of records) {
@@ -1527,11 +1737,11 @@ function SourceDetail({
 
   const accountConflictColumns: ColumnsType<EnrichedDSMAccount> = [
     { title: "冲突类型", width: 130, render: (_, record) => (
-      <Tag color={accountConflictKind(record) === "dsm_existing" ? "volcano" : accountConflictKind(record) === "feishu_duplicate" ? "error" : "warning"}>
-        {accountConflictLabel(record)}
+      <Tag color={accountConflictKind(record) === "dsm_existing" ? "volcano" : accountConflictKind(record) === "provider_duplicate" ? "error" : "warning"}>
+        {accountConflictLabel(record, providerLabel)}
       </Tag>
     ) },
-    { title: "飞书用户", width: 210, render: (_, record) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
+    { title: `${providerLabel}用户`, width: 210, render: (_, record) => <IdentityCell primary={record.display_name || "-"} secondary={record.external_subjects || record.app_identity_id} /> },
     { title: "邮箱", width: 210, ellipsis: true, render: (_, record) => record.primary_email || record.external_emails || "-" },
     { title: "手机号", width: 130, ellipsis: true, render: (_, record) => record.mobile_masked || "-" },
     { title: "部门", width: 220, render: (_, record) => <EntityList values={record.groups} limit={3} /> },
@@ -1603,11 +1813,11 @@ function SourceDetail({
   const conflictCloseDisabled = conflictAutoSyncing && progressRunning();
 
   return (
-    <Space direction="vertical" size={16} className="page">
+    <Space direction="vertical" size={16} className="page source-detail-page">
       <PageTitle
         title={source.display_name}
         extra={
-          <Space>
+          <Space wrap className="source-detail-actions">
             <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
             {source.login_enabled ? (
               <Button onClick={() => void setSourceLoginEnabled(false)} loading={sourceLoginLoading}>暂停登录</Button>
@@ -1625,7 +1835,7 @@ function SourceDetail({
           </Space>
         }
       />
-      {syncError && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
       <Modal
         title={operationModalTitle}
         open={operationModalOpen}
@@ -1728,7 +1938,7 @@ function SourceDetail({
                 rowClassName="conflict-row"
                 scroll={{ x: 1180 }}
                 columns={[
-                  { title: "飞书部门", width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
+                  { title: `${providerLabel}部门`, width: 260, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                   { title: "当前 DSM 部门组名", width: 260, render: (_, record: DSMGroup) => (
                     <Input
                       value={groupConflictDrafts[record.id] ?? record.dsm_groupname}
@@ -1745,14 +1955,14 @@ function SourceDetail({
               className="conflict-step-card"
               title={(
                 <Space>
-                  <span>第 1 / {conflictStepCount} 组：飞书内重名用户</span>
+                  <span>第 1 / {conflictStepCount} 组：{providerLabel}内重名用户</span>
                   <Tag color="error">{currentFeishuDuplicateGroup.items.length} 个同名用户</Tag>
                 </Space>
               )}
             >
               <div className="conflict-user-group">
                 <div className="conflict-user-group-head">
-                  <strong>飞书姓名：{currentFeishuDuplicateGroup.name}</strong>
+                  <strong>{providerLabel}姓名：{currentFeishuDuplicateGroup.name}</strong>
                 </div>
                 <Table
                   size="small"
@@ -1786,6 +1996,7 @@ function SourceDetail({
         )}
       </Modal>
       <Tabs
+        className="source-detail-tabs"
         activeKey={activeTab}
         onChange={(key) => {
           if (sourceTabKeys.includes(key as SourceTabKey)) {
@@ -1795,7 +2006,7 @@ function SourceDetail({
         items={[
           {
             key: "addresses",
-            label: "飞书",
+            label: providerLabel,
             children: (
               <Space direction="vertical" size={16} className="page">
                 <Card title="地址" className="module-card">
@@ -1824,9 +2035,30 @@ function SourceDetail({
                   <Form form={form} layout="vertical" onFinish={(values) => void save(values)} disabled={saving}>
                     <div className="form-grid">
                       <Form.Item name="display_name" label={helpLabel("名称", sourceFieldHelp.displayName)} rules={[{ required: true }]}><Input /></Form.Item>
-                      <Form.Item name={["config", "client_id"]} label={helpLabel("飞书 App ID", sourceFieldHelp.clientID)} rules={[{ required: true }]}><Input /></Form.Item>
-                      <Form.Item name={["config", "client_secret"]} label={helpLabel("飞书 App Secret", sourceFieldHelp.clientSecret)}><Input.Password /></Form.Item>
-                      <Form.Item name={["config", "initial_password"]} label={helpLabel("DSM 初始密码", sourceFieldHelp.initialPassword)} rules={[{ required: true }]}><Input.Password /></Form.Item>
+                      <Form.Item
+                        name={["config", "client_id"]}
+                        label={helpLabel(sourceCredentialText.clientIDLabel, sourceCredentialText.clientIDHelp)}
+                        rules={[{ required: true }]}
+                      >
+                        <Input disabled={sourceClientIDLocked} placeholder={sourceCredentialText.clientIDPlaceholder} />
+                      </Form.Item>
+                      {sourceRequiresAgentID && (
+                        <Form.Item
+                          name={["config", "agent_id"]}
+                          label={helpLabel(sourceCredentialText.agentIDLabel, sourceCredentialText.agentIDHelp)}
+                          rules={[{ required: true }]}
+                        >
+                          <Input disabled={sourceAgentIDLocked} placeholder={sourceCredentialText.agentIDPlaceholder} />
+                        </Form.Item>
+                      )}
+                      <Form.Item
+                        name={["config", "client_secret"]}
+                        label={helpLabel(sourceCredentialText.clientSecretLabel, sourceCredentialText.clientSecretHelp)}
+                        rules={[{ required: !sourceSecretLocked }]}
+                      >
+                        <Input.Password disabled={sourceSecretLocked} placeholder={sourceSecretPlaceholder} />
+                      </Form.Item>
+                      <SourceInitialPasswordField source={source} onUpdated={onUpdated} />
                       <Form.Item name="enabled" label={helpLabel("启用", sourceFieldHelp.enabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="directory_sync_enabled" label={helpLabel("同步", sourceFieldHelp.syncEnabled)} valuePropName="checked"><Switch /></Form.Item>
@@ -1920,7 +2152,7 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "用户", dataIndex: "dsm_username", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_username} secondary={record.conflict_reason || record.app_identity_id} /> },
-                      { title: "飞书信息", width: 260, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={accountContactText(record) || record.external_subjects || undefined} /> },
+                      { title: `${providerLabel}信息`, width: 260, render: (_, record: DSMAccount) => <IdentityCell primary={record.display_name || "-"} secondary={accountContactText(record) || record.external_subjects || undefined} /> },
                       { title: "部门数", dataIndex: "groups", width: 100, render: (value: string[]) => <RelationCount value={value.length} label="部门" /> },
                       { title: "所属部门", dataIndex: "groups", render: (value: string[]) => <EntityList values={value} /> },
                       { title: "登录", dataIndex: "allow_login", width: 100, render: (value) => value ? <Tag color="success">允许</Tag> : <Tag color="error">禁止</Tag> },
@@ -2016,7 +2248,7 @@ function SourceDetail({
                     }}
                     columns={[
                       { title: "部门", dataIndex: "dsm_groupname", ellipsis: true, render: (_, record) => <IdentityCell primary={record.dsm_groupname} secondary={record.conflict_reason ?? undefined} /> },
-                      { title: "飞书部门", width: 240, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
+                      { title: `${providerLabel}部门`, width: 240, render: (_, record: DSMGroup) => <IdentityCell primary={record.provider_group_name || "-"} secondary={record.provider_group_path || undefined} /> },
                       { title: "成员数", dataIndex: "members", width: 110, render: (value: string[]) => <RelationCount value={value.length} label="成员" /> },
                       { title: "成员预览", dataIndex: "members", render: (value: string[]) => <EntityList values={value} limit={5} /> },
                       { title: "状态", dataIndex: "provision_status", width: 120, render: statusTag },
@@ -2061,6 +2293,7 @@ function SourceDetail({
                         { label: "成功", value: "success" },
                         { label: "失败", value: "failed" },
                         { label: "阻断", value: "blocked" },
+                        { label: "提示", value: "warning" },
                         { label: "待处理", value: "pending" }
                       ]}
                     />
@@ -2079,7 +2312,12 @@ function SourceDetail({
                             <span>同步批次</span><strong>{record.sync_run_id}</strong>
                             <span>结果</span><strong>{record.status}</strong>
                           </div>
-                          <LogBlock title="错误内容" value={record.error} empty="无错误" tone="danger" />
+                          <LogBlock
+                            title={record.status === "warning" ? "提示内容" : "错误内容"}
+                            value={record.error}
+                            empty={record.status === "warning" ? "无提示" : "无错误"}
+                            tone={record.status === "warning" ? undefined : "danger"}
+                          />
                         </div>
                       )
                     }}
