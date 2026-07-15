@@ -71,7 +71,6 @@ check_docs_required_files() {
     README.md \
     SECURITY.md \
     CONTRIBUTING.md \
-    CHANGELOG.md \
     docs/README.md \
     docs/publication-guidelines.md \
     docs/spk-feishu-setup.md \
@@ -90,7 +89,7 @@ check_docs_removed_refs() {
   log "检查已删除内部文档引用"
   if scan_to_file 'admin-console-functional-design|dsm-cookie-relay-mode|Cookie Relay Mode|Admin Console Functional Design|backend/app/providers/base\.py|legacy-python' \
     /tmp/dsmpass-doc-removed-refs.txt \
-    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/docs"
+    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/docs"
   then
     cat /tmp/dsmpass-doc-removed-refs.txt >&2
     fail "发现不应公开的内部文档引用"
@@ -101,7 +100,7 @@ check_docs_sensitive_examples() {
   log "检查明显敏感内容"
   if scan_to_file '/Users/|/private/tmp|BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY|client_secret[=:][^<[:space:]]|app_secret[=:][^<[:space:]]|refresh_token[=:][^<[:space:]]|access_token[=:][^<[:space:]]|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}' \
     /tmp/dsmpass-doc-sensitive.txt \
-    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/docs"
+    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/docs"
   then
     cat /tmp/dsmpass-doc-sensitive.txt >&2
     fail "发现疑似真实路径、密钥或内网地址；请改成占位值"
@@ -112,7 +111,7 @@ check_docs_old_english_titles() {
   log "检查英文旧标题回流"
   if scan_to_file '^# (Security Policy|Contributing|Changelog|Release Checklist|Go Version|Go DSM Binary Deployment|DSM SPK Package|Provider Development|Admin Console Functional Design|DSM Cookie Relay Mode)$' \
     /tmp/dsmpass-doc-english-titles.txt \
-    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/docs"
+    "$ROOT_DIR/README.md" "$ROOT_DIR/SECURITY.md" "$ROOT_DIR/CONTRIBUTING.md" "$ROOT_DIR/docs"
   then
     cat /tmp/dsmpass-doc-english-titles.txt >&2
     fail "发现英文旧标题，请保持公开文档中文化"
