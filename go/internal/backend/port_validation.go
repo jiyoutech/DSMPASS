@@ -7,6 +7,7 @@ import (
 )
 
 const minUserPort = 1025
+const defaultIDPPort = 26000
 
 var tcpPortAvailable = ensureTCPPortAvailable
 
@@ -15,6 +16,13 @@ func validateUserPort(port int, name string) error {
 		return badRequest(name + " must be between 1025 and 65535")
 	}
 	return nil
+}
+
+func defaultIDPPortForAdmin(adminPort int) int {
+	if adminPort != defaultIDPPort {
+		return defaultIDPPort
+	}
+	return defaultIDPPort + 1
 }
 
 func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, error) {
@@ -29,7 +37,7 @@ func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, 
 		restartRequired = true
 	}
 	adminPort := parsePortInt(listenAddressPort(s.AdminListenAddress()))
-	nextIDPPort := firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)))
+	nextIDPPort := firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), defaultIDPPortForAdmin(adminPort))
 	if raw, ok := update["idp_port"]; ok {
 		port, valid := runtimeInt(raw)
 		if !valid {
@@ -37,6 +45,9 @@ func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, 
 		}
 		if err := validateUserPort(port, "idp_port"); err != nil {
 			return false, err
+		}
+		if adminPort > 0 && port == adminPort {
+			return false, badRequest("idp_port must be different from the management port")
 		}
 		if port != nextIDPPort {
 			if err := tcpPortAvailable(replaceListenPort("", s.cfg.Listen, port)); err != nil {
@@ -48,18 +59,8 @@ func (s *Server) restartRequiredForSettingsUpdate(update map[string]any) (bool, 
 	}
 	if raw, ok := update["public_base_url"]; ok {
 		normalized := normalizePublicBaseURL(asRuntimeString(raw), nextScheme)
-		port := parsePortInt(publicBaseURLPort(normalized))
-		if port > 0 {
-			if err := validateUserPort(port, "public_base_url port"); err != nil {
-				return false, err
-			}
-			if _, hasExplicitIDPPort := update["idp_port"]; !hasExplicitIDPPort && port != nextIDPPort {
-				if err := tcpPortAvailable(replaceListenPort("", s.cfg.Listen, port)); err != nil {
-					return false, badRequest("public_base_url port is already in use")
-				}
-				restartRequired = true
-				nextIDPPort = port
-			}
+		if normalized == "" {
+			return false, badRequest("invalid public_base_url")
 		}
 	}
 	if nextScheme == "http" && s.cfg.TLSEnabled && adminPort > 0 && nextIDPPort == adminPort {

@@ -4,6 +4,19 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS deployment_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    mode TEXT NOT NULL DEFAULT 'direct',
+    access_host TEXT NOT NULL DEFAULT '',
+    access_scheme TEXT NOT NULL DEFAULT 'https',
+    idp_port INTEGER NOT NULL DEFAULT 26000,
+    public_base_url TEXT NOT NULL DEFAULT '',
+    dsm_redirect_url TEXT NOT NULL DEFAULT '',
+    helper_dsm_login_api TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS identity_sources (
     slug TEXT PRIMARY KEY,
     provider_type TEXT NOT NULL,
@@ -57,6 +70,16 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     provision_status TEXT NOT NULL DEFAULT 'pending',
     conflict_reason TEXT,
     allow_login INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_initial_password_secrets (
+    id TEXT PRIMARY KEY,
+    source_slug TEXT NOT NULL UNIQUE,
+    encrypted_password TEXT NOT NULL,
+    reveal_count INTEGER NOT NULL DEFAULT 0,
+    last_revealed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -205,6 +228,9 @@ CREATE INDEX IF NOT EXISTS idx_dsm_accounts_status
 
 CREATE INDEX IF NOT EXISTS idx_dsm_accounts_allow_status
     ON dsm_accounts(allow_login, provision_status);
+
+CREATE INDEX IF NOT EXISTS idx_source_initial_password_secrets_updated
+    ON source_initial_password_secrets(updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_provider_groups_provider_active_updated
     ON provider_groups(provider_slug, active, updated_at);

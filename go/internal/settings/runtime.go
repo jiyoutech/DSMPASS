@@ -63,6 +63,7 @@ func ApplyHelperRuntime(ctx context.Context, cfg config.HelperConfig, q *db.Quer
 	if q == nil {
 		return cfg
 	}
+	deployment, hasDeployment := helperDeploymentSettings(ctx, q)
 	rows, err := q.ListRuntimeSettings(ctx)
 	if err != nil {
 		return cfg
@@ -118,7 +119,36 @@ func ApplyHelperRuntime(ctx context.Context, cfg config.HelperConfig, q *db.Quer
 			cfg.DSMBrowserLoginTTLSeconds = asInt(value, cfg.DSMBrowserLoginTTLSeconds)
 		}
 	}
+	if hasDeployment {
+		if deployment.HelperDSMLoginAPI != "" {
+			cfg.DSMLoginAPI = normalizeDSMAPIURL(deployment.HelperDSMLoginAPI)
+		} else if deployment.AccessHost != "" {
+			if deployment.AccessScheme == "http" {
+				cfg.DSMLoginAPI = "http://" + deployment.AccessHost + ":5000/webapi/entry.cgi"
+			} else {
+				cfg.DSMLoginAPI = "https://" + deployment.AccessHost + ":5001/webapi/entry.cgi"
+			}
+		}
+	}
 	return cfg
+}
+
+type helperDeploymentSetting struct {
+	AccessHost        string
+	AccessScheme      string
+	HelperDSMLoginAPI string
+}
+
+func helperDeploymentSettings(ctx context.Context, q *db.Queries) (helperDeploymentSetting, bool) {
+	row, err := q.GetDeploymentSettings(ctx)
+	if err != nil {
+		return helperDeploymentSetting{}, false
+	}
+	return helperDeploymentSetting{
+		AccessHost:        normalizeAccessHost(row.AccessHost),
+		AccessScheme:      normalizedAccessScheme(row.AccessScheme),
+		HelperDSMLoginAPI: normalizeDSMAPIURL(row.HelperDSMLoginAPI),
+	}, true
 }
 
 func runtimeStringSetting(ctx context.Context, q *db.Queries, key string) (string, error) {

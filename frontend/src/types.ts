@@ -69,10 +69,14 @@ export interface ProviderItem {
   login_url?: string;
   callback_url?: string;
   feishu_authorize_url?: string;
+  wecom_authorize_url?: string;
+  dingtalk_authorize_url?: string;
   builtin?: boolean;
+  initial_password?: SourceInitialPasswordStatus;
   config?: {
     public_base_url?: string;
     client_id?: string;
+    agent_id?: string;
     client_secret_configured?: boolean;
     authorize_url?: string;
     token_url?: string;
@@ -83,8 +87,15 @@ export interface ProviderItem {
     sync_interval_minutes?: number;
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
-    initial_password?: string;
   };
+}
+
+export interface SourceInitialPasswordStatus {
+  configured: boolean;
+  reveal_count?: number;
+  last_revealed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface ProviderTypeItem {
@@ -94,6 +105,7 @@ export interface ProviderTypeItem {
   supports_sync: boolean;
   requires_client_id?: boolean;
   requires_secret?: boolean;
+  requires_agent_id?: boolean;
   supports_authorize?: boolean;
   supports_contact_api?: boolean;
 }
@@ -108,6 +120,7 @@ export interface ProviderUpsert {
   config?: {
     public_base_url?: string;
     client_id?: string;
+    agent_id?: string;
     client_secret?: string;
     authorize_url?: string;
     token_url?: string;
@@ -118,8 +131,14 @@ export interface ProviderUpsert {
     sync_interval_minutes?: number;
     disable_missing_users?: boolean;
     deactivate_missing_data?: boolean;
-    initial_password?: string;
   };
+}
+
+export interface SourceInitialPasswordReveal {
+  source_slug: string;
+  source_display_name: string;
+  status: SourceInitialPasswordStatus;
+  initial_password: string;
 }
 
 export interface ResetSyncDataResult {
@@ -251,6 +270,7 @@ export interface OperationEvent {
 }
 
 export interface SystemSettings {
+  deployment_mode: "direct" | "reverse_proxy" | "advanced";
   access_host: string;
   access_scheme: "http" | "https";
   admin_port: number;
@@ -271,15 +291,49 @@ export interface SystemSettings {
   helper_dsm_tls_skip_verify: boolean;
   setup_completed: boolean;
   helper_hmac_secret_configured: boolean;
+  idp_route_restart_required?: boolean;
+  idp_route_restarted?: boolean;
+  idp_route_restart_error?: string;
+}
+
+export interface SystemSettingsOverviewFact {
+  title: string;
+  value: string;
+  configurable: boolean;
+  change_method: string;
+  applies: string;
+  description: string;
+  notes: string[];
+}
+
+export interface SystemSettingsOverviewConfig {
+  key: string;
+  label: string;
+  value: string;
+  configurable: boolean;
+  change_method: string;
+  applies: string;
+  effect: string;
+  notes: string[];
+}
+
+export interface SystemSettingsOverview {
+  title: string;
+  summary: string[];
+  runtime: SystemSettingsOverviewFact[];
+  deployment_modes: SystemSettingsOverviewFact[];
+  configuration: SystemSettingsOverviewConfig[];
+  certificates: SystemSettingsOverviewConfig[];
+  operational_notes: string[];
 }
 
 export interface SystemSettingsDiscovery {
+  deployment_mode?: "direct" | "reverse_proxy" | "advanced";
   access_host: string;
   access_scheme: "http" | "https";
   admin_port: number;
   idp_port: number;
   admin_allowed_cidrs?: string;
-  idp_allowed_cidrs?: string;
   public_base_url: string;
   dsm_redirect_url: string;
   helper_dsm_login_api: string;
@@ -299,7 +353,7 @@ export interface CertificateInfo {
 }
 
 export type SystemSettingsUpdate = Partial<
-  Omit<SystemSettings, "helper_hmac_secret_configured"> & {
+  Omit<SystemSettings, "helper_hmac_secret_configured" | "idp_allowed_cidrs"> & {
     relay_helper_hmac_secret: string;
   }
 >;

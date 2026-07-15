@@ -3,12 +3,14 @@ package syncsvc
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
 	"github.com/dsmpass/dsmpass/go/internal/provider"
 )
 
@@ -34,6 +36,163 @@ func TestDisambiguateDuplicateGroupNamesUsesPathOnlyForDuplicates(t *testing.T) 
 	}
 }
 
+func TestSyncProviderReturnsActionableErrorWhenDirectoryIsEmpty(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		slug         string
+		providerName string
+	}{
+		{name: "feishu", slug: "feishu-main", providerName: "飞书"},
+		{name: "wecom", slug: "wecom-main", providerName: "企业微信"},
+		{name: "dingtalk", slug: "dingtalk-main", providerName: "钉钉"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, queries := openSyncTestDB(t, ctx)
+			defer database.Close()
+
+			_, err := NewEngine(config.BackendConfig{}, queries).SyncProvider(ctx, fakeDirectory{
+				slug: test.slug,
+				name: test.providerName,
+			})
+			if err == nil {
+				t.Fatal("expected empty directory error")
+			}
+			message := err.Error()
+			for _, want := range []string{test.providerName + "通讯录没有返回任何用户或部门", "应用可见范围", "重新同步"} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("empty directory error %q missing %q", message, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSyncProviderRejectsUsersWithoutDepartmentsForEveryProvider(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		slug         string
+		providerName string
+	}{
+		{name: "feishu", slug: "feishu-main", providerName: "飞书"},
+		{name: "wecom", slug: "wecom-main", providerName: "企业微信"},
+		{name: "dingtalk", slug: "dingtalk-main", providerName: "钉钉"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, queries := openSyncTestDB(t, ctx)
+			defer database.Close()
+
+			_, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+				slug:   test.slug,
+				name:   test.providerName,
+				users:  []provider.User{{ProviderSlug: test.slug, Subject: "u1", DisplayName: "alice", Active: true}},
+				groups: []provider.Group{{ProviderSlug: test.slug, Subject: "g1", Name: "engineering"}},
+			})
+			if err == nil {
+				t.Fatal("expected department validation error")
+			}
+			message := err.Error()
+			for _, want := range []string{test.providerName + "通讯录校验失败", "alice（u1）", "重新设置部门", "应用可见范围"} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("department validation error %q missing %q", message, want)
+				}
+			}
+			assertTableCount(t, ctx, database, "external_accounts", 0)
+			assertTableCount(t, ctx, database, "provider_groups", 0)
+
+			_, _, _, loginErr := identity.NewService(config.BackendConfig{}, queries).ResolveAuthorizedLogin(ctx, test.slug, "u1")
+			if loginErr == nil || !strings.Contains(loginErr.Error(), "identity not synchronized") {
+				t.Fatalf("login error got %v, want identity not synchronized", loginErr)
+			}
+		})
+	}
+}
+
+func TestSyncProviderRejectsUnknownDepartmentBeforeAnyWrite(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	_, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{
+			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "valid", Active: true, DepartmentSubjects: []string{"g1"}},
+			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "hidden", Active: true, DepartmentSubjects: []string{"g-hidden"}},
+		},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "hidden（u2）") {
+		t.Fatalf("expected unknown department error, got %v", err)
+	}
+	assertTableCount(t, ctx, database, "external_accounts", 0)
+	assertTableCount(t, ctx, database, "provider_groups", 0)
+}
+
+func TestSyncProviderAcceptsUserWithAnyVisibleDepartment(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	_, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{
+			ProviderSlug:       "feishu-main",
+			Subject:            "u1",
+			DisplayName:        "alice",
+			Active:             true,
+			DepartmentSubjects: []string{"g-hidden", "g1"},
+		}},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTableCount(t, ctx, database, "external_accounts", 1)
+}
+
+func TestSyncProviderSynchronizesInactiveUserWithoutDepartment(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+
+	result, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanAction(t, result, "skip_inactive_user")
+	assertPlanAction(t, result, "directory_warning")
+	assertTableCount(t, ctx, database, "external_accounts", 1)
+	assertTableCount(t, ctx, database, "app_identities", 0)
+	assertTableCount(t, ctx, database, "dsm_accounts", 0)
+	var active int
+	if err := database.QueryRowContext(ctx, `SELECT active FROM external_accounts WHERE subject = 'u1'`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("inactive external account active=%d, want 0", active)
+	}
+}
+
+func TestSyncProviderUsesDirectorySnapshot(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	directory := &snapshotDirectory{
+		fakeDirectory: fakeDirectory{
+			users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+			groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
+		},
+	}
+
+	if _, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, directory); err != nil {
+		t.Fatal(err)
+	}
+	if directory.snapshotCalls != 1 || directory.listUsersCalls != 0 || directory.listGroupsCalls != 0 {
+		t.Fatalf("snapshotCalls=%d listUsersCalls=%d listGroupsCalls=%d", directory.snapshotCalls, directory.listUsersCalls, directory.listGroupsCalls)
+	}
+}
+
 func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
@@ -41,9 +200,10 @@ func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 
 	directory := fakeDirectory{
 		users: []provider.User{
-			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true},
-			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true},
+			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true, DepartmentSubjects: []string{"g1"}},
+			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true, DepartmentSubjects: []string{"g1"}},
 		},
+		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
 	}
 	if _, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, directory); err != nil {
 		t.Fatal(err)
@@ -57,17 +217,20 @@ func TestSyncProviderKeepsExistingMappedUserWhenFeishuNameLaterDuplicates(t *tes
 	database, queries := openSyncTestDB(t, ctx)
 	defer database.Close()
 	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
+	directoryGroup := []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}}
 
 	if _, err := engine.SyncProvider(ctx, fakeDirectory{
-		users: []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true}},
+		users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: directoryGroup,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.SyncProvider(ctx, fakeDirectory{
 		users: []provider.User{
-			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true},
-			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true},
+			{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "amktest", Active: true, DepartmentSubjects: []string{"g1"}},
+			{ProviderSlug: "feishu-main", Subject: "u2", DisplayName: "amktest", Active: true, DepartmentSubjects: []string{"g1"}},
 		},
+		groups: directoryGroup,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,14 +246,16 @@ func TestSyncProviderLinksCrossSourceSameNameUser(t *testing.T) {
 	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
 
 	if _, err := engine.SyncProvider(ctx, fakeDirectory{
-		slug:  "source-a",
-		users: []provider.User{{ProviderSlug: "source-a", Subject: "u1", DisplayName: "alice", Active: true}},
+		slug:   "source-a",
+		users:  []provider.User{{ProviderSlug: "source-a", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g-a"}}},
+		groups: []provider.Group{{ProviderSlug: "source-a", Subject: "g-a", Name: "engineering-a"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := engine.SyncProvider(ctx, fakeDirectory{
-		slug:  "source-b",
-		users: []provider.User{{ProviderSlug: "source-b", Subject: "u2", DisplayName: "alice", Active: true}},
+		slug:   "source-b",
+		users:  []provider.User{{ProviderSlug: "source-b", Subject: "u2", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g-b"}}},
+		groups: []provider.Group{{ProviderSlug: "source-b", Subject: "g-b", Name: "engineering-b"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +419,7 @@ func TestSyncProviderReactivatesRemovedGroupMemberAsPending(t *testing.T) {
 	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
 }
 
-func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testing.T) {
+func TestSyncProviderRejectsMissingDepartmentWhenDeactivationDisabled(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
 	defer database.Close()
@@ -269,15 +434,86 @@ func TestSyncProviderCanKeepMissingGroupMembersWhenDeactivationDisabled(t *testi
 	if _, err := engine.SyncProvider(ctx, fakeDirectory{
 		users:  []provider.User{{ProviderSlug: "feishu-main", Subject: "u1", DisplayName: "alice", Active: true}},
 		groups: []provider.Group{{ProviderSlug: "feishu-main", Subject: "g1", Name: "engineering"}},
-	}); err != nil {
-		t.Fatal(err)
+	}); err == nil || !strings.Contains(err.Error(), "没有至少一个当前应用可见的所属部门") {
+		t.Fatalf("expected department validation error, got %v", err)
 	}
 
 	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
 }
 
+func TestSyncProviderRejectsUserOnlySnapshotBeforeStaleCleanup(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "wecom-main",
+		name:   "企业微信",
+		users:  []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{{ProviderSlug: "wecom-main", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:  "wecom-main",
+		name:  "企业微信",
+		users: []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true}},
+	}); err == nil || !strings.Contains(err.Error(), "重新设置部门") {
+		t.Fatalf("expected department validation error, got %v", err)
+	}
+
+	assertMemberState(t, ctx, database, "g1", "u1", true, "pending")
+	assertActiveMemberMappingCount(t, ctx, database, "wecom-main", 1)
+	assertActiveGroupMappingCount(t, ctx, database, "wecom-main", 1)
+}
+
+func TestSyncProviderInactiveUserOnlySnapshotPreservesGroups(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngineWithOptions(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries, Options{DeactivateMissingData: true})
+
+	if _, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:   "wecom-main",
+		name:   "企业微信",
+		users:  []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: true, DepartmentSubjects: []string{"g1"}}},
+		groups: []provider.Group{{ProviderSlug: "wecom-main", Subject: "g1", Name: "engineering"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE dsm_mapping_entries SET updated_at = '2000-01-01 00:00:00' WHERE provider_slug = 'wecom-main'`); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := engine.SyncProvider(ctx, fakeDirectory{
+		slug:  "wecom-main",
+		name:  "企业微信",
+		users: []provider.User{{ProviderSlug: "wecom-main", Subject: "u1", DisplayName: "alice", Active: false}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanAction(t, result, "skip_inactive_user")
+	assertPlanAction(t, result, "directory_warning")
+	assertActiveMemberMappingCount(t, ctx, database, "wecom-main", 1)
+	assertActiveGroupMappingCount(t, ctx, database, "wecom-main", 1)
+
+	var active int
+	if err := database.QueryRowContext(ctx, `SELECT active FROM external_accounts WHERE provider_slug = 'wecom-main' AND subject = 'u1'`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("inactive external account active=%d, want 0", active)
+	}
+}
+
 type fakeDirectory struct {
 	slug   string
+	name   string
 	users  []provider.User
 	groups []provider.Group
 }
@@ -289,11 +525,35 @@ func (f fakeDirectory) Slug() string {
 	return "feishu-main"
 }
 
+func (f fakeDirectory) ProviderDisplayName() string { return f.name }
+
 func (f fakeDirectory) ListUsers() ([]provider.User, error) { return f.users, nil }
 
 func (f fakeDirectory) ListGroups() ([]provider.Group, error) { return f.groups, nil }
 
 func (f fakeDirectory) ListGroupMembers(groupSubject string) ([]string, error) { return nil, nil }
+
+type snapshotDirectory struct {
+	fakeDirectory
+	snapshotCalls   int
+	listUsersCalls  int
+	listGroupsCalls int
+}
+
+func (f *snapshotDirectory) ListUsersAndGroups() ([]provider.User, []provider.Group, error) {
+	f.snapshotCalls++
+	return f.users, f.groups, nil
+}
+
+func (f *snapshotDirectory) ListUsers() ([]provider.User, error) {
+	f.listUsersCalls++
+	return f.users, nil
+}
+
+func (f *snapshotDirectory) ListGroups() ([]provider.Group, error) {
+	f.listGroupsCalls++
+	return f.groups, nil
+}
 
 func openSyncTestDB(t *testing.T, ctx context.Context) (*sql.DB, *db.Queries) {
 	t.Helper()
@@ -352,6 +612,20 @@ WHERE mapping_type = 'member' AND provider_slug = ? AND active = 1`, providerSlu
 	}
 	if got != want {
 		t.Fatalf("provider %s active member mapping count got %d want %d", providerSlug, got, want)
+	}
+}
+
+func assertActiveGroupMappingCount(t *testing.T, ctx context.Context, database *sql.DB, providerSlug string, want int) {
+	t.Helper()
+	var got int
+	if err := database.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM dsm_mapping_entries
+WHERE mapping_type = 'group' AND provider_slug = ? AND active = 1`, providerSlug).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("provider %s active group mapping count got %d want %d", providerSlug, got, want)
 	}
 }
 

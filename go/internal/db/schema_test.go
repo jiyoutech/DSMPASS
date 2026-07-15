@@ -20,6 +20,7 @@ func TestPrepareSchemaCreatesPerformanceIndexes(t *testing.T) {
 	}
 
 	for _, name := range []string{
+		"deployment_settings",
 		"idx_external_accounts_provider_active_seen",
 		"idx_external_accounts_app_identity",
 		"idx_provider_groups_provider_active_updated",
@@ -33,7 +34,11 @@ func TestPrepareSchemaCreatesPerformanceIndexes(t *testing.T) {
 		"idx_login_audit_logs_provider_created",
 	} {
 		var count int
-		if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&count); err != nil {
+		objectType := "index"
+		if name == "deployment_settings" {
+			objectType = "table"
+		}
+		if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?`, objectType, name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {

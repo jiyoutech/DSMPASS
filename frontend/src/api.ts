@@ -15,10 +15,12 @@ import type {
   ProviderItem,
   ProviderTypeItem,
   ResetSyncDataResult,
+  SourceInitialPasswordReveal,
   SyncOperationLog,
   SyncResult,
   SystemSettings,
   SystemSettingsDiscovery,
+  SystemSettingsOverview,
   SystemSettingsUpdate,
   VersionInfo
 } from "./types";
@@ -119,7 +121,9 @@ export const api = {
   provisionMember: (id: string) =>
     request<{ id: string; provision_status: string }>(`/api/admin/group-members/${id}/provision`, { method: "POST" }),
   listProviders: () => request<{ items: ProviderItem[] }>("/api/admin/providers"),
-  listProviderTypes: () => request<{ items: ProviderTypeItem[] }>("/api/admin/provider-types"),
+  listProviderTypes: () => request<{ items: ProviderTypeItem[]; allow_multiple_identity_sources: boolean }>("/api/admin/provider-types"),
+  revealSourceInitialPassword: (slug: string) =>
+    request<SourceInitialPasswordReveal>(`/api/admin/providers/${slug}/initial-password/reveal`, { method: "POST" }),
   createProvider: (payload: ProviderUpsert) =>
     request<ProviderItem>("/api/admin/providers", { method: "POST", body: JSON.stringify(payload) }),
   updateProvider: (slug: string, payload: ProviderUpsert) =>
@@ -137,14 +141,16 @@ export const api = {
   restartHelper: () => request<{ success: boolean }>("/api/admin/helper/restart", { method: "POST" }),
   version: () => request<VersionInfo>("/api/admin/version"),
   systemSettings: () => request<SystemSettings>("/api/admin/settings"),
+  systemSettingsOverview: () => request<SystemSettingsOverview>("/api/admin/settings/overview"),
   updateSystemSettings: (payload: SystemSettingsUpdate) =>
     request<SystemSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(payload) }),
-  uploadCertificate: (scope: "idp", cert: File, key: File) => {
+  uploadCertificate: (scope: "admin" | "idp", cert: File, key: File) => {
     const body = new FormData();
     body.append("cert", cert);
     body.append("key", key);
-    return request<{ success: boolean; scope: string; restart_required: boolean; certificate_domains: string[]; certificate_info: CertificateInfo; applied_access_host: string }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
+    return request<{ success: boolean; scope: string; restart_required: boolean; connections_refreshed: boolean; certificate_domains: string[]; certificate_info: CertificateInfo; applied_access_host: string }>(`/api/admin/settings/certificates/${scope}`, { method: "POST", body });
   },
+  refreshTLSConnections: () => request<{ success: boolean; connections_refreshed: boolean }>("/api/admin/tls-connections/refresh", { method: "POST" }),
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
   discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),

@@ -10,12 +10,25 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/settings"
 )
 
+const fixedIDPAllowedCIDRs = "private"
+
 func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	rows, err := s.store.ListRuntimeSettings(ctx)
 	if err != nil {
 		return err
 	}
+	deployment, err := s.loadOrCreateDeploymentSettings(ctx, rows)
+	if err != nil {
+		return err
+	}
+	s.applyDeploymentSettings(deployment)
 	for _, row := range rows {
+		if isDeploymentSettingKey(row.Key) {
+			continue
+		}
+		if row.Key == "idp_allowed_cidrs" {
+			continue
+		}
 		var value any
 		if err := json.Unmarshal([]byte(row.ValueJson), &value); err != nil {
 			return err
@@ -27,9 +40,6 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 			value = normalizeDSMAPIURL(asRuntimeString(value))
 		}
 		s.applyRuntimeSetting(row.Key, value)
-	}
-	if port := parsePortInt(listenAddressPort(s.cfg.IDPListen)); port > 0 {
-		s.cfg.PublicBaseURL = replaceBaseURLPort(s.cfg.PublicBaseURL, port)
 	}
 	s.refreshAdminSetupState()
 	if err := s.ensureAdminJWTSecret(ctx); err != nil {
@@ -49,12 +59,13 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 
 func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) {
 	settings := map[string]any{
+		"deployment_mode":                      normalizeDeploymentMode(s.cfg.DeploymentMode),
 		"access_host":                          s.cfg.AccessHost,
 		"access_scheme":                        s.configuredAccessScheme(),
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":                             firstPositiveInt(parsePortInt(publicBaseURLPort(s.cfg.PublicBaseURL)), 25000),
+		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
-		"idp_allowed_cidrs":                    s.cfg.IDPAllowedCIDRs,
+		"idp_allowed_cidrs":                    fixedIDPAllowedCIDRs,
 		"public_base_url":                      s.cfg.PublicBaseURL,
 		"dsm_redirect_url":                     s.cfg.DSMRedirectURL,
 		"dsm_cookie_name":                      s.cfg.DSMCookieName,
@@ -79,10 +90,16 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		return nil, err
 	}
 	for _, row := range rows {
+		if isDeploymentSettingKey(row.Key) {
+			continue
+		}
 		if row.Key == "relay_mode" || strings.HasPrefix(row.Key, "feishu_") || strings.HasPrefix(row.Key, "username_") || strings.HasPrefix(row.Key, "admin_") {
 			if row.Key == "relay_helper_hmac_secret" {
 				settings["helper_hmac_secret_configured"] = row.ValueJson != `""`
 			}
+			continue
+		}
+		if row.Key == "idp_allowed_cidrs" {
 			continue
 		}
 		if row.Key == "relay_helper_hmac_secret" {
@@ -99,6 +116,9 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 }
 
 func (s *Server) saveSetting(ctx context.Context, key string, value any) error {
+	if isDeploymentSettingKey(key) {
+		return s.saveDeploymentSetting(ctx, key, value)
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -120,6 +140,8 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 		return false
 	}
 	switch key {
+	case "deployment_mode":
+		s.cfg.DeploymentMode = normalizeDeploymentMode(asString())
 	case "access_host":
 		host := normalizeAccessHost(asString())
 		s.cfg.AccessHost = host
@@ -129,21 +151,20 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 	case "access_scheme":
 		scheme := normalizedAccessScheme(asString(), s.cfg.TLSEnabled)
 		s.cfg.AccessScheme = scheme
-		s.cfg.PublicBaseURL = normalizeURLScheme(s.cfg.PublicBaseURL, scheme)
+		if normalizeDeploymentMode(s.cfg.DeploymentMode) == "direct" {
+			s.cfg.PublicBaseURL = normalizeURLScheme(s.cfg.PublicBaseURL, scheme)
+		}
 		s.cfg.DSMRedirectURL = normalizeDSMDefaultPortForScheme(s.cfg.DSMRedirectURL, scheme, s.cfg.AccessHost, false)
 		s.cfg.HelperDSMLoginAPI = normalizeDSMDefaultPortForScheme(s.cfg.HelperDSMLoginAPI, scheme, s.cfg.AccessHost, true)
 		s.cfg.DSMCookieSecure = scheme == "https"
 	case "public_base_url":
-		s.cfg.PublicBaseURL = normalizeURLScheme(normalizePublicBaseURL(asString(), s.configuredAccessScheme()), s.configuredAccessScheme())
+		s.cfg.PublicBaseURL = normalizePublicBaseURL(asString(), s.configuredAccessScheme())
 	case "idp_port":
 		if port, ok := runtimeInt(value); ok {
 			s.cfg.IDPListen = replaceListenPort(s.cfg.IDPListen, s.cfg.Listen, port)
-			s.cfg.PublicBaseURL = replaceBaseURLPort(s.cfg.PublicBaseURL, port)
 		}
 	case "admin_allowed_cidrs":
 		s.cfg.AdminAllowedCIDRs = asString()
-	case "idp_allowed_cidrs":
-		s.cfg.IDPAllowedCIDRs = asString()
 	case "dsm_redirect_url":
 		s.cfg.DSMRedirectURL = normalizeDSMBaseURL(asString())
 	case "helper_dsm_login_api":

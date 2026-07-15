@@ -22,6 +22,7 @@ type ExternalProfile struct {
 	EmailVerified *bool
 	Mobile        string
 	AvatarURL     string
+	Active        *bool
 }
 
 type Service struct {
@@ -48,12 +49,16 @@ func (s *Service) UpsertProfile(ctx context.Context, profile ExternalProfile) (d
 	if profile.EmailVerified != nil {
 		emailVerified = sql.NullInt64{Int64: boolInt(*profile.EmailVerified), Valid: true}
 	}
+	active := int64(1)
+	if profile.Active != nil {
+		active = boolInt(*profile.Active)
+	}
 	_, err = s.q.DBTX().ExecContext(ctx, `
 INSERT INTO external_accounts (
 	id, provider_slug, subject, subject_norm, subject_type, app_identity_id,
 	display_name, email, email_norm, email_verified, mobile_masked, avatar_url,
 	active, last_seen_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 	subject = excluded.subject,
 	subject_type = excluded.subject_type,
@@ -63,7 +68,7 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 	email_verified = excluded.email_verified,
 	mobile_masked = excluded.mobile_masked,
 	avatar_url = excluded.avatar_url,
-	active = 1,
+	active = excluded.active,
 	last_seen_at = CURRENT_TIMESTAMP,
 	updated_at = CURRENT_TIMESTAMP
 `,
@@ -79,6 +84,7 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 		emailVerified,
 		nullString(maskMobile(profile.Mobile)),
 		nullString(profile.AvatarURL),
+		active,
 	)
 	if err != nil {
 		return db.ExternalAccount{}, err
@@ -156,9 +162,10 @@ func (s *Service) EnsureDSMAccountWithCreated(ctx context.Context, identity db.A
 	allowLogin := 1
 	conflictReason := sql.NullString{}
 	if existing, existingErr := s.getDSMAccountByNorm(ctx, Normalize(username)); existingErr == nil && existing.AppIdentityID != identity.ID {
+		providerName := s.providerDisplayNameForIdentity(ctx, identity.ID)
 		status = "conflict"
 		allowLogin = 0
-		conflictReason = sql.NullString{String: fmt.Sprintf("冲突类型：DSM Pass 内已有身份占用 DSM 用户名 %q。请根据飞书信息手动指定最终 DSM 用户名", username), Valid: true}
+		conflictReason = sql.NullString{String: fmt.Sprintf("冲突类型：DSM Pass 内已有身份占用 DSM 用户名 %q。请根据%s身份信息手动指定最终 DSM 用户名", username, providerName), Valid: true}
 		username = conflictUsername(username, identity.ID)
 	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
 		return db.DSMAccount{}, false, existingErr
@@ -404,8 +411,22 @@ ON CONFLICT(mapping_type, provider_slug, external_account_id, provider_group_id)
 	return err
 }
 
-func (s *Service) DeactivateStaleMappings(ctx context.Context, providerSlug, syncStart string) error {
+func (s *Service) DeactivateStaleMappings(ctx context.Context, providerSlug, syncStart string, mappingTypes ...string) error {
 	if strings.TrimSpace(syncStart) == "" {
+		return nil
+	}
+	if len(mappingTypes) > 0 {
+		for _, mappingType := range mappingTypes {
+			if strings.TrimSpace(mappingType) == "" {
+				continue
+			}
+			if _, err := s.q.DBTX().ExecContext(ctx, `
+	UPDATE dsm_mapping_entries
+	SET active = 0, updated_at = CURRENT_TIMESTAMP
+	WHERE provider_slug = ? AND mapping_type = ? AND active = 1 AND updated_at < ?`, providerSlug, mappingType, syncStart); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	_, err := s.q.DBTX().ExecContext(ctx, `
@@ -549,9 +570,51 @@ func (s *Service) allocateUsername(ctx context.Context, identity db.AppIdentity)
 		if identity.DisplayName.Valid {
 			displayName = identity.DisplayName.String
 		}
-		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认飞书返回真实姓名并且姓名包含 DSM 支持的字符", displayName)
+		providerName := s.providerDisplayNameForIdentity(ctx, identity.ID)
+		return "", fmt.Errorf("DSM 用户名不可用：用户姓名 %q 清洗后为空，请确认%s返回真实姓名并且姓名包含 DSM 支持的字符", displayName, providerName)
 	}
 	return username, nil
+}
+
+func (s *Service) providerDisplayNameForIdentity(ctx context.Context, identityID string) string {
+	var providerType, providerSlug string
+	err := s.q.DBTX().QueryRowContext(ctx, `
+SELECT COALESCE(i.provider_type, ''), e.provider_slug
+FROM external_accounts e
+LEFT JOIN identity_sources i ON i.slug = e.provider_slug
+WHERE e.app_identity_id = ?
+ORDER BY e.created_at
+LIMIT 1`, identityID).Scan(&providerType, &providerSlug)
+	if err != nil {
+		return "身份源"
+	}
+	if strings.TrimSpace(providerType) == "" {
+		providerType = providerSlug
+	}
+	return providerDisplayName(providerType)
+}
+
+func providerDisplayName(providerType string) string {
+	providerType = strings.TrimSpace(providerType)
+	switch providerType {
+	case "feishu":
+		return "飞书"
+	case "wecom":
+		return "企业微信"
+	case "dingtalk":
+		return "钉钉"
+	default:
+		if strings.HasPrefix(providerType, "feishu") {
+			return "飞书"
+		}
+		if strings.HasPrefix(providerType, "wecom") {
+			return "企业微信"
+		}
+		if strings.HasPrefix(providerType, "dingtalk") {
+			return "钉钉"
+		}
+		return "身份源"
+	}
 }
 
 func (s *Service) allocateUsernameForDisplayName(displayName sql.NullString) (string, error) {

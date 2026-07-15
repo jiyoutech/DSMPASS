@@ -11,6 +11,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+const singleIdentitySourceLimitMessage = "当前 SPK 仅允许一个身份源；如需更换，请先删除现有身份源"
+
 func (s *Server) providers(c *gin.Context) {
 	items := []gin.H{}
 	rows, err := s.store.DBTX().QueryContext(c.Request.Context(), `
@@ -28,8 +30,13 @@ ORDER BY created_at`)
 			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 			return
 		}
-		config := decodeSourceConfig(source.ConfigJSON)
-		items = append(items, sourceResponse(source, config, s.trustedPublicBaseURL()))
+		config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
+		response, err := s.sourceResponse(c.Request.Context(), source, config, s.trustedPublicBaseURL())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		items = append(items, response)
 	}
 	if rows.Err() != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": rows.Err().Error()})
@@ -72,18 +79,55 @@ func (s *Server) createProvider(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "unsupported provider type"})
 		return
 	}
-	config := withSourceDefaults(payload.Config)
+	config := withSourceDefaultsForType(payload.ProviderType, payload.Config)
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
-	_, err = s.store.DBTX().ExecContext(c.Request.Context(), `
+	insert := func(q db.DBTX) (int, string, error) {
+		result, err := q.ExecContext(c.Request.Context(), `
 INSERT INTO identity_sources (slug, provider_type, display_name, enabled, login_enabled, directory_sync_enabled, config_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-`, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON))
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+WHERE ? OR NOT EXISTS (SELECT 1 FROM identity_sources)
+`, slug, payload.ProviderType, payload.DisplayName, boolPtrInt(payload.Enabled, true), boolPtrInt(payload.LoginEnabled, true), boolPtrInt(payload.DirectorySyncEnabled, true), string(configJSON), s.allowMultipleIdentitySources)
+		if err != nil {
+			return http.StatusConflict, err.Error(), err
+		}
+		if !s.allowMultipleIdentitySources {
+			rowsAffected, err := result.RowsAffected()
+			if err != nil {
+				return http.StatusInternalServerError, err.Error(), err
+			}
+			if rowsAffected == 0 {
+				return http.StatusConflict, singleIdentitySourceLimitMessage, nil
+			}
+		}
+		if err := s.ensureSourceInitialPassword(c.Request.Context(), q, slug); err != nil {
+			return http.StatusInternalServerError, err.Error(), err
+		}
+		return http.StatusOK, "", nil
+	}
+	if s.database != nil {
+		tx, err := s.database.BeginTx(c.Request.Context(), nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if status, detail, err := insert(tx); err != nil || status != http.StatusOK {
+			c.JSON(status, gin.H{"detail": detail})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+			return
+		}
+		s.getProvider(c, slug)
+		return
+	}
+	if status, detail, err := insert(s.store.DBTX()); err != nil || status != http.StatusOK {
+		c.JSON(status, gin.H{"detail": detail})
 		return
 	}
 	s.getProvider(c, slug)
@@ -115,9 +159,13 @@ func (s *Server) updateProvider(c *gin.Context) {
 	if payload.DisplayName != nil && strings.TrimSpace(*payload.DisplayName) != "" {
 		displayName = strings.TrimSpace(*payload.DisplayName)
 	}
-	config := decodeSourceConfig(source.ConfigJSON)
+	config := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	if payload.Config != nil {
-		config = mergeSourceConfig(config, *payload.Config)
+		if detail := immutableSourceConfigChangeDetail(config, *payload.Config); detail != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": detail})
+			return
+		}
+		config = mergeSourceConfigForType(source.ProviderType, config, *payload.Config)
 	}
 	configJSON, _ := json.Marshal(config)
 	_, err = s.store.DBTX().ExecContext(c.Request.Context(), `
@@ -130,6 +178,25 @@ WHERE slug = ?
 		return
 	}
 	s.getProvider(c, slug)
+}
+
+func immutableSourceConfigChangeDetail(existing, update identitySourceConfig) string {
+	if changedImmutableSourceField(existing.ClientID, update.ClientID) {
+		return "identity source App ID cannot be changed after creation"
+	}
+	if changedImmutableSourceField(existing.AgentID, update.AgentID) {
+		return "identity source Agent ID cannot be changed after creation"
+	}
+	if changedImmutableSourceField(existing.ClientSecret, update.ClientSecret) {
+		return "identity source App Secret cannot be changed after creation"
+	}
+	return ""
+}
+
+func changedImmutableSourceField(existing, update string) bool {
+	existing = strings.TrimSpace(existing)
+	update = strings.TrimSpace(update)
+	return existing != "" && update != "" && existing != update
 }
 
 func (s *Server) deleteProvider(c *gin.Context) {
@@ -182,6 +249,10 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 	}
 	result, err := deleteIdentitySourceDataWithIDs(c.Request.Context(), tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM source_initial_password_secrets WHERE source_slug = ?`, slug); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
@@ -261,5 +332,10 @@ func (s *Server) getProvider(c *gin.Context, slug string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, sourceResponse(source, decodeSourceConfig(source.ConfigJSON), s.trustedPublicBaseURL()))
+	response, err := s.sourceResponse(c.Request.Context(), source, decodeSourceConfigForType(source.ProviderType, source.ConfigJSON), s.trustedPublicBaseURL())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, response)
 }

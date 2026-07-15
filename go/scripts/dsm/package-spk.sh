@@ -25,7 +25,22 @@ MAINTAINER=${DSMPASS_SPK_MAINTAINER:-"dsm-pass"}
 DESCRIPTION=${DSMPASS_SPK_DESCRIPTION:-"Enterprise identity login gateway for Synology DSM."}
 SUPPORT_URL=${DSMPASS_SPK_SUPPORT_URL:-"https://github.com/dsm-pass/dsm-pass"}
 DEFAULT_MANAGEMENT_PORT=${DSMPASS_DEFAULT_MANAGEMENT_PORT:-25000}
+DEFAULT_IDP_PORT=${DSMPASS_DEFAULT_IDP_PORT:-26000}
 DESKTOP_APP_ID=${DSMPASS_DESKTOP_APP_ID:-"com.dsmpass.DSMPASS"}
+ALLOW_MULTIPLE_IDENTITY_SOURCES=${DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES:-1}
+
+case "$ALLOW_MULTIPLE_IDENTITY_SOURCES" in
+  1|true|TRUE)
+    ALLOW_MULTIPLE_IDENTITY_SOURCES=true
+    ;;
+  0|false|FALSE)
+    ALLOW_MULTIPLE_IDENTITY_SOURCES=false
+    ;;
+  *)
+    echo "DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES must be 1, 0, true, or false" >&2
+    exit 1
+    ;;
+esac
 
 case "$DEFAULT_MANAGEMENT_PORT" in
   ''|*[!0-9]*)
@@ -37,8 +52,23 @@ if [ "$DEFAULT_MANAGEMENT_PORT" -le 1024 ] || [ "$DEFAULT_MANAGEMENT_PORT" -gt 6
   echo "DSMPASS_DEFAULT_MANAGEMENT_PORT must be between 1025 and 65535" >&2
   exit 1
 fi
+case "$DEFAULT_IDP_PORT" in
+  ''|*[!0-9]*)
+    echo "DSMPASS_DEFAULT_IDP_PORT must be a number" >&2
+    exit 1
+    ;;
+esac
+if [ "$DEFAULT_IDP_PORT" -le 1024 ] || [ "$DEFAULT_IDP_PORT" -gt 65535 ]; then
+  echo "DSMPASS_DEFAULT_IDP_PORT must be between 1025 and 65535" >&2
+  exit 1
+fi
+if [ "$DEFAULT_IDP_PORT" = "$DEFAULT_MANAGEMENT_PORT" ]; then
+  echo "DSMPASS_DEFAULT_IDP_PORT must be different from DSMPASS_DEFAULT_MANAGEMENT_PORT" >&2
+  exit 1
+fi
 
 export DSMPASS_VERSION="$VERSION"
+export DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES="$ALLOW_MULTIPLE_IDENTITY_SOURCES"
 "$GO_DIR/scripts/dsm/package-dsm.sh"
 cd "$GO_DIR"
 GOCACHE="${DSMPASS_ICON_GOCACHE:-$GOCACHE}" go run scripts/dsm/icon-gen.go -out "$DIST_DIR/icons"
@@ -118,6 +148,7 @@ EOF
 set -eu
 
 PACKAGE_NAME="$PACKAGE_NAME"
+DEFAULT_IDP_PORT="$DEFAULT_IDP_PORT"
 EOF
   cat >> "$work_dir/scripts/start-stop-status" <<'EOF'
 PKGDEST=${SYNOPKG_PKGDEST:-"/var/packages/$PACKAGE_NAME/target"}
@@ -136,6 +167,15 @@ is_running() {
 
 load_env() {
   [ -f "$ENVFILE" ] && . "$ENVFILE"
+  default_idp_port=$DEFAULT_IDP_PORT
+  management_port=$(printf '%s\n' "${DSMPASS_GO_LISTEN:-0.0.0.0:25000}" | awk -F: '{print $NF}' | tr -d '[]')
+  if [ "$management_port" = "$default_idp_port" ]; then
+    if [ "$default_idp_port" -lt 65535 ]; then
+      default_idp_port=$((default_idp_port + 1))
+    else
+      default_idp_port=$((default_idp_port - 1))
+    fi
+  fi
   export DSMPASS_APP_DIR="${DSMPASS_APP_DIR:-$PKGDEST}"
   export DSMPASS_DATA_DIR="${DSMPASS_DATA_DIR:-$PKGVAR/data}"
   export DSMPASS_RUN_DIR="${DSMPASS_RUN_DIR:-$RUN_DIR}"
@@ -144,6 +184,7 @@ load_env() {
   export DSMPASS_HELPER_SOCKET="${DSMPASS_HELPER_SOCKET:-$RUN_DIR/helper.sock}"
   export DSMPASS_HELPER_HMAC_SECRET="${DSMPASS_HELPER_HMAC_SECRET:-}"
   export DSMPASS_GO_LISTEN="${DSMPASS_GO_LISTEN:-0.0.0.0:25000}"
+  export DSMPASS_IDP_LISTEN="${DSMPASS_IDP_LISTEN:-0.0.0.0:$default_idp_port}"
   export DSMPASS_ADMIN_PORTAL_PORT="${DSMPASS_ADMIN_PORTAL_PORT:-25000}"
   export DSMPASS_ACCESS_HOST="${DSMPASS_ACCESS_HOST:-}"
   export DSMPASS_TLS_ENABLED="${DSMPASS_TLS_ENABLED:-1}"
@@ -357,6 +398,7 @@ set -eu
 
 PACKAGE_NAME="$PACKAGE_NAME"
 DEFAULT_MANAGEMENT_PORT="$DEFAULT_MANAGEMENT_PORT"
+DEFAULT_IDP_PORT="$DEFAULT_IDP_PORT"
 EOF
   cat >> "$work_dir/scripts/postinst" <<'EOF'
 PKGDEST=${SYNOPKG_PKGDEST:-"/var/packages/$PACKAGE_NAME/target"}
@@ -397,6 +439,19 @@ current_management_port() {
       printf '%s\n' "$port"
       ;;
   esac
+}
+
+default_idp_port_for_management() {
+  current=$1
+  idp_port=$DEFAULT_IDP_PORT
+  if [ "$current" = "$idp_port" ]; then
+    if [ "$idp_port" -lt 65535 ]; then
+      idp_port=$((idp_port + 1))
+    else
+      idp_port=$((idp_port - 1))
+    fi
+  fi
+  printf '%s\n' "$idp_port"
 }
 
 sync_installed_admin_port() {
@@ -526,9 +581,11 @@ if [ ! -f "$ENVFILE" ]; then
   else
     secret=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
   fi
+  idp_port=$(default_idp_port_for_management "$management_port")
   cat > "$ENVFILE" <<EOF_ENV
 DSMPASS_HELPER_HMAC_SECRET=$secret
 DSMPASS_GO_LISTEN=0.0.0.0:$management_port
+DSMPASS_IDP_LISTEN=0.0.0.0:$idp_port
 DSMPASS_ADMIN_PORTAL_PORT=$DEFAULT_MANAGEMENT_PORT
 DSMPASS_TLS_ENABLED=1
 DSMPASS_TLS_CERT_FILE=$PKGVAR/data/tls/server.crt
@@ -545,6 +602,9 @@ else
   fi
   if ! grep -q '^DSMPASS_ADMIN_PORTAL_PORT=' "$ENVFILE"; then
     set_env_value DSMPASS_ADMIN_PORTAL_PORT "$DEFAULT_MANAGEMENT_PORT"
+  fi
+  if ! grep -q '^DSMPASS_IDP_LISTEN=' "$ENVFILE"; then
+    set_env_value DSMPASS_IDP_LISTEN "0.0.0.0:$(default_idp_port_for_management "$(current_management_port)")"
   fi
   if ! grep -q '^DSMPASS_TLS_ENABLED=' "$ENVFILE"; then
     set_env_value DSMPASS_TLS_ENABLED 1

@@ -39,10 +39,21 @@ func (s *Server) putSettings(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	s.getSettings(c)
-	if restartRequired {
-		s.restartIDPRouteOnly("idp route configuration changed")
+	settings, err := s.effectiveSettings(c.Request.Context())
+	if err != nil {
+		writeError(c, err)
+		return
 	}
+	if restartRequired {
+		settings["idp_route_restart_required"] = true
+		if err := s.restartIDPRouteNow("idp route configuration changed"); err != nil {
+			settings["idp_route_restarted"] = false
+			settings["idp_route_restart_error"] = err.Error()
+		} else {
+			settings["idp_route_restarted"] = true
+		}
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (s *Server) discoverSettings(c *gin.Context) {
@@ -81,7 +92,7 @@ func (s *Server) discoverSettings(c *gin.Context) {
 		currentPort = strconv.Itoa(payload.IDPPort)
 	}
 	if currentPort == "" {
-		currentPort = listenAddressPort(s.cfg.Listen)
+		currentPort = listenAddressPort(s.IDPListenAddress())
 	}
 	publicCandidates := []string{
 		currentPublicURL,
@@ -111,7 +122,7 @@ func (s *Server) discoverSettings(c *gin.Context) {
 		"access_host":          host,
 		"access_scheme":        scheme,
 		"admin_port":           firstPositiveInt(payload.AdminPort, parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":             firstPositiveInt(payload.IDPPort, parsePortInt(publicBaseURLPort(publicBaseURL)), 25000),
+		"idp_port":             firstPositiveInt(payload.IDPPort, parsePortInt(publicBaseURLPort(publicBaseURL)), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"public_base_url":      normalizeURLScheme(normalizePublicBaseURL(publicBaseURL, scheme), scheme),
 		"dsm_redirect_url":     dsmRedirectURL,
 		"helper_dsm_login_api": strings.TrimRight(dsmRedirectURL, "/") + "/webapi/entry.cgi",
@@ -170,7 +181,7 @@ func isDSMAuthAPIInfo(body []byte) bool {
 
 func runtimeSettingAllowed(key string) bool {
 	switch key {
-	case "access_host", "access_scheme", "idp_port", "admin_allowed_cidrs", "idp_allowed_cidrs", "public_base_url", "dsm_redirect_url", "dsm_cookie_name", "dsm_cookie_secure", "dsm_cookie_httponly", "dsm_cookie_samesite", "relay_helper_hmac_secret", "helper_dsm_login_mode", "helper_dsm_browser_login_ttl_seconds", "helper_dsm_login_api", "helper_dsm_session", "helper_dsm_format", "helper_dsm_otp_code", "helper_dsm_enable_device_token", "helper_dsm_device_name", "helper_dsm_device_id", "helper_dsm_tls_skip_verify", "helper_dsm_timeout_seconds", "setup_completed":
+	case "deployment_mode", "access_host", "access_scheme", "idp_port", "admin_allowed_cidrs", "public_base_url", "dsm_redirect_url", "dsm_cookie_name", "dsm_cookie_secure", "dsm_cookie_httponly", "dsm_cookie_samesite", "relay_helper_hmac_secret", "helper_dsm_login_mode", "helper_dsm_browser_login_ttl_seconds", "helper_dsm_login_api", "helper_dsm_session", "helper_dsm_format", "helper_dsm_otp_code", "helper_dsm_enable_device_token", "helper_dsm_device_name", "helper_dsm_device_id", "helper_dsm_tls_skip_verify", "helper_dsm_timeout_seconds", "setup_completed":
 		return true
 	default:
 		return false
