@@ -15,10 +15,10 @@ const (
 	DSMGroupnameMaxLength = 32
 )
 
-// DSM 7 uses different forbidden-symbol sets for users and groups; notably,
-// a hash sign is allowed in a group name but not in a username.
+// DSM 7 rejects these symbols for both users and groups. Keep separate maps so
+// the two validation paths remain explicit if DSM changes either rule later.
 var dsmUsernameForbidden = forbiddenRunes("!\"#$%&'()*+,/:;<=>?@[\\]^`{|}~")
-var dsmGroupnameForbidden = forbiddenRunes("!\"$%&'()*+,/:;<=>?@[\\]^`{|}~")
+var dsmGroupnameForbidden = forbiddenRunes("!\"#$%&'()*+,/:;<=>?@[\\]^`{|}~")
 
 func Normalize(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))

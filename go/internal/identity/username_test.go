@@ -43,7 +43,7 @@ func TestSanitizeNamesKeepsDSMAllowedUnicode(t *testing.T) {
 		t.Fatalf("username got %q want %q", username, usernameInput)
 	}
 
-	groupInput := "#研发 一组_-."
+	groupInput := "研发 一组_-."
 	groupname, err := SanitizeGroupName(groupInput)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestSanitizeNamesRemovesDSMForbiddenCharacters(t *testing.T) {
 		t.Fatalf("username got %q", username)
 	}
 
-	groupname, err := SanitizeGroupName("a!\"$%&'()*+,/:;<=>?@[\\]^`{|}~b")
+	groupname, err := SanitizeGroupName("a!\"#$%&'()*+,/:;<=>?@[\\]^`{|}~b")
 	if err != nil {
 		t.Fatal(err)
 	}

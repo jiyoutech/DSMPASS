@@ -2569,8 +2569,16 @@ VALUES
 		t.Fatalf("duplicate group name got %d body=%s", duplicate.Code, duplicate.Body.String())
 	}
 
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5 #a"}`))
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("hash group name got %d body=%s", invalid.Code, invalid.Body.String())
+	}
+
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5 #a"}`))
+	request := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5 team"}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -2588,7 +2596,7 @@ VALUES
 	if err := database.QueryRowContext(ctx, `SELECT dsm_groupname, managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-a'`).Scan(&groupname, &managed, &status, &conflictReason); err != nil {
 		t.Fatal(err)
 	}
-	if groupname != "sup5 #a" || managed != 0 || status != "pending" || conflictReason != "" {
+	if groupname != "sup5 team" || managed != 0 || status != "pending" || conflictReason != "" {
 		t.Fatalf("group conflict not resolved: groupname=%q managed=%d status=%s reason=%q", groupname, managed, status, conflictReason)
 	}
 	if err := database.QueryRowContext(ctx, `SELECT dsm_groupname, managed, provision_status, COALESCE(conflict_reason, '') FROM dsm_groups WHERE id = 'group-b'`).Scan(&groupname, &managed, &status, &conflictReason); err != nil {
