@@ -61,6 +61,25 @@ func TestSynouserAddArgsMatchDSM(t *testing.T) {
 	}
 }
 
+func TestReservedDSMNamesAreRejectedAtHelperBoundary(t *testing.T) {
+	for _, username := range []string{"admin", "ROOT", "Administrator", "administrators"} {
+		if err := assertAllowed(config.HelperConfig{}, username); err == nil {
+			t.Errorf("username %q should be rejected", username)
+		}
+	}
+	for _, groupname := range []string{"admin", "root", "administrator", "Administrators"} {
+		if err := assertAllowedGroup(groupname); err == nil {
+			t.Errorf("group name %q should be rejected", groupname)
+		}
+	}
+	if err := assertAllowed(config.HelperConfig{}, "alice"); err != nil {
+		t.Fatalf("normal username rejected: %v", err)
+	}
+	if err := assertAllowedGroup("engineering"); err != nil {
+		t.Fatalf("normal group name rejected: %v", err)
+	}
+}
+
 func TestParseSynoUserInfo(t *testing.T) {
 	info := parseSynoUserInfo(`User Name   : [zay]
 User Type   : [AUTH_LOCAL]

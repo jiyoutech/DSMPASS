@@ -251,6 +251,10 @@ func (s *Server) setDSMAccountUsername(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 用户名包含不支持的字符，请直接填写最终 DSM 用户名"})
 		return
 	}
+	if identity.IsReservedDSMUsername(username) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 用户名属于系统保留名称，请填写其他用户名"})
+		return
+	}
 	usernameNorm := identity.Normalize(username)
 	var currentUsernameNorm string
 	err = s.store.DBTX().QueryRowContext(c.Request.Context(), `
@@ -408,6 +412,10 @@ func (s *Server) setDSMGroupName(c *gin.Context) {
 	}
 	if groupname != strings.TrimSpace(payload.DSMGroupname) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名包含不支持的字符，请直接填写最终 DSM 部门组名"})
+		return
+	}
+	if identity.IsReservedDSMGroupname(groupname) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "DSM 部门组名属于系统保留名称，请填写其他群组名"})
 		return
 	}
 	var currentID string

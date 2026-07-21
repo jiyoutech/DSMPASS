@@ -2449,6 +2449,14 @@ VALUES ('external-a', 'feishu-main', 'user-a', 'user-a', 'user', 'identity-a', '
 	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
 
+	reserved := httptest.NewRecorder()
+	reservedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-accounts/account-a/username", strings.NewReader(`{"dsm_username":"ADMIN"}`))
+	reservedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(reserved, reservedRequest)
+	if reserved.Code != http.StatusBadRequest || !strings.Contains(reserved.Body.String(), "系统保留名称") {
+		t.Fatalf("reserved username got %d body=%s", reserved.Code, reserved.Body.String())
+	}
+
 	listResponse := httptest.NewRecorder()
 	listRequest := httptest.NewRequest("GET", "/api/admin/dsm-accounts?provider=feishu-main", nil)
 	router.ServeHTTP(listResponse, listRequest)
@@ -2559,6 +2567,14 @@ VALUES
 		t.Fatal(err)
 	}
 	router := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries).Router()
+
+	reserved := httptest.NewRecorder()
+	reservedRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"Administrators"}`))
+	reservedRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(reserved, reservedRequest)
+	if reserved.Code != http.StatusBadRequest || !strings.Contains(reserved.Body.String(), "系统保留名称") {
+		t.Fatalf("reserved group name got %d body=%s", reserved.Code, reserved.Body.String())
+	}
 
 	duplicate := httptest.NewRecorder()
 	duplicateRequest := httptest.NewRequest("PUT", "/api/admin/dsm-groups/group-a/name", strings.NewReader(`{"dsm_groupname":"sup5"}`))

@@ -185,7 +185,7 @@ VALUES (?, ?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 func (s *Service) MarkDSMAccountConflict(ctx context.Context, id, reason string) (db.DSMAccount, error) {
 	_, err := s.q.DBTX().ExecContext(ctx, `
 UPDATE dsm_accounts SET provision_status = 'conflict', conflict_reason = ?, allow_login = 0, updated_at = CURRENT_TIMESTAMP
-WHERE id = ? AND managed = 1 AND (provision_status <> 'conflict' OR conflict_reason IS NULL OR conflict_reason <> ? OR allow_login <> 0)
+WHERE id = ? AND (provision_status <> 'conflict' OR conflict_reason IS NULL OR conflict_reason <> ? OR allow_login <> 0)
 `, reason, id, reason)
 	if err != nil {
 		return db.DSMAccount{}, err
