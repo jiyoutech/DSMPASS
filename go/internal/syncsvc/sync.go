@@ -104,7 +104,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err != nil {
 			return result, err
 		}
-		if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
+		if identity.IsReservedDSMUsername(account.DSMUsername) {
+			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s用户生成的 DSM 用户名 %q 属于系统保留名称。请手动指定其他 DSM 用户名", providerName, account.DSMUsername))
+			if err != nil {
+				return result, err
+			}
+		} else if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
 			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名", providerName))
 			if err != nil {
 				return result, err
@@ -152,7 +157,12 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 		if err != nil {
 			return result, err
 		}
-		if duplicateGroupSubjects[group.Subject] && dsmGroup.Managed == 1 {
+		if identity.IsReservedDSMGroupname(dsmGroup.DSMGroupname) {
+			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, fmt.Sprintf("%s部门生成的 DSM 群组名 %q 属于系统保留名称，请管理员手动指定其他 DSM 部门组名", providerName, dsmGroup.DSMGroupname))
+			if err != nil {
+				return result, err
+			}
+		} else if duplicateGroupSubjects[group.Subject] && dsmGroup.Managed == 1 {
 			dsmGroup, err = identityService.MarkDSMGroupConflict(ctx, dsmGroup.ID, fmt.Sprintf("%s部门名重名，请管理员根据%s部门路径手动指定 DSM 部门组名", providerName, providerName))
 			if err != nil {
 				return result, err

@@ -84,6 +84,28 @@ func TestResolveAuthorizedLoginRequiresProvisionedAllowedAccount(t *testing.T) {
 	}
 }
 
+func TestMarkDSMAccountConflictOverridesManualAccount(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openIdentityTestDB(t, ctx)
+	defer database.Close()
+
+	if _, err := database.ExecContext(ctx, `
+INSERT INTO app_identities (id, display_name) VALUES ('identity-admin', 'admin');
+INSERT INTO dsm_accounts (id, app_identity_id, dsm_username, dsm_username_norm, managed, provision_status, allow_login)
+VALUES ('account-admin', 'identity-admin', 'admin', 'admin', 0, 'pending', 1);
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	account, err := NewService(config.BackendConfig{}, queries).MarkDSMAccountConflict(ctx, "account-admin", "系统保留名称")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.ProvisionStatus != "conflict" || account.AllowLogin != 0 || !account.ConflictReason.Valid {
+		t.Fatalf("manual reserved account was not blocked: %#v", account)
+	}
+}
+
 func openIdentityTestDB(t *testing.T, ctx context.Context) (*sql.DB, *db.Queries) {
 	t.Helper()
 	database, err := sql.Open("sqlite", ":memory:")

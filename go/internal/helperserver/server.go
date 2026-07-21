@@ -20,6 +20,7 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/diaglog"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
 	"github.com/dsmpass/dsmpass/go/internal/settings"
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
@@ -261,6 +262,9 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		if err != nil {
 			return errorResponse("BAD_REQUEST", err.Error())
 		}
+		if err := assertAllowedGroup(groupname); err != nil {
+			return errorResponse("GROUPNAME_NOT_ALLOWED", err.Error())
+		}
 		if err := run(cfg.SynoGroupPath, "--get", groupname); err == nil {
 			return map[string]any{"success": true, "created": true}
 		}
@@ -300,6 +304,12 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
 			return errorResponse("BAD_REQUEST", err.Error())
+		}
+		if err := assertAllowed(cfg, username); err != nil {
+			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
+		}
+		if err := assertAllowedGroup(groupname); err != nil {
+			return errorResponse("GROUPNAME_NOT_ALLOWED", err.Error())
 		}
 		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
 			return errorResponse("SYNOUSER_MISSING", "DSM 用户不存在，不能添加到群组："+err.Error())
@@ -538,6 +548,16 @@ func synoGroupError(action, groupname, username string, err error) string {
 func assertAllowed(cfg config.HelperConfig, username string) error {
 	if strings.ContainsAny(username, "\\/:*?\"<>|[];=,+") {
 		return errors.New("invalid DSM username")
+	}
+	if identity.IsReservedDSMUsername(username) {
+		return errors.New("reserved DSM username")
+	}
+	return nil
+}
+
+func assertAllowedGroup(groupname string) error {
+	if identity.IsReservedDSMGroupname(groupname) {
+		return errors.New("reserved DSM group name")
 	}
 	return nil
 }
