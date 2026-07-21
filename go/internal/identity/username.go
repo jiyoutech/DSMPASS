@@ -10,13 +10,15 @@ import (
 	"unicode"
 )
 
-var dsmForbidden = map[rune]bool{}
+const (
+	DSMUsernameMaxLength  = 64
+	DSMGroupnameMaxLength = 32
+)
 
-func init() {
-	for _, r := range "{}|^[]?=:+/*()$!\"#%&',;<>@`~\\" {
-		dsmForbidden[r] = true
-	}
-}
+// DSM 7 uses different forbidden-symbol sets for users and groups; notably,
+// a hash sign is allowed in a group name but not in a username.
+var dsmUsernameForbidden = forbiddenRunes("!\"#$%&'()*+,/:;<=>?@[\\]^`{|}~")
+var dsmGroupnameForbidden = forbiddenRunes("!\"$%&'()*+,/:;<=>?@[\\]^`{|}~")
 
 func Normalize(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
@@ -48,7 +50,7 @@ func GenerateSequentialReadableUsername(displayName, delimiter string, sequence 
 
 func GenerateRequiredSequentialReadableUsername(displayName, delimiter string, sequence int, maxLength int) (string, error) {
 	if maxLength <= 0 {
-		maxLength = 32
+		maxLength = DSMUsernameMaxLength
 	}
 	base, err := SanitizeRequiredNameBase(displayName, maxLength)
 	if err != nil {
@@ -66,7 +68,7 @@ func GenerateRequiredSequentialReadableUsername(displayName, delimiter string, s
 	runes := []rune(base)
 	if len(runes) > baseLimit {
 		base = string(runes[:baseLimit])
-		base = strings.Trim(base, "._-")
+		base = strings.TrimRightFunc(base, unicode.IsSpace)
 		if base == "" {
 			return "", fmt.Errorf("DSM 用户名不可用：原始姓名 %q 清洗后为空", displayName)
 		}
@@ -79,59 +81,65 @@ func SanitizeNameBase(value, fallback string, maxLength int) string {
 		fallback = "user"
 	}
 	if maxLength <= 0 {
-		maxLength = 32
+		maxLength = DSMUsernameMaxLength
 	}
-	var builder strings.Builder
-	for _, r := range strings.TrimSpace(value) {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || dsmForbidden[r] {
-			continue
-		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
-			builder.WriteRune(r)
-		}
-	}
-	base := strings.Trim(builder.String(), "._-")
+	base := sanitizeDSMName(value, maxLength, dsmUsernameForbidden)
 	if base == "" {
-		base = fallback
-	}
-	runes := []rune(base)
-	if len(runes) > maxLength {
-		base = string(runes[:maxLength])
+		base = sanitizeDSMName(fallback, maxLength, dsmUsernameForbidden)
+		if base == "" {
+			base = "user"
+		}
 	}
 	return base
 }
 
 func SanitizeRequiredNameBase(value string, maxLength int) (string, error) {
 	if maxLength <= 0 {
-		maxLength = 32
+		maxLength = DSMUsernameMaxLength
 	}
-	var builder strings.Builder
-	for _, r := range strings.TrimSpace(value) {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || dsmForbidden[r] {
-			continue
-		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
-			builder.WriteRune(r)
-		}
-	}
-	base := strings.Trim(builder.String(), "._-")
+	base := sanitizeDSMName(value, maxLength, dsmUsernameForbidden)
 	if base == "" {
 		return "", fmt.Errorf("DSM 名称不可用：原始名称 %q 清洗后为空", value)
-	}
-	runes := []rune(base)
-	if len(runes) > maxLength {
-		base = string(runes[:maxLength])
 	}
 	return base, nil
 }
 
 func SanitizeGroupName(value string) (string, error) {
+	original := value
 	value = strings.NewReplacer("/", "_", "\\", "_", ">", "_").Replace(value)
-	groupName, err := SanitizeRequiredNameBase(value, 32)
-	if err != nil {
-		return "", fmt.Errorf("DSM 群组名不可用：部门名称 %q 清洗后为空，请修改部门名称或开启正确字段权限后重试", value)
+	groupName := sanitizeDSMName(value, DSMGroupnameMaxLength, dsmGroupnameForbidden)
+	if groupName == "" {
+		return "", fmt.Errorf("DSM 群组名不可用：部门名称 %q 清洗后为空，请修改部门名称或开启正确字段权限后重试", original)
 	}
 	return groupName, nil
+}
+
+func sanitizeDSMName(value string, maxLength int, forbidden map[rune]bool) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(value) {
+		if unicode.IsControl(r) || !unicode.IsGraphic(r) || forbidden[r] {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	name := strings.TrimLeftFunc(builder.String(), func(r rune) bool {
+		return r == '-' || unicode.IsSpace(r)
+	})
+	name = strings.TrimRightFunc(name, unicode.IsSpace)
+	runes := []rune(name)
+	if len(runes) > maxLength {
+		name = string(runes[:maxLength])
+		name = strings.TrimRightFunc(name, unicode.IsSpace)
+	}
+	return name
+}
+
+func forbiddenRunes(value string) map[rune]bool {
+	result := make(map[rune]bool, len([]rune(value)))
+	for _, r := range value {
+		result[r] = true
+	}
+	return result
 }
 
 func usernameDelimiter(delimiter string) string {

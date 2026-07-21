@@ -470,7 +470,7 @@ func duplicateUserNameCounts(users []provider.User, cfg config.BackendConfig) ma
 }
 
 func userNameKey(displayName string, cfg config.BackendConfig) string {
-	username, err := identity.GenerateRequiredSequentialReadableUsername(displayName, cfg.UsernameReadableDelimiter, 1, 32)
+	username, err := identity.GenerateRequiredSequentialReadableUsername(displayName, cfg.UsernameReadableDelimiter, 1, identity.DSMUsernameMaxLength)
 	if err != nil {
 		return ""
 	}

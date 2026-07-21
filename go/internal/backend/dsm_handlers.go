@@ -242,7 +242,7 @@ func (s *Server) setDSMAccountUsername(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "missing id"})
 		return
 	}
-	username, err := identity.GenerateRequiredSequentialReadableUsername(payload.DSMUsername, "_", 1, 32)
+	username, err := identity.GenerateRequiredSequentialReadableUsername(payload.DSMUsername, "_", 1, identity.DSMUsernameMaxLength)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return

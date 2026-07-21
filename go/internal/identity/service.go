@@ -622,7 +622,7 @@ func (s *Service) allocateUsernameForDisplayName(displayName sql.NullString) (st
 	if displayName.Valid {
 		value = displayName.String
 	}
-	return GenerateRequiredSequentialReadableUsername(value, s.cfg.UsernameReadableDelimiter, 1, 32)
+	return GenerateRequiredSequentialReadableUsername(value, s.cfg.UsernameReadableDelimiter, 1, DSMUsernameMaxLength)
 }
 
 func conflictUsername(username, identityID string) string {
@@ -635,7 +635,7 @@ func conflictUsername(username, identityID string) string {
 	}
 	suffix := "_conflict_" + suffixSource
 	runes := []rune(strings.Trim(username, "._-"))
-	baseLimit := 32 - len([]rune(suffix))
+	baseLimit := DSMUsernameMaxLength - len([]rune(suffix))
 	if baseLimit < 1 {
 		baseLimit = 1
 	}
