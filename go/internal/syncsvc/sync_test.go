@@ -212,6 +212,72 @@ func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	assertProvisionCount(t, ctx, database, "dsm_accounts", "pending", 0)
 }
 
+func TestSyncProviderMarksReservedDSMNamesConflictForEveryProvider(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		slug         string
+		providerName string
+	}{
+		{name: "feishu", slug: "feishu-main", providerName: "飞书"},
+		{name: "wecom", slug: "wecom-main", providerName: "企业微信"},
+		{name: "dingtalk", slug: "dingtalk-main", providerName: "钉钉"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, queries := openSyncTestDB(t, ctx)
+			defer database.Close()
+
+			result, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, fakeDirectory{
+				slug: test.slug,
+				name: test.providerName,
+				users: []provider.User{{
+					ProviderSlug:       test.slug,
+					Subject:            "u1",
+					DisplayName:        "ADMIN",
+					Active:             true,
+					DepartmentSubjects: []string{"g1"},
+				}},
+				groups: []provider.Group{{
+					ProviderSlug: test.slug,
+					Subject:      "g1",
+					Name:         "Administrators",
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 1)
+			assertProvisionCount(t, ctx, database, "dsm_groups", "conflict", 1)
+			matchedReservedItems := 0
+			for _, item := range result.Items {
+				if item.DSMUsername == "ADMIN" || item.DSMGroupname == "Administrators" {
+					matchedReservedItems++
+					if item.ProvisionStatus != "conflict" {
+						t.Fatalf("reserved item was not blocked: %#v", item)
+					}
+				}
+			}
+			if matchedReservedItems != 2 {
+				t.Fatalf("reserved plan items got %d want 2: %#v", matchedReservedItems, result.Items)
+			}
+			assertTableCount(t, ctx, database, "dsm_mapping_entries", 0)
+			var userReason, groupReason string
+			if err := database.QueryRowContext(ctx, "SELECT conflict_reason FROM dsm_accounts").Scan(&userReason); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.QueryRowContext(ctx, "SELECT conflict_reason FROM dsm_groups").Scan(&groupReason); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(userReason, test.providerName) || !strings.Contains(userReason, "系统保留名称") {
+				t.Fatalf("unexpected user conflict reason: %q", userReason)
+			}
+			if !strings.Contains(groupReason, test.providerName) || !strings.Contains(groupReason, "系统保留名称") {
+				t.Fatalf("unexpected group conflict reason: %q", groupReason)
+			}
+		})
+	}
+}
+
 func TestSyncProviderKeepsExistingMappedUserWhenFeishuNameLaterDuplicates(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
