@@ -32,6 +32,19 @@ func stubTCPPortAvailable(t *testing.T) {
 	t.Cleanup(func() { tcpPortAvailable = original })
 }
 
+func testServerPort(t *testing.T, serverURL string) int {
+	t.Helper()
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
 func (testHelper) HealthCheck(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"success": true}, nil
 }
@@ -538,6 +551,18 @@ func TestServerServesFrontendAndAPI(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "app") {
 		t.Fatalf("expected frontend fallback, got %s", response.Body.String())
 	}
+}
+
+func TestIDPHealthRouteIsNotExposedOnAdminListener(t *testing.T) {
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(config.BackendConfig{}, testHelper{}, database, queries)
+
+	assertStatus(t, server.IDPRouter(), "GET", "/idp/healthz", http.StatusOK)
+	assertStatus(t, server.AdminRouter(), "GET", "/idp/healthz", http.StatusNotFound)
 }
 
 func TestAdminAccessControlRejectsOutsideCIDR(t *testing.T) {
@@ -1185,6 +1210,7 @@ func TestDingTalkProviderUsesQRLoginAuthorizeURL(t *testing.T) {
 func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	cfg := config.BackendConfig{
 		Listen:            "0.0.0.0:25000",
+		DeploymentMode:    "reverse_proxy",
 		PublicBaseURL:     "https://192.0.2.10:25000",
 		RelayMode:         "socket",
 		DSMCookieName:     "id",
@@ -1212,11 +1238,187 @@ func TestSettingsPreserveHTTPSPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestSettingsDirectModeDerivesPublicBaseURLFromAccessHost(t *testing.T) {
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         "0.0.0.0:26000",
+		DeploymentMode:    "direct",
+		AccessHost:        "old.example.com",
+		AccessScheme:      "https",
+		PublicBaseURL:     "https://old.example.com:26000",
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+		TLSEnabled:        true,
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	server := NewWithDB(cfg, testHelper{}, database, queries)
+	router := server.Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{
+		"deployment_mode":"direct",
+		"access_host":"new.example.com",
+		"access_scheme":"https",
+		"idp_port":26000,
+		"public_base_url":"https://old.example.com:26000"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"public_base_url":"https://new.example.com:26000"`) {
+		t.Fatalf("direct public base url did not follow access host: %s", response.Body.String())
+	}
+}
+
+func TestDiscoverSettingsProbesActualIDPListenerInsteadOfRequestPort(t *testing.T) {
+	idpServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/idp/healthz" {
+			http.NotFound(response, request)
+			return
+		}
+		_, _ = response.Write([]byte(`{"status":"ok","component":"idp"}`))
+	}))
+	defer idpServer.Close()
+	decoyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/healthz" {
+			response.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer decoyServer.Close()
+	idpPort := testServerPort(t, idpServer.URL)
+	decoyPort := testServerPort(t, decoyServer.URL)
+
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         fmt.Sprintf("0.0.0.0:%d", idpPort),
+		DeploymentMode:    "direct",
+		AccessHost:        "127.0.0.1",
+		AccessScheme:      "http",
+		PublicBaseURL:     fmt.Sprintf("http://127.0.0.1:%d", decoyPort),
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/settings/discover", strings.NewReader(fmt.Sprintf(`{
+		"deployment_mode":"direct",
+		"access_host":"127.0.0.1",
+		"access_scheme":"http",
+		"idp_port":%d,
+		"public_base_url":"http://127.0.0.1:%d"
+	}`, decoyPort, decoyPort)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Host = fmt.Sprintf("127.0.0.1:%d", decoyPort)
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		IDPPort       int    `json:"idp_port"`
+		IDPDetected   bool   `json:"idp_detected"`
+		PublicBaseURL string `json:"public_base_url"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.IDPDetected || result.IDPPort != idpPort {
+		t.Fatalf("actual IDP listener was not detected: %#v", result)
+	}
+	expectedPublicBaseURL := fmt.Sprintf("http://127.0.0.1:%d", idpPort)
+	if result.PublicBaseURL != expectedPublicBaseURL {
+		t.Fatalf("public base url got %q want %q", result.PublicBaseURL, expectedPublicBaseURL)
+	}
+}
+
+func TestDiscoverSettingsPreservesReverseProxyPublicBaseURL(t *testing.T) {
+	idpServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/idp/healthz" {
+			_, _ = response.Write([]byte(`{"status":"ok","component":"idp"}`))
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer idpServer.Close()
+	publicServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/idp/healthz" {
+			_, _ = response.Write([]byte(`{"status":"ok","component":"idp"}`))
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer publicServer.Close()
+	idpPort := testServerPort(t, idpServer.URL)
+
+	cfg := config.BackendConfig{
+		Listen:            "0.0.0.0:25000",
+		IDPListen:         fmt.Sprintf("0.0.0.0:%d", idpPort),
+		DeploymentMode:    "reverse_proxy",
+		AccessHost:        "127.0.0.1",
+		AccessScheme:      "http",
+		PublicBaseURL:     publicServer.URL,
+		RelayMode:         "socket",
+		DSMCookieName:     "id",
+		DSMCookieSameSite: "Lax",
+	}
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/api/admin/settings/discover", strings.NewReader(fmt.Sprintf(`{
+		"deployment_mode":"reverse_proxy",
+		"access_host":"127.0.0.1",
+		"access_scheme":"http",
+		"idp_port":26000,
+		"public_base_url":%q
+	}`, publicServer.URL)))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
+	}
+	var result struct {
+		IDPPort           int    `json:"idp_port"`
+		IDPDetected       bool   `json:"idp_detected"`
+		PublicBaseURL     string `json:"public_base_url"`
+		PublicURLDetected bool   `json:"public_base_url_detected"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.IDPDetected || result.IDPPort != idpPort {
+		t.Fatalf("local IDP listener was not detected: %#v", result)
+	}
+	if result.PublicBaseURL != publicServer.URL || !result.PublicURLDetected {
+		t.Fatalf("reverse proxy public base url was not preserved and verified: %#v", result)
+	}
+}
+
 func TestSettingsPublicBaseURLAllowsIndependentIDPSchemeHostPort(t *testing.T) {
 	stubTCPPortAvailable(t)
 	idpPort := 26000
 	cfg := config.BackendConfig{
 		Listen:            "0.0.0.0:25000",
+		DeploymentMode:    "reverse_proxy",
 		PublicBaseURL:     "https://192.0.2.10:25000",
 		AccessHost:        "192.0.2.10",
 		RelayMode:         "socket",

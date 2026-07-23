@@ -25,6 +25,9 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 
 	router.GET("/healthz", s.health)
 	router.GET("/readyz", s.health)
+	if includeIDP {
+		router.GET("/idp/healthz", s.idpHealth)
+	}
 
 	if includeAdmin {
 		adminNetwork := s.adminAccessControl()
@@ -96,4 +99,8 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 
 func (s *Server) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) idpHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "component": "idp"})
 }

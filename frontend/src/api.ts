@@ -152,7 +152,14 @@ export const api = {
   },
   refreshTLSConnections: () => request<{ success: boolean; connections_refreshed: boolean }>("/api/admin/tls-connections/refresh", { method: "POST" }),
   restartIDPRoute: () => request<{ success: boolean }>("/api/admin/idp-route/restart", { method: "POST" }),
-  discoverSettings: (payload: { access_host: string; access_scheme?: "http" | "https"; admin_port?: number; idp_port?: number }) =>
+  discoverSettings: (payload: {
+    deployment_mode?: "direct" | "reverse_proxy" | "advanced";
+    access_host: string;
+    access_scheme?: "http" | "https";
+    admin_port?: number;
+    idp_port?: number;
+    public_base_url?: string;
+  }) =>
     request<SystemSettingsDiscovery>("/api/admin/settings/discover", { method: "POST", body: JSON.stringify(payload) }),
   loginAuditLogs: (params?: ListParams) => request<PagedResponse<LoginAuditLog>>(`/api/admin/audit/logins${queryString(params)}`)
 };

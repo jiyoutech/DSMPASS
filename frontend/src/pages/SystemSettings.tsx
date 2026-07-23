@@ -158,13 +158,20 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
     const host = String(form.getFieldValue("access_host") ?? "").trim();
     const scheme = (form.getFieldValue("access_scheme") || "https") as "http" | "https";
     const idpPort = Number(form.getFieldValue("idp_port") || defaultIDPPort);
+    const publicBaseURL = String(form.getFieldValue("public_base_url") || "").trim();
     if (!host) {
       message.error("请先填写访问 IP / 域名");
       return;
     }
     setDetecting(true);
     try {
-      const result = await api.discoverSettings({ access_host: host, access_scheme: scheme, idp_port: idpPort });
+      const result = await api.discoverSettings({
+        deployment_mode: deploymentMode,
+        access_host: host,
+        access_scheme: scheme,
+        idp_port: idpPort,
+        public_base_url: publicBaseURL
+      });
       if (deploymentMode === "direct") {
         form.setFieldsValue(result);
       } else {
@@ -176,7 +183,18 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
           helper_dsm_login_api: result.helper_dsm_login_api
         });
       }
-      message.success(result.dsm_detected ? "已检测到 DSM" : "未检测到 DSM，已填入默认值");
+      const idpStatus = result.idp_detected
+        ? `已检测到认证入口本机端口 ${result.idp_port}`
+        : `未连接到认证入口，保留当前本机端口 ${result.idp_port}`;
+      const dsmStatus = result.dsm_detected ? "已检测到 DSM" : "未检测到 DSM，已填入默认地址";
+      if (deploymentMode === "direct") {
+        (result.idp_detected ? message.success : message.warning)(`${idpStatus}；${dsmStatus}`);
+      } else {
+        const publicStatus = result.public_base_url_detected
+          ? "反代公网地址可达"
+          : "未从 NAS 侧验证反代公网地址，已保留原值";
+        (result.idp_detected ? message.success : message.warning)(`${idpStatus}；${publicStatus}；${dsmStatus}`);
+      }
     } catch (err) {
       message.error(err instanceof Error ? err.message : "检测失败");
     } finally {

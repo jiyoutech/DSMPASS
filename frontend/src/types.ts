@@ -335,8 +335,10 @@ export interface SystemSettingsDiscovery {
   idp_port: number;
   admin_allowed_cidrs?: string;
   public_base_url: string;
+  public_base_url_detected: boolean;
   dsm_redirect_url: string;
   helper_dsm_login_api: string;
+  idp_detected: boolean;
   dsm_detected: boolean;
 }
 
