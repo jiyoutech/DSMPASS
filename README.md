@@ -98,16 +98,16 @@ Feishu / WeCom / DingTalk OAuth
 
 ### 下载 SPK
 
-当前公开版本为 [`v0.8.45`](https://github.com/jiyoutech/DSMPASS/releases/tag/v0.8.45)。这是不含 OIDC 的传统登录版，飞书、企业微信和钉钉三种身份源可以任选其一；同一套安装不能同时创建多个身份源。
+当前公开版本为 [`v0.8.46`](https://github.com/jiyoutech/DSMPASS/releases/tag/v0.8.46)。这是不含 OIDC 的传统登录版，飞书、企业微信和钉钉三种身份源可以任选其一；同一套安装不能同时创建多个身份源。
 
 获取与 NAS 架构匹配的安装包：
 
 | NAS 架构 | 文件 |
 | --- | --- |
-| Intel / AMD | [`DSMPASS-0.8.45-linux-amd64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/DSMPASS-0.8.45-linux-amd64.spk) |
-| ARMv8 / aarch64 | [`DSMPASS-0.8.45-linux-arm64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/DSMPASS-0.8.45-linux-arm64.spk) |
+| Intel / AMD | [`DSMPASS-0.8.46-linux-amd64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.46/DSMPASS-0.8.46-linux-amd64.spk) |
+| ARMv8 / aarch64 | [`DSMPASS-0.8.46-linux-arm64.spk`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.46/DSMPASS-0.8.46-linux-arm64.spk) |
 
-下载后可使用 Release 中的 [`SHA256SUMS`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.45/SHA256SUMS) 校验文件完整性。后续版本请以 [GitHub Releases](https://github.com/jiyoutech/DSMPASS/releases) 页面为准。
+下载后可使用 Release 中的 [`SHA256SUMS`](https://github.com/jiyoutech/DSMPASS/releases/download/v0.8.46/SHA256SUMS) 校验文件完整性。后续版本请以 [GitHub Releases](https://github.com/jiyoutech/DSMPASS/releases) 页面为准。
 
 ### 手动安装
 
