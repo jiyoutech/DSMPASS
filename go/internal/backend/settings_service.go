@@ -139,11 +139,18 @@ func planAccessHostSettings(draft *Server, plan *settingsUpdatePlan, raw any, up
 		return badRequest("invalid access_host")
 	}
 	plan.set(draft, "access_host", host)
-	publicBaseURL := asRuntimeString(update["public_base_url"])
-	if publicBaseURL == "" {
+	mode := normalizeDeploymentMode(draft.cfg.DeploymentMode)
+	if value, ok := update["deployment_mode"]; ok {
+		mode = normalizeDeploymentMode(asRuntimeString(value))
+	}
+	publicBaseURL := ""
+	if mode != "direct" {
+		publicBaseURL = asRuntimeString(update["public_base_url"])
+	}
+	if strings.TrimSpace(publicBaseURL) == "" {
 		publicBaseURL = draft.publicBaseURLForHost(host)
 	}
-	if port, ok := runtimeInt(update["idp_port"]); ok && strings.TrimSpace(asRuntimeString(update["public_base_url"])) == "" {
+	if port, ok := runtimeInt(update["idp_port"]); ok && (mode == "direct" || strings.TrimSpace(asRuntimeString(update["public_base_url"])) == "") {
 		publicBaseURL = replaceBaseURLPort(publicBaseURL, port)
 	}
 	dsmRedirectURL := strings.TrimSpace(asRuntimeString(update["dsm_redirect_url"]))

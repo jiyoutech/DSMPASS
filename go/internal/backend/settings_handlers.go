@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,10 +59,12 @@ func (s *Server) putSettings(c *gin.Context) {
 
 func (s *Server) discoverSettings(c *gin.Context) {
 	var payload struct {
-		AccessHost string `json:"access_host"`
-		Scheme     string `json:"access_scheme"`
-		AdminPort  int    `json:"admin_port"`
-		IDPPort    int    `json:"idp_port"`
+		Mode          string `json:"deployment_mode"`
+		AccessHost    string `json:"access_host"`
+		Scheme        string `json:"access_scheme"`
+		AdminPort     int    `json:"admin_port"`
+		IDPPort       int    `json:"idp_port"`
+		PublicBaseURL string `json:"public_base_url"`
 	}
 	if err := c.BindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid json"})
@@ -76,6 +79,14 @@ func (s *Server) discoverSettings(c *gin.Context) {
 	if strings.TrimSpace(payload.Scheme) != "" {
 		scheme = normalizedAccessScheme(payload.Scheme, s.cfg.TLSEnabled)
 	}
+	mode := normalizeDeploymentMode(s.cfg.DeploymentMode)
+	if strings.TrimSpace(payload.Mode) != "" {
+		if !validDeploymentMode(payload.Mode) {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid deployment_mode"})
+			return
+		}
+		mode = normalizeDeploymentMode(payload.Mode)
+	}
 	client := &http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
@@ -86,48 +97,90 @@ func (s *Server) discoverSettings(c *gin.Context) {
 			return http.ErrUseLastResponse
 		},
 	}
-	currentPublicURL := normalizeURLScheme(requestPublicBaseURL(c), scheme)
-	currentPort := publicBaseURLPort(currentPublicURL)
-	if payload.IDPPort > 0 {
-		currentPort = strconv.Itoa(payload.IDPPort)
-	}
-	if currentPort == "" {
-		currentPort = listenAddressPort(s.IDPListenAddress())
-	}
-	publicCandidates := []string{
-		currentPublicURL,
-		s.publicBaseURLForHost(host),
-	}
-	if currentPort != "" {
-		publicCandidates = append(publicCandidates,
-			scheme+"://"+host+":"+currentPort,
+	adminPort := firstPositiveInt(payload.AdminPort, parsePortInt(listenAddressPort(s.cfg.Listen)), 25000)
+	configuredIDPPort := parsePortInt(listenAddressPort(s.IDPListenAddress()))
+	idpCandidates := []string{}
+	if configuredIDPPort > 0 {
+		configuredScheme := s.configuredAccessScheme()
+		idpCandidates = append(idpCandidates,
+			baseURLForHostPort(configuredScheme, "127.0.0.1", configuredIDPPort),
+			baseURLForHostPort(configuredScheme, host, configuredIDPPort),
 		)
 	}
-	publicCandidates = append(publicCandidates,
-		scheme+"://"+host+":25000",
+	if payload.IDPPort >= minUserPort && payload.IDPPort <= 65535 {
+		idpCandidates = append(idpCandidates, baseURLForHostPort(scheme, host, payload.IDPPort))
+	}
+	defaultPort := defaultIDPPortForAdmin(adminPort)
+	idpCandidates = append(idpCandidates, baseURLForHostPort(scheme, host, defaultPort))
+	idpBaseURL := firstReachableBaseURL(c.Request.Context(), client, idpCandidates, "/idp/healthz", isIDPHealth)
+	idpDetected := idpBaseURL != ""
+	idpPort := firstPositiveInt(
+		parsePortInt(publicBaseURLPort(idpBaseURL)),
+		configuredIDPPort,
+		payload.IDPPort,
+		defaultPort,
 	)
-	publicBaseURL := firstReachableBaseURL(c.Request.Context(), client, publicCandidates, "/healthz")
+
+	publicBaseURL := ""
+	publicBaseURLDetected := false
+	if mode == "direct" {
+		publicBaseURL = baseURLForHostPort(scheme, host, idpPort)
+		publicBaseURLDetected = idpDetected
+	} else {
+		publicBaseURL = normalizePublicBaseURL(payload.PublicBaseURL, scheme)
+		if publicBaseURL == "" {
+			publicBaseURL = normalizePublicBaseURL(s.cfg.PublicBaseURL, scheme)
+		}
+		if publicBaseURL != "" {
+			publicBaseURLDetected = firstReachableBaseURL(
+				c.Request.Context(),
+				client,
+				[]string{publicBaseURL},
+				"/idp/healthz",
+				isIDPHealth,
+			) != ""
+		}
+	}
 	dsmRedirectURL := firstReachableBaseURL(c.Request.Context(), client, []string{
 		strings.TrimRight(dsmRedirectURLForHostScheme(host, scheme), "/"),
 	}, "/webapi/entry.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth", isDSMAuthAPIInfo)
 	dsmDetected := dsmRedirectURL != ""
-	if publicBaseURL == "" {
-		publicBaseURL = s.publicBaseURLForHost(host)
-	}
 	if dsmRedirectURL == "" {
 		dsmRedirectURL = dsmRedirectURLForHostScheme(host, scheme)
 	}
 	dsmRedirectURL = normalizeDSMBaseURL(dsmRedirectURL)
 	c.JSON(http.StatusOK, gin.H{
-		"access_host":          host,
-		"access_scheme":        scheme,
-		"admin_port":           firstPositiveInt(payload.AdminPort, parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
-		"idp_port":             firstPositiveInt(payload.IDPPort, parsePortInt(publicBaseURLPort(publicBaseURL)), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
-		"public_base_url":      normalizeURLScheme(normalizePublicBaseURL(publicBaseURL, scheme), scheme),
-		"dsm_redirect_url":     dsmRedirectURL,
-		"helper_dsm_login_api": strings.TrimRight(dsmRedirectURL, "/") + "/webapi/entry.cgi",
-		"dsm_detected":         dsmDetected,
+		"deployment_mode":          mode,
+		"access_host":              host,
+		"access_scheme":            scheme,
+		"admin_port":               adminPort,
+		"idp_port":                 idpPort,
+		"idp_detected":             idpDetected,
+		"public_base_url":          publicBaseURL,
+		"public_base_url_detected": publicBaseURLDetected,
+		"dsm_redirect_url":         dsmRedirectURL,
+		"helper_dsm_login_api":     strings.TrimRight(dsmRedirectURL, "/") + "/webapi/entry.cgi",
+		"dsm_detected":             dsmDetected,
 	})
+}
+
+func baseURLForHostPort(scheme, host string, port int) string {
+	host = normalizeAccessHost(host)
+	if host == "" || port <= 0 {
+		return ""
+	}
+	return normalizedAccessScheme(scheme, false) + "://" + net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func isIDPHealth(body []byte) bool {
+	var parsed struct {
+		Status    string `json:"status"`
+		Component string `json:"component"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	return parsed.Status == "ok" && parsed.Component == "idp"
 }
 
 func firstReachableBaseURL(ctx context.Context, client *http.Client, candidates []string, probePath string, validBody ...func([]byte) bool) string {
