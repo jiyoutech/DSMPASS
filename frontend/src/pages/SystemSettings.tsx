@@ -121,7 +121,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
   const form = Form.useFormInstance<SystemSettingsUpdate>();
   const { message } = AntApp.useApp();
   const [detecting, setDetecting] = useState(false);
-  const deploymentMode = normalizedDeploymentMode(Form.useWatch("deployment_mode", form));
+  const deploymentMode = normalizedDeploymentMode(Form.useWatch("deployment_mode", { form, preserve: true }));
   const publicBaseEditable = deploymentMode !== "direct";
   const dsmEditable = deploymentMode === "advanced";
   const adminPort = Number(Form.useWatch("admin_port", form) || 0);
