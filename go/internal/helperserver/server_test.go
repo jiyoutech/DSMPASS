@@ -83,10 +83,10 @@ func TestReservedDSMNamesAreRejectedAtHelperBoundary(t *testing.T) {
 func TestParseSynoUserInfo(t *testing.T) {
 	info := parseSynoUserInfo(`User Name   : [chuanpin]
 User Type   : [AUTH_LOCAL]
-Fullname    : [chuanpin]
+Fullname    : [Chuanpin]
 Expired     : [false]
 User Mail   : [chuanpin@example.test]`)
-	if info.FullName != "chuanpin" || info.Mail != "chuanpin@example.test" || info.Expired {
+	if info.FullName != "Chuanpin" || info.Mail != "chuanpin@example.test" || info.Expired {
 		t.Fatalf("unexpected user info: %#v", info)
 	}
 	expired := parseSynoUserInfo("Expired     : [true]")

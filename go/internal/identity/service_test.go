@@ -39,7 +39,7 @@ func TestResolveAuthorizedLoginRequiresProvisionedAllowedAccount(t *testing.T) {
 		ProviderSlug:  "feishu-main",
 		Subject:       "open-id-1",
 		SubjectType:   "directory_subject",
-		DisplayName:   "chuanpin",
+		DisplayName:   "Chuanpin",
 		Email:         "chuanpin@example.com",
 		EmailVerified: &verified,
 	})
