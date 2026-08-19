@@ -4,6 +4,7 @@
 
 ## 推荐阅读
 
+- `user-guide.md`：安装、三种身份源配置、同步规则和系统设置的完整使用手册
 - `go-version.md`：Go 版本结构和本地运行方式
 - `spk-feishu-setup.md`：从安装 SPK 到配置飞书登录和通讯录同步的完整步骤
 - `go-dsm-binary-deployment.md`：DSM 二进制部署方式
