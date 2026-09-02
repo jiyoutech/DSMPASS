@@ -88,6 +88,15 @@ build_spk() {
   work_dir="$DIST_DIR/spk-$suffix"
   spk_file="$DIST_DIR/${PACKAGE_NAME}-${VERSION}-${suffix}.spk"
 
+  case "$syno_arch" in
+    x86_64|armv8)
+      ;;
+    *)
+      echo "unsupported Synology SPK architecture: $syno_arch" >&2
+      return 1
+      ;;
+  esac
+
   rm -rf "$work_dir" "$spk_file"
   mkdir -p "$work_dir/scripts" "$work_dir/conf" "$work_dir/package/ui/images" "$work_dir/WIZARD_UIFILES"
 
@@ -788,7 +797,7 @@ EOF
 }
 
 amd64_spk=$(build_spk "$DIST_DIR/package-linux-amd64" x86_64 linux-amd64)
-arm64_spk=$(build_spk "$DIST_DIR/package-linux-arm64" aarch64 linux-arm64)
+arm64_spk=$(build_spk "$DIST_DIR/package-linux-arm64" armv8 linux-arm64)
 (
   cd "$DIST_DIR"
   sha256sum=$(command -v sha256sum || true)
