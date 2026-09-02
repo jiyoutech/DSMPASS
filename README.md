@@ -10,6 +10,8 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把企业身份
 
 当前主线实现为 **Go 后端 + Go DSM Helper + React 管理后台**，支持飞书、企业微信和钉钉企业自建应用。公开 SPK 是不含 OIDC 的传统登录版，每套安装同时只允许配置一个身份源。
 
+如需部署咨询、商业合作或技术支持，请联系 [sales@jiyou-tech.com](mailto:sales@jiyou-tech.com)。
+
 > 项目仍处于 pre-1.0 阶段。DSM 登录中继、临时密码、Cookie 写入和 Helper 提权都属于高风险系统集成能力。生产使用前，请先在测试 NAS 上完整验证安装、升级、卸载、端口映射、登录和恢复流程。
 
 ## 目录
@@ -39,7 +41,7 @@ DSM Pass 是面向 Synology DSM 的企业身份登录网关。它把企业身份
 | 身份源级定时同步 | 已支持 |
 | 登录审计和同步日志 | 已支持 |
 | 同步、清理和批量操作进度展示 | 已支持 |
-| DSM SPK 安装包 | 已支持 x86_64 / aarch64 |
+| DSM SPK 安装包 | 已支持 x86_64 / armv8 |
 | 管理后台 HTTPS | 默认启用，自签证书自动生成 |
 | IDP 入口协议和端口 | 后台可配置，支持热重启 |
 | IDP 入口校验 | 只允许通过系统配置的 IDP 地址访问认证入口 |
@@ -411,7 +413,7 @@ GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" go test ./...
 - 不要提交真实身份源应用密钥、OAuth token、DSM SID、Cookie、临时密码、生产证书私钥、日志或数据库。
 - README 截图发布前需要人工确认已移除组织名、真实域名、真实用户信息和敏感配置。
 - 生产环境建议使用可信 HTTPS 证书，并限制管理后台访问范围。
-- 发现安全问题时，请先私下联系维护者，不要在公开 issue 中披露可利用细节。
+- 发现安全问题时，请先通过 [sales@jiyou-tech.com](mailto:sales@jiyou-tech.com) 私下联系维护者，不要在公开 issue 中披露可利用细节。
 - 公开发布前执行 `make test`，并参考 [docs/publication-guidelines.md](docs/publication-guidelines.md)。
 
 ## 许可证

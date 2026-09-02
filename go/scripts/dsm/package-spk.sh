@@ -22,7 +22,7 @@ esac
 PACKAGE_NAME=${DSMPASS_SPK_PACKAGE:-DSMPASS}
 DISPLAY_NAME=${DSMPASS_SPK_DISPLAYNAME:-"DSM PASS"}
 MAINTAINER=${DSMPASS_SPK_MAINTAINER:-"dsm-pass"}
-DESCRIPTION=${DSMPASS_SPK_DESCRIPTION:-"Enterprise identity login gateway for Synology DSM."}
+DESCRIPTION=${DSMPASS_SPK_DESCRIPTION:-"DSM 企业身份登录与通讯录同步套件，支持飞书、企业微信和钉钉自建应用，可同步用户、部门和成员关系，并提供 DSM 统一登录、同步管理与审计能力。部署咨询与技术支持：sales@jiyou-tech.com"}
 SUPPORT_URL=${DSMPASS_SPK_SUPPORT_URL:-"https://github.com/dsm-pass/dsm-pass"}
 DEFAULT_MANAGEMENT_PORT=${DSMPASS_DEFAULT_MANAGEMENT_PORT:-25000}
 DEFAULT_IDP_PORT=${DSMPASS_DEFAULT_IDP_PORT:-26000}
@@ -87,6 +87,15 @@ build_spk() {
   suffix=$3
   work_dir="$DIST_DIR/spk-$suffix"
   spk_file="$DIST_DIR/${PACKAGE_NAME}-${VERSION}-${suffix}.spk"
+
+  case "$syno_arch" in
+    x86_64|armv8)
+      ;;
+    *)
+      echo "unsupported Synology SPK architecture: $syno_arch" >&2
+      return 1
+      ;;
+  esac
 
   rm -rf "$work_dir" "$spk_file"
   mkdir -p "$work_dir/scripts" "$work_dir/conf" "$work_dir/package/ui/images" "$work_dir/WIZARD_UIFILES"
@@ -788,7 +797,7 @@ EOF
 }
 
 amd64_spk=$(build_spk "$DIST_DIR/package-linux-amd64" x86_64 linux-amd64)
-arm64_spk=$(build_spk "$DIST_DIR/package-linux-arm64" aarch64 linux-arm64)
+arm64_spk=$(build_spk "$DIST_DIR/package-linux-arm64" armv8 linux-arm64)
 (
   cd "$DIST_DIR"
   sha256sum=$(command -v sha256sum || true)

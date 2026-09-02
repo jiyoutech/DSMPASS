@@ -1,6 +1,6 @@
 # DSM SPK 打包与安装
 
-本项目可以构建兼容 DSM 7 的 SPK 套件，支持 x86_64 和 aarch64 Synology 机型。
+本项目可以构建兼容 DSM 7 的 SPK 套件，支持 x86_64 和 ARMv8 Synology 机型。
 
 ## 打包
 
@@ -26,7 +26,7 @@ go/dist/dsm/DSMPASS-<version>-linux-arm64.spk
 go/dist/dsm/SHA256SUMS
 ```
 
-`linux-amd64` 用于 Intel/AMD Synology 机型，`linux-arm64` 用于 ARMv8/aarch64 机型。
+`linux-amd64` 用于 Intel/AMD Synology 机型，SPK `INFO` 使用 `arch="x86_64"`；`linux-arm64` 用于 ARMv8/aarch64 机型，SPK `INFO` 使用群晖识别的 `arch="armv8"`。Go 二进制仍然以 `GOARCH=arm64` 编译，产物文件名也继续使用 `linux-arm64`。
 
 ## 套件内容
 
