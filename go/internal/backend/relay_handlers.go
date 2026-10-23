@@ -1,7 +1,9 @@
 package backend
 
 import (
+	"crypto/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +15,8 @@ import (
 )
 
 func (s *Server) launch(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	providerSlug := c.Param("provider")
 	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 {
 		oauthProvider, ok := s.oauthProviderForSource(source)
@@ -21,7 +25,13 @@ func (s *Server) launch(c *gin.Context) {
 			return
 		}
 		requestID := "go_launch_" + randomHex(12)
-		state := randomHex(16)
+		publicURL := effectivePublicBaseURL(s.trustedPublicBaseURL(), requestPublicBaseURL(c))
+		secure := c.Request.TLS != nil || s.cfg.AccessScheme == "https" || strings.HasPrefix(publicURL, "https://")
+		state, entry, cookie, err := newOAuthState(source.Slug, secure, rand.Reader)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"detail": "无法安全创建登录状态，请稍后重试。"})
+			return
+		}
 		s.stateMu.Lock()
 		now := time.Now()
 		for key, entry := range s.states {
@@ -29,9 +39,10 @@ func (s *Server) launch(c *gin.Context) {
 				delete(s.states, key)
 			}
 		}
-		s.states[state] = oauthState{ProviderSlug: source.Slug, ExpiresAt: now.Add(oauthStateTTL)}
+		s.states[state] = entry
 		s.stateMu.Unlock()
-		redirectURI := effectivePublicBaseURL(s.trustedPublicBaseURL(), requestPublicBaseURL(c)) + "/idp/" + source.Slug + "/callback"
+		http.SetCookie(c.Writer, cookie)
+		redirectURI := publicURL + "/idp/" + source.Slug + "/callback"
 		authorizeURL := oauthProvider.BuildAuthorizeURL(state, redirectURI)
 		diaglog.Append(s.cfg.DataDir, requestID, "backend.launch.redirect_to_provider", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
 			"provider_slug": source.Slug,
@@ -52,6 +63,8 @@ func (s *Server) launch(c *gin.Context) {
 }
 
 func (s *Server) callback(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	providerSlug := c.Param("provider")
 	if source, err := s.loadIdentitySource(c.Request.Context(), providerSlug); err == nil && source.Enabled == 1 && source.LoginEnabled == 1 {
 		oauthProvider, ok := s.oauthProviderForSource(source)

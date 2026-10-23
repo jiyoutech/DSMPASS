@@ -350,26 +350,24 @@ func (s *Server) validateCallbackState(c *gin.Context, source db.IdentitySource,
 		})
 		return false
 	}
-	s.stateMu.Lock()
-	entry, ok := s.states[state]
-	delete(s.states, state)
-	s.stateMu.Unlock()
-	if !ok || entry.ProviderSlug != source.Slug || time.Now().After(entry.ExpiresAt) {
+	entry, ok := s.consumeOAuthState(state, source.Slug, c.Request)
+	if !ok {
 		s.failRelayCallback(c, source, requestID, start, relayFailure{
 			Status:    http.StatusBadRequest,
-			Detail:    "无效状态：请重新从身份源登录入口发起登录，或确认身份源回调地址直接指向 callback。",
+			Detail:    "登录状态无效或浏览器不匹配：请在发起登录的同一浏览器完成授权，或重新从身份源登录入口发起登录。",
 			ErrorCode: "invalid_state",
 			EventName: "backend.callback.state.invalid",
 			Event: diaglog.Event{
 				"state":          state,
-				"state_found":    ok,
+				"state_found":    entry.CookieName != "",
 				"state_provider": entry.ProviderSlug,
-				"state_expired":  ok && time.Now().After(entry.ExpiresAt),
+				"state_expired":  entry.CookieName != "" && time.Now().After(entry.ExpiresAt),
 				"source_slug":    source.Slug,
 			},
 		})
 		return false
 	}
+	http.SetCookie(c.Writer, &http.Cookie{Name: entry.CookieName, Value: "", Path: "/", HttpOnly: true, Secure: strings.HasPrefix(entry.CookieName, "__Host-"), SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	diaglog.Append(s.cfg.DataDir, requestID, "backend.callback.state.valid", s.cfg.LoginDiagnosticsEnabled, diaglog.Event{
 		"state":          state,
 		"state_provider": entry.ProviderSlug,

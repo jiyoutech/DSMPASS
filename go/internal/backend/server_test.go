@@ -996,8 +996,11 @@ func TestProviderOAuthURLsUseConfiguredPublicBaseURL(t *testing.T) {
 		t.Fatalf("launch should call DSM logout before authorization: %s", body)
 	}
 	cookies := launchResponse.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "id" || cookies[0].MaxAge != -1 {
+	if len(cookies) != 2 || cookies[1].Name != "id" || cookies[1].MaxAge != -1 {
 		t.Fatalf("launch should expire existing DSM session before authorization, got %#v", cookies)
+	}
+	if !strings.HasPrefix(cookies[0].Name, "__Host-dsmpass_oauth_") || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteLaxMode || cookies[0].Domain != "" || cookies[0].Path != "/" {
+		t.Fatal("launch browser binding is not a protected host-only cookie")
 	}
 }
 
