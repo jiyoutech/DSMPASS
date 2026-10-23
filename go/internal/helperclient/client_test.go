@@ -55,6 +55,52 @@ func TestUnixSocketClientHealthCheck(t *testing.T) {
 	}
 }
 
+func TestResetSyncedUserPasswordSendsSignedScopeAndRedactsPassword(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	received := make(chan map[string]any, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			received <- nil
+			return
+		}
+		defer conn.Close()
+		var payload map[string]any
+		if json.NewDecoder(conn).Decode(&payload) != nil {
+			received <- nil
+			return
+		}
+		received <- payload
+		_ = json.NewEncoder(conn).Encode(map[string]any{"success": true})
+	}()
+	dataDir := t.TempDir()
+	client := UnixSocketClient{SocketPath: socketPath, Secret: "test-secret", Timeout: time.Second, DataDir: dataDir, DiagnosticsEnabled: true}
+	if err := client.ResetSyncedUserPassword(context.Background(), "request", "source", "account", "alice", "private-reset-password"); err != nil {
+		t.Fatal(err)
+	}
+	payload := <-received
+	if signing.Verify(payload, "test-secret", 60) != nil {
+		t.Fatal("invalid signature")
+	}
+	for key, want := range map[string]string{"action": "reset_synced_user_password", "source_slug": "source", "account_id": "account", "dsm_username": "alice", "password": "private-reset-password"} {
+		if payload[key] != want {
+			t.Fatalf("incorrect %s", key)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dataDir, "login-diagnostics.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "private-reset-password") {
+		t.Fatal("password leaked to diagnostics")
+	}
+}
+
 func TestUnixSocketClientIncludesHelperErrorMessage(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	listener, err := net.Listen("unix", socketPath)

@@ -41,6 +41,17 @@ func NewWithStore(cfg config.HelperConfig, store *db.Queries) *Server {
 }
 
 func (s *Server) Serve() error {
+	if s.cfg.SocketPath == "" {
+		return errors.New("helper socket path is empty")
+	}
+	lockDir := s.cfg.LockDir
+	if lockDir == "" {
+		lockDir = filepath.Dir(s.cfg.SocketPath)
+	}
+	return withFileLock(filepath.Join(lockDir, "helper.instance.lock"), s.serveWithLock)
+}
+
+func (s *Server) serveWithLock() error {
 	secret, generated, err := settings.EnsureHelperHMACSecret(context.Background(), s.store, s.cfg.HMACSecret)
 	if err != nil {
 		return err
@@ -70,6 +81,9 @@ func (s *Server) Serve() error {
 	if err := setSocketPermissions(startupCfg.SocketPath); err != nil {
 		return err
 	}
+	recoveryCtx, stopRecovery := context.WithCancel(context.Background())
+	defer stopRecovery()
+	go runRecoveryLoop(recoveryCtx, startupCfg)
 	log.Printf("DSM Pass helper listening on %s", startupCfg.SocketPath)
 	for {
 		conn, err := listener.Accept()
@@ -145,16 +159,21 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 	diaglog.Append(cfg.DataDir, requestID, "helper.socket.signature.valid", cfg.LoginDiagnosticsEnabled, diaglog.Event{"action": action})
 	switch action {
 	case "health_check":
+		_, shadowLockErr := shadowSystemLockPath(cfg)
 		return map[string]any{
-			"success":          true,
-			"version":          buildinfo.Version,
-			"socket_path":      cfg.SocketPath,
-			"euid":             os.Geteuid(),
-			"egid":             os.Getegid(),
-			"synouser_path":    cfg.SynoUserPath,
-			"synouser_status":  helperCommandStatus(cfg.SynoUserPath),
-			"synogroup_path":   cfg.SynoGroupPath,
-			"synogroup_status": helperCommandStatus(cfg.SynoGroupPath),
+			"success":                    true,
+			"synced_password_reset":      true,
+			"account_write_coordination": true,
+			"shadow_login_supported":     shadowLockErr == nil,
+			"shadow_lock_error":          errorString(shadowLockErr),
+			"version":                    buildinfo.Version,
+			"socket_path":                cfg.SocketPath,
+			"euid":                       os.Geteuid(),
+			"egid":                       os.Getegid(),
+			"synouser_path":              cfg.SynoUserPath,
+			"synouser_status":            helperCommandStatus(cfg.SynoUserPath),
+			"synogroup_path":             cfg.SynoGroupPath,
+			"synogroup_status":           helperCommandStatus(cfg.SynoGroupPath),
 		}
 	case "relay_login":
 		username, err := requiredString(payload, "dsm_username")
@@ -222,41 +241,16 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.complete_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{})
 		return map[string]any{"success": true}
+	case "reset_synced_user_password":
+		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+			if errors.Is(err, errPasswordResetUnknown) {
+				return errorResponse("SYNC_PASSWORD_RESET_UNCONFIRMED", err.Error())
+			}
+			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
+		}
+		return map[string]any{"success": true}
 	case "provision_user":
-		username, err := requiredString(payload, "dsm_username")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		if err := assertAllowed(cfg, username); err != nil {
-			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
-		}
-		displayName, _ := optionalString(payload, "display_name")
-		email, _ := optionalString(payload, "email")
-		if info, err := getSynoUser(cfg.SynoUserPath, username); err == nil {
-			if displayName == "" {
-				displayName = info.FullName
-			}
-			if email == "" {
-				email = info.Mail
-			}
-			if info.Expired || displayName != info.FullName || email != info.Mail {
-				if err := modifySynoUser(cfg.SynoUserPath, username, displayName, false, email); err != nil {
-					return errorResponse("SYNOUSER_ENABLE_FAILED", "DSM 用户已存在，但恢复启用或更新资料失败："+err.Error())
-				}
-			}
-			return map[string]any{"success": true, "created": false}
-		}
-		password, _ := optionalString(payload, "initial_password")
-		if password == "" {
-			password = randomPassword(cfg.InitialPasswordLength)
-		}
-		if err := run(cfg.SynoUserPath, synouserAddArgs(username, password, displayName, email)...); err != nil {
-			return errorResponse("SYNOUSER_FAILED", err.Error())
-		}
-		if err := run(cfg.SynoUserPath, "--get", username); err != nil {
-			return errorResponse("SYNOUSER_VERIFY_FAILED", "DSM 用户创建命令已返回成功，但随后无法查询到该用户："+err.Error())
-		}
-		return map[string]any{"success": true, "created": true}
+		return s.provisionAccount(cfg, payload)
 	case "provision_group":
 		groupname, err := requiredString(payload, "dsm_groupname")
 		if err != nil {
@@ -281,21 +275,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 		return map[string]any{"success": true, "created": true}
 	case "disable_user":
-		username, err := requiredString(payload, "dsm_username")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		if err := assertAllowed(cfg, username); err != nil {
-			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
-		}
-		info, err := getSynoUser(cfg.SynoUserPath, username)
-		if err != nil {
-			return map[string]any{"success": true, "disabled": false}
-		}
-		if err := modifySynoUser(cfg.SynoUserPath, username, info.FullName, true, info.Mail); err != nil {
-			return errorResponse("SYNOUSER_FAILED", err.Error())
-		}
-		return map[string]any{"success": true, "disabled": true}
+		return s.disableAccount(cfg, payload)
 	case "add_group_member":
 		groupname, err := requiredString(payload, "dsm_groupname")
 		if err != nil {
@@ -453,11 +433,13 @@ type synoUserInfo struct {
 }
 
 func getSynoUser(path, username string) (synoUserInfo, error) {
-	output, err := runOutput(path, "--get", username)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, path, "--get", username).Output()
 	if err != nil {
 		return synoUserInfo{}, err
 	}
-	return parseSynoUserInfo(output), nil
+	return parseSynoUserInfo(string(output)), nil
 }
 
 func modifySynoUser(path, username, displayName string, expired bool, email string) error {
@@ -465,7 +447,9 @@ func modifySynoUser(path, username, displayName string, expired bool, email stri
 	if expired {
 		expiredValue = "1"
 	}
-	return run(path, "--modify", username, displayName, expiredValue, email)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return runAccountCommand(ctx, path, "--modify", username, displayName, expiredValue, email)
 }
 
 func parseSynoUserInfo(output string) synoUserInfo {

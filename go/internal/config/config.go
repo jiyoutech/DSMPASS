@@ -78,6 +78,7 @@ type HelperConfig struct {
 	DSMBrowserLoginTTLSeconds int
 	ShadowPath                string
 	ShadowLockPath            string
+	OpenSSLPath               string
 	LockDir                   string
 	JournalDir                string
 	TempPasswordLength        int
@@ -180,6 +181,7 @@ func LoadHelper() HelperConfig {
 		DSMBrowserLoginTTLSeconds: envInt("DSMPASS_DSM_BROWSER_LOGIN_TTL_SECONDS", 30),
 		ShadowPath:                "/etc/shadow",
 		ShadowLockPath:            "/run/dsmpass/locks/shadow.lock",
+		OpenSSLPath:               "/usr/bin/openssl",
 		LockDir:                   "/run/dsmpass/locks",
 		JournalDir:                "/var/lib/dsmpass/journal",
 		TempPasswordLength:        64,

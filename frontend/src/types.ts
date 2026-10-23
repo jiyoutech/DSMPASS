@@ -1,4 +1,5 @@
 export type ProvisionStatus = "pending" | "created" | "linked_existing" | "disabled" | "conflict" | string;
+export type SyncMode = "incremental" | "full";
 
 export interface SyncPlanItem {
   action: string;

@@ -22,6 +22,7 @@ type Client interface {
 	PrepareBrowserLogin(ctx context.Context, requestID, username, identityID, loginSource string) (BrowserLoginResult, error)
 	CompleteBrowserLogin(ctx context.Context, requestID string) error
 	ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error)
+	ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error
 	DisableUser(ctx context.Context, requestID, username string) (bool, error)
 	ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error)
 	AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
@@ -209,6 +210,20 @@ func (c UnixSocketClient) DisableUser(ctx context.Context, requestID, username s
 		"dsm_username": username,
 	})
 	return boolResponse(response, err)
+}
+
+func (c UnixSocketClient) ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error {
+	// The Helper bounds synouser to 20 seconds; allow its result to arrive before
+	// treating a permanent reset as failed due to the usual short login timeout.
+	if c.Timeout < 30*time.Second {
+		c.Timeout = 30 * time.Second
+	}
+	_, err := c.send(ctx, map[string]any{
+		"action": "reset_synced_user_password", "request_id": requestID,
+		"source_slug": sourceSlug, "account_id": accountID,
+		"dsm_username": username, "password": password,
+	})
+	return err
 }
 
 func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error) {

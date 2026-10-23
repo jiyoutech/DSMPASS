@@ -19,30 +19,38 @@ func (s *Server) syncApply(c *gin.Context) {
 }
 
 func (s *Server) startProviderSyncRun(c *gin.Context) {
+	mode, ok := readSyncMode(c)
+	if !ok {
+		return
+	}
 	sourceSlug := c.Param("slug")
 	if _, ok := s.directoryProvider(sourceSlug); !ok {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
 	}
-	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", "同步任务已创建", 0)
+	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", mode.label()+"任务已创建", 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	go func() {
 		ctx := context.Background()
-		_, err := s.runSyncProviderWithProgress(ctx, sourceSlug, progress)
+		_, err := s.runSyncProviderModeWithProgress(ctx, sourceSlug, mode, progress)
 		if err != nil {
 			progress.fail(ctx, err)
 			return
 		}
-		progress.complete(ctx, "同步完成")
+		progress.complete(ctx, mode.label()+"完成")
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"run_id": progress.id})
 }
 
 func (s *Server) syncProvider(c *gin.Context) {
-	result, err := s.runSyncProvider(c.Request.Context(), c.Param("provider"))
+	mode, ok := readSyncMode(c)
+	if !ok {
+		return
+	}
+	result, err := s.runSyncProviderModeWithProgress(c.Request.Context(), c.Param("provider"), mode, nil)
 	if errors.Is(err, errUnknownProvider) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
@@ -63,6 +71,10 @@ func (s *Server) runSyncProvider(ctx context.Context, providerSlug string) (sync
 }
 
 func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug string, progress *operationProgress) (syncsvc.Result, error) {
+	return s.runSyncProviderModeWithProgress(ctx, providerSlug, syncIncremental, progress)
+}
+
+func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (syncsvc.Result, error) {
 	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
@@ -72,6 +84,15 @@ func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug s
 		return syncsvc.Result{}, errSyncAlreadyRunning
 	}
 	defer s.endSourceSync(directory.Slug())
+	if mode == syncFull {
+		health, err := s.helper.HealthCheck(ctx)
+		if err != nil {
+			return syncsvc.Result{}, err
+		}
+		if supported, _ := health["synced_password_reset"].(bool); !supported {
+			return syncsvc.Result{}, errors.New("Helper 不支持全量同步密码修复，请升级并重启 Helper")
+		}
+	}
 	runID := "sync_" + randomHex(12)
 	var syncStart string
 	_ = s.store.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
@@ -87,6 +108,8 @@ ON CONFLICT(id) DO NOTHING
 	logBuffer := s.newSyncLogBuffer(ctx)
 	defer func() { _ = logBuffer.Flush() }()
 	policy := s.sourceSyncPolicy(ctx, directory.Slug())
+	policy.FullSync = mode == syncFull
+	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "sync_mode", "success", "", string(mode), "")
 	if progress != nil {
 		progress.message(ctx, "读取身份源", "正在读取身份源通讯录")
 	}
@@ -195,6 +218,7 @@ func (s *Server) endSourceSync(slug string) {
 }
 
 type sourceSyncPolicy struct {
+	FullSync              bool
 	DisableMissingUsers   bool
 	DeactivateMissingData bool
 	PreserveMissingGroups bool
@@ -354,6 +378,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	if progress != nil {
 		progress.setTotal(ctx, "同步 DSM 用户", "正在同步 DSM 用户", len(pendingAccounts))
 	}
+	var accountErrors []error
 	for _, item := range pendingAccounts {
 		id, username, displayName, email, status := item.id, item.username, item.displayName, item.email, item.status
 		err := error(nil)
@@ -361,13 +386,17 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		if err != nil {
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
 		if err != nil {
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, err
+			accountErrors = append(accountErrors, err)
+			if progress != nil {
+				progress.step(ctx, "同步 DSM 用户", username)
+			}
+			continue
 		}
 		nextStatus := "created"
 		action := "sync_dsm_user"
@@ -380,6 +409,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
 		if progress != nil {
 			progress.step(ctx, "同步 DSM 用户", username)
+		}
+	}
+	if policy.FullSync {
+		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress)
+		operations = append(operations, passwordOperations...)
+		if err != nil {
+			accountErrors = append(accountErrors, err)
 		}
 	}
 
@@ -399,7 +435,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		  )
 		ORDER BY m.created_at`, sourceSlug)
 	if err != nil {
-		return operations, err
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	type pendingMemberProvision struct {
 		id        string
@@ -413,13 +449,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		var item pendingMemberProvision
 		if err := memberRows.Scan(&item.id, &item.groupID, &item.groupname, &item.username, &item.status); err != nil {
 			memberRows.Close()
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		pendingMembers = append(pendingMembers, item)
 	}
 	if err := memberRows.Err(); err != nil {
 		memberRows.Close()
-		return operations, err
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	memberRows.Close()
 	if progress != nil {
@@ -430,7 +466,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		if _, err := s.helper.AddGroupMember(ctx, "sync_member_"+randomHex(8), groupname, username); err != nil {
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, groupID)
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'created', active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
@@ -458,7 +494,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			  )
 		ORDER BY m.updated_at`, sourceSlug)
 		if err != nil {
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		type pendingMemberRemoval struct {
 			id        string
@@ -471,13 +507,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			var item pendingMemberRemoval
 			if err := removeRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
 				removeRows.Close()
-				return operations, err
+				return operations, errors.Join(append(accountErrors, err)...)
 			}
 			pendingRemovals = append(pendingRemovals, item)
 		}
 		if err := removeRows.Err(); err != nil {
 			removeRows.Close()
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		removeRows.Close()
 		if progress != nil {
@@ -494,7 +530,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	}
 
 	if !policy.DisableMissingUsers {
-		return operations, nil
+		return operations, errors.Join(accountErrors...)
 	}
 	disableRows, err := s.store.DBTX().QueryContext(ctx, `
 		SELECT DISTINCT a.id, a.dsm_username
@@ -516,7 +552,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			  AND me.dsm_account_id = a.id
 		  )`, sourceSlug)
 	if err != nil {
-		return operations, err
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	type pendingUserDisable struct {
 		accountID string
@@ -527,13 +563,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		var item pendingUserDisable
 		if err := disableRows.Scan(&item.accountID, &item.username); err != nil {
 			disableRows.Close()
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		pendingDisables = append(pendingDisables, item)
 	}
 	if err := disableRows.Err(); err != nil {
 		disableRows.Close()
-		return operations, err
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	disableRows.Close()
 	if progress != nil {
@@ -543,7 +579,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		accountID, username := item.accountID, item.username
 		if _, err := s.helper.DisableUser(ctx, "sync_disable_"+randomHex(8), username); err != nil {
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "failed", "active", "active", err.Error())
-			return operations, err
+			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET allow_login = 0, provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, accountID)
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "success", "active", "disabled", "")
@@ -552,7 +588,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			progress.step(ctx, "禁用缺失用户", username)
 		}
 	}
-	return operations, nil
+	return operations, errors.Join(accountErrors...)
 }
 
 func (s *Server) logSyncOperation(ctx context.Context, runID, sourceSlug, objectType, objectKey, dsmName, action, status, before, after, errorText string) {

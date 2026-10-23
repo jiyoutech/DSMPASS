@@ -55,6 +55,7 @@ import type {
   ProviderItem,
   ProviderUpsert,
   SystemSettings,
+  SyncMode,
   SystemSettingsUpdate
 } from "./types";
 import { actionTag, includesQuery, labelOf, resultTag, statusTag } from "./utils/labels";
@@ -257,7 +258,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
 
   return (
     <Form.Item
-      label={helpLabel("DSM 初始密码", "这个身份源自动创建 DSM 用户时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
+      label={helpLabel("DSM 初始密码", "这个身份源创建 DSM 用户以及全量同步重置 DSM/SMB 密码时使用的统一随机初始密码。明文默认不加载，点击查看后才从后端返回。")}
     >
       <Button icon={<KeyOutlined />} loading={revealing} onClick={() => void reveal()}>
         查看初始密码
@@ -1105,6 +1106,7 @@ function SourceDetail({
   const [operationModalOpen, setOperationModalOpen] = useState(false);
   const [operationModalTitle, setOperationModalTitle] = useState("操作进度");
   const [operationModalAction, setOperationModalAction] = useState<"sync" | "cleanup" | null>(null);
+  const [syncMode, setSyncMode] = useState<SyncMode>("incremental");
   const [operationStarted, setOperationStarted] = useState(false);
   const [userQuery, setUserQuery] = useState("");
   const [groupQuery, setGroupQuery] = useState("");
@@ -1299,7 +1301,7 @@ function SourceDetail({
 
   function operationOkText() {
     if (!operationStarted && operationModalAction === "sync") {
-      return "同步";
+      return syncMode === "full" ? "全量同步并重置密码" : "增量同步";
     }
     if (!operationStarted && operationModalAction === "cleanup") {
       return "清理";
@@ -1311,7 +1313,10 @@ function SourceDetail({
     if (operationModalAction === "cleanup") {
       return "会先禁用 DSM 中对应用户，然后清理该身份源的本地同步映射数据；如需彻底删除 DSM 用户，请到 DSM 手动操作。";
     }
-    return "将读取身份源通讯录，更新本地映射，并把待处理用户、部门和成员关系同步到 DSM。";
+    if (syncMode === "full") {
+      return "将重新同步全部用户、部门和成员关系，并把当前身份源的有效同步账号的 DSM 和 SMB 密码重置为本身份源的 DSM 初始密码，用于修复旧版本造成的密码不一致。用户自行修改的密码也会被覆盖，请通知用户更新 SMB 连接凭据。已映射的已有 DSM 账号及手动修正用户名的同步账号也会重置；没有有效同步映射的本地账号和系统保留账号不重置。已完成的操作不会因后续失败而回滚；失败后可重新执行全量同步。";
+    }
+    return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。定时同步和冲突处理后的自动同步也使用增量模式。";
   }
 
   async function startOperationFromModal() {
@@ -1320,11 +1325,11 @@ function SourceDetail({
       setSyncApplying(true);
       setSyncError(null);
       try {
-        const { run_id } = await api.startSyncRun(source.slug);
+        const { run_id } = await api.startSyncRun(source.slug, syncMode);
         await waitOperation(run_id);
         showLatestSyncLogs();
         await refreshAll();
-        message.success("同步完成");
+        message.success(syncMode === "full" ? "全量同步完成，已统一同步账号的 DSM/SMB 密码" : "增量同步完成");
       } catch (err) {
         setSyncError(err instanceof Error ? err.message : "同步失败");
         showLatestSyncLogs();
@@ -1524,8 +1529,9 @@ function SourceDetail({
     }
   }, [conflictAccountData.loading, conflictGroupData.loading, conflictAutoSyncing, conflictPromptSource, hasConflicts, source.slug]);
 
-  function apply() {
-    openOperationModal(`同步 ${source.display_name}`, "sync");
+  function apply(mode: SyncMode) {
+    setSyncMode(mode);
+    openOperationModal(`${mode === "full" ? "全量同步" : "增量同步"} ${source.display_name}`, "sync");
   }
 
   function resetSyncData() {
@@ -1831,10 +1837,12 @@ function SourceDetail({
             )}
             <Button danger onClick={resetSyncData} loading={resettingSyncData}>清理</Button>
             <Button danger icon={<DeleteOutlined />} onClick={deleteSource} loading={deletingSource}>删除</Button>
-            <Button type="primary" onClick={apply} loading={syncApplying} disabled={!source.enabled || !source.directory_sync_enabled}>同步</Button>
+            <Button type="primary" onClick={() => apply("incremental")} loading={syncApplying && syncMode === "incremental"} disabled={syncApplying || !source.enabled || !source.directory_sync_enabled}>增量同步</Button>
+            <Button onClick={() => apply("full")} loading={syncApplying && syncMode === "full"} disabled={syncApplying || !source.enabled || !source.directory_sync_enabled}>全量同步</Button>
           </Space>
         }
       />
+      <Alert type="info" showIcon message="旧版本导致 DSM 与 SMB 密码不一致时，请执行一次全量同步。符合条件的同步账号将重置为本身份源的 DSM 初始密码，可在身份源配置中查看；日常使用增量同步保留已有密码。" />
       {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
       <Modal
         title={operationModalTitle}
@@ -1844,7 +1852,7 @@ function SourceDetail({
         cancelText="取消"
         cancelButtonProps={{ style: operationStarted ? { display: "none" } : undefined }}
         okButtonProps={{ disabled: operationRunning() }}
-        okType={operationModalAction === "cleanup" && !operationStarted ? "danger" : "primary"}
+        okType={!operationStarted && (operationModalAction === "cleanup" || (operationModalAction === "sync" && syncMode === "full")) ? "danger" : "primary"}
         maskClosable={!operationRunning()}
         closable={!operationRunning()}
         onOk={() => {
@@ -1864,7 +1872,7 @@ function SourceDetail({
           <OperationProgressPanel state={activeOperation} />
         ) : (
           <Alert
-            type={operationModalAction === "cleanup" ? "warning" : "info"}
+            type={operationModalAction === "cleanup" || syncMode === "full" ? "warning" : "info"}
             showIcon
             message={operationConfirmMessage()}
           />
