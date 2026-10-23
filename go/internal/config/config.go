@@ -91,6 +91,7 @@ type HelperConfig struct {
 	InitialPasswordLength     int
 	SynoUserPath              string
 	SynoGroupPath             string
+	SynoWebAPIPath            string
 }
 
 func LoadBackend() BackendConfig {

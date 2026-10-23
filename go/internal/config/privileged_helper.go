@@ -86,6 +86,7 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 		OpenSSLPath: "/usr/bin/openssl", LockDir: HelperRunDir + "/locks",
 		JournalDir: HelperDataDir + "/journal", TempPasswordLength: 64, InitialPasswordLength: 32,
 		SynoUserPath: "/usr/syno/sbin/synouser", SynoGroupPath: "/usr/syno/sbin/synogroup",
+		SynoWebAPIPath: "/usr/syno/bin/synowebapi",
 	}, nil
 }
 
