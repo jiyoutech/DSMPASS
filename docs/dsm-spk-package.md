@@ -206,6 +206,8 @@ srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 
 执行成功后会安装 root 保护的程序、配置和 `/etc/sudoers.d/DSMPASS-helper`。sudo 只允许固定控制入口的 start、stop、restart、status，不允许保留调用方环境，也不允许直接运行套件目录中的 Helper。socket 还会校验连接方的本机 UID。继续失败时由 root 查看 `/var/lib/dsmpass/helper.log`。
 
+有 `visudo` 时先验证候选规则；DSM 未提供 `visudo` 时，安装器原子写入固定规则，再使用系统 `sudo -l` 解析并检查指定控制命令的授权，不执行该命令。解析失败会恢复原规则或移除新规则，并报告失败；不会跳过规则检查。
+
 首次迁移前先让旧 Helper 完成密码恢复并停止它，再从可信 SPK 安装执行初始化脚本。每次升级 Helper 程序后，管理员需重新运行初始化脚本以更新受保护副本；套件用户不能自行替换 root 程序。安装器检查新版受保护目录中的实例锁和恢复日志，发现运行实例或未完成恢复时拒绝覆盖；这不能检测使用旧套件目录的进程和日志，首次迁移必须由管理员确认旧实例已停止且密码恢复完成。
 
 自定义 DSM 认证端口、Helper 签名密钥等特权设置由 root 编辑 `/etc/dsmpass/helper.json` 后重启；认证地址仅接受回环 IP 的 DSM API。后台可配置面向浏览器的访问地址，但不能用业务数据库改变 root Helper 的连接目标。
