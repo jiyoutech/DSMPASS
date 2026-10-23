@@ -21,7 +21,8 @@ default_idp_listen() {
 
 IDP_LISTEN=${DSMPASS_IDP_LISTEN:-$(default_idp_listen)}
 DATABASE_URL=${DSMPASS_DATABASE_URL:-"sqlite://$DATA_DIR/dsmpass.db"}
-HELPER_SOCKET=${DSMPASS_HELPER_SOCKET:-"$RUN_DIR/helper.sock"}
+HELPER_SOCKET=/run/dsmpass/helper.sock
+HELPER_CONTROL=/usr/local/libexec/dsmpass/helper-control.sh
 HELPER_HMAC_SECRET=${DSMPASS_HELPER_HMAC_SECRET:-}
 FRONTEND_DIST_DIR=${DSMPASS_FRONTEND_DIST_DIR:-"$APP_DIR/frontend/dist"}
 TLS_ENABLED=${DSMPASS_TLS_ENABLED:-1}
@@ -165,49 +166,29 @@ EOF
   "$APP_DIR/bin/dsmpass-backend"
 }
 
-run_helper() {
-  if [ "$(id -u)" = "0" ]; then
-    "$APP_DIR/bin/dsmpass-helper"
-    return
-  fi
-  if command -v sudo >/dev/null 2>&1; then
-    sudo -n -E "$APP_DIR/bin/dsmpass-helper"
-    return
-  fi
-  echo "sudo is required to start helper with DSM account privileges" >&2
-  return 1
-}
-
 run_backend &
 backend_pid=$!
 
 sleep 2
 
-helper_pid=""
-if [ -x "$APP_DIR/helper-control.sh" ]; then
-  "$APP_DIR/helper-control.sh" start || true
+if [ -x "$HELPER_CONTROL" ]; then
+  "$HELPER_CONTROL" start || true
 else
-  run_helper &
-  helper_pid=$!
+  echo "protected Helper is not installed; run setup-helper-sudo.sh as root" >&2
 fi
 
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "$HELPER_SOCKET" ] && break
   sleep 1
 done
-if [ -S "$HELPER_SOCKET" ] && [ "$(id -u)" = "0" ] && [ -n "$BACKEND_RUN_USER" ] && [ "$BACKEND_RUN_USER" != "root" ]; then
-  chown "$BACKEND_RUN_USER" "$HELPER_SOCKET" 2>/dev/null || true
-  chmod 660 "$HELPER_SOCKET" 2>/dev/null || true
-elif [ ! -S "$HELPER_SOCKET" ]; then
+if [ ! -S "$HELPER_SOCKET" ]; then
   echo "helper socket was not created; run setup-helper-sudo.sh as root and restart Helper from the admin UI" >&2
 fi
 
 cleanup() {
   kill "$backend_pid" 2>/dev/null || true
-  if [ -x "$APP_DIR/helper-control.sh" ]; then
-    "$APP_DIR/helper-control.sh" stop 2>/dev/null || true
-  elif [ -n "$helper_pid" ]; then
-    kill "$helper_pid" 2>/dev/null || true
+  if [ -x "$HELPER_CONTROL" ]; then
+    "$HELPER_CONTROL" stop 2>/dev/null || true
   fi
 }
 trap cleanup INT TERM EXIT

@@ -120,6 +120,13 @@ func setSocketPermissions(socketPath string) error {
 
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
+	if s.cfg.Privileged {
+		uid, err := helperPeerUID(conn)
+		if err != nil || (uid != 0 && uid != s.cfg.PackageUID) {
+			_ = json.NewEncoder(conn).Encode(errorResponse("PEER_FORBIDDEN", "Helper peer is not the configured package account"))
+			return
+		}
+	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
 		_ = json.NewEncoder(conn).Encode(errorResponse("BAD_REQUEST", "failed to read request"))
@@ -162,6 +169,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		_, shadowLockErr := shadowSystemLockPath(cfg)
 		return map[string]any{
 			"success":                    true,
+			"privileged_boundary":        cfg.Privileged,
 			"synced_password_reset":      true,
 			"account_write_coordination": true,
 			"shadow_login_supported":     shadowLockErr == nil,

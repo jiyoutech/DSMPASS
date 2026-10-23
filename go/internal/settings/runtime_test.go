@@ -47,3 +47,25 @@ func TestApplyHelperRuntimePrefersDeploymentSettings(t *testing.T) {
 		t.Fatalf("expected helper to prefer deployment settings, got %q", cfg.DSMLoginAPI)
 	}
 }
+
+func TestBackendDatabaseCannotOverridePrivilegedHelperSettings(t *testing.T) {
+	ctx := context.Background()
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.PrepareSchema(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	queries := db.New(database)
+	for key, value := range map[string]string{"helper_dsm_login_api": `"https://untrusted.example.com/webapi/entry.cgi"`, "relay_helper_hmac_secret": `"replacement"`, "access_host": `"untrusted.example.com"`} {
+		if err := queries.UpsertRuntimeSetting(ctx, db.UpsertRuntimeSettingParams{Key: key, ValueJson: value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := config.HelperConfig{Privileged: true, DSMLoginAPI: "https://127.0.0.1:5001/webapi/entry.cgi", HMACSecret: "root-approved-secret"}
+	if got := ApplyHelperRuntime(ctx, want, queries); got != want {
+		t.Fatal("backend-owned database changed trusted Helper settings")
+	}
+}

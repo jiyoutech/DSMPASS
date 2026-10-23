@@ -60,6 +60,9 @@ type BackendConfig struct {
 }
 
 type HelperConfig struct {
+	Privileged                bool
+	PackageUID                int
+	PackageGID                int
 	DatabaseURL               string
 	DataDir                   string
 	LoginDiagnosticsEnabled   bool

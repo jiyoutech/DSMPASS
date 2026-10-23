@@ -60,7 +60,9 @@ func EnsureHelperHMACSecret(ctx context.Context, q *db.Queries, current string) 
 }
 
 func ApplyHelperRuntime(ctx context.Context, cfg config.HelperConfig, q *db.Queries) config.HelperConfig {
-	if q == nil {
+	// The backend can write this database. It must not redirect a privileged
+	// Helper's authentication endpoint, secret, or other root-owned settings.
+	if cfg.Privileged || q == nil {
 		return cfg
 	}
 	deployment, hasDeployment := helperDeploymentSettings(ctx, q)
