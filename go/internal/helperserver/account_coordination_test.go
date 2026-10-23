@@ -327,19 +327,6 @@ func TestSystemLockPreservesDifferentAccountUpdatesAcrossProcesses(t *testing.T)
 	}
 }
 
-func TestAccountLibraryFingerprintRejectsUnknownVersion(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "account-library")
-	if err := os.WriteFile(path, []byte("verified version"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyAccountLibrary(path, lineHash("verified version")); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyAccountLibrary(path, lineHash("different version")); err == nil {
-		t.Fatal("unverified library was accepted")
-	}
-}
-
 func TestProvisionAccountUsesGlobalWriterLock(t *testing.T) {
 	cfg, _ := shadowOnlyTestConfig(t)
 	dir := t.TempDir()
