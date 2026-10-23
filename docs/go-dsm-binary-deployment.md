@@ -1,6 +1,6 @@
 # DSM 二进制部署
 
-推荐普通用户优先使用 SPK。只有在需要自定义启动方式、调试或集成到已有运维体系时，才使用二进制部署。
+当前安全修复版使用 SPK 初始化套件账号及受保护的 Helper。二进制 tar 包保留为构建和调试产物，不再支持旧版从任意目录直接以 root 启动 Helper 的部署方式。
 
 ## 构建产物
 
@@ -37,53 +37,22 @@ make package-dsm
 DSMPASS_VERSION=0.8.7 make package-dsm
 ```
 
-## 安装到 DSM
+## 安装与启动边界
 
-上传与 NAS 架构匹配的 tar 包，然后解压到自定义目录，例如：
+安装和升级请遵循 [SPK 权限与迁移说明](dsm-spk-package.md)。首次初始化必须由管理员使用可信安装包提供的安装器，创建固定的 `DSMPASS` 套件账号及 root 专用程序、配置和恢复目录。
 
-```bash
-sudo mkdir -p /volume1/docker/dsmpass
-sudo tar -xzf dsmpass-linux-amd64.tar.gz -C /volume1/docker/dsmpass
-sudo chmod +x /volume1/docker/dsmpass/start-dsmpass.sh
+受保护的 Helper 使用以下固定入口：
+
+```text
+/usr/local/libexec/dsmpass/dsmpass-helper
+/usr/local/libexec/dsmpass/helper-control.sh
+/etc/dsmpass/helper.json
+/run/dsmpass/helper.sock
 ```
 
-创建运行目录：
+Helper 不再读取调用者的环境变量来选择程序路径、数据库、DSM 端点或恢复资料目录。普通套件用户只能调用受限制的启动、停止、重启和状态操作，不能自行替换 root 程序。
 
-```bash
-sudo mkdir -p /run/dsmpass/locks
-sudo mkdir -p /var/lib/dsmpass
-sudo chmod 700 /run/dsmpass /run/dsmpass/locks /var/lib/dsmpass
-```
-
-## 启动
-
-先配置强随机 Helper 密钥：
-
-```bash
-export DSMPASS_HELPER_HMAC_SECRET="$(openssl rand -hex 32)"
-```
-
-从包目录启动：
-
-```bash
-cd /volume1/docker/dsmpass
-sudo ./start-dsmpass.sh
-```
-
-脚本会设置程序路径和基础启动变量：
-
-```env
-DSMPASS_GO_LISTEN=0.0.0.0:25000
-DSMPASS_DATABASE_URL=sqlite:///volume1/docker/dsmpass/dsmpass.db
-DSMPASS_FRONTEND_DIST_DIR=/volume1/docker/dsmpass/frontend/dist
-DSMPASS_HELPER_SOCKET=/run/dsmpass/helper.sock
-```
-
-如果端口或路径不同，可以在启动前覆盖：
-
-```bash
-sudo DSMPASS_GO_LISTEN=0.0.0.0:28080 ./start-dsmpass.sh
-```
+后端以 `DSMPASS` 普通账号运行。不要以 root 执行位于套件用户可写目录中的 `start-dsmpass.sh`，也不要恢复旧版 `SETENV` sudo 规则。独立 tar 部署尚未提供与此边界等价的自动安装流程；仅解压 tar 包或设置环境变量不能完成受保护 Helper 的初始化。
 
 ## 网页配置
 
@@ -116,8 +85,8 @@ https://DSM-IP:25000/
 
 ## 注意事项
 
-- 二进制部署不会自动接入 DSM 套件中心的安装、升级和卸载流程。
-- 管理后台端口、数据库路径、前端目录、Helper Socket 等启动参数来自环境变量，网页后台不会修改这些启动参数。
+- tar 包不包含独立权限初始化、升级和卸载流程；当前部署流程以 SPK 为准。
+- 后端环境配置不能覆盖 root Helper 的固定路径和受保护配置。
 - 同步和账号开通会调用真实 DSM 能力，不是模拟模式。
 - 生产环境不要公开管理后台，建议只在内网或可信反向代理后访问。
 - 不要公开运行日志、数据库、`.env`、密钥或真实部署拓扑。
