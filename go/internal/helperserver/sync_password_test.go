@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -124,5 +126,99 @@ func TestResetSyncedUserPasswordScopeAndErrors(t *testing.T) {
 				t.Fatal("unexpected password command execution")
 			}
 		})
+	}
+}
+
+func TestPermanentResetFailureBlocksLoginAndExplicitFullSyncCanRepair(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	q := syncedPasswordTestStore(t, "alice")
+	command := filepath.Join(t.TempDir(), "synouser")
+	cfg.SynoUserPath = command
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := NewWithStore(cfg, q)
+	payload := syncedPasswordPayload("alice", "test-password")
+	if err := s.resetSyncedUserPassword(cfg, payload); !errors.Is(err, errPasswordResetUnknown) {
+		t.Fatalf("native failure must be reported as unconfirmed: %v", err)
+	}
+	if _, err := prepareBrowserLogin(cfg, "blocked-login", "alice"); !errors.Is(err, errPasswordResetUnknown) {
+		t.Fatalf("temporary login bypassed unconfirmed permanent reset: %v", err)
+	}
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.resetSyncedUserPassword(cfg, payload); !errors.Is(err, errPasswordResetUnknown) {
+		t.Fatal("same request automatically retried an unconfirmed reset")
+	}
+	payload["request_id"] = "explicit-full-sync-repair"
+	if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+		t.Fatal(err)
+	}
+	// A successful retry can be acknowledged without executing the command again.
+	if err := os.Remove(command); err != nil {
+		t.Fatal(err)
+	}
+	current, err := loadPasswordReset(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Status = "applying"
+	if err := savePasswordReset(cfg, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+		t.Fatalf("completed request was not idempotent: %v", err)
+	}
+	if err := s.resetSyncedUserPassword(cfg, syncedPasswordPayload("alice", "test-password")); !errors.Is(err, errPasswordResetUnknown) {
+		t.Fatal("delayed failed request was executed after a newer repair")
+	}
+	if err := checkPasswordResetPending(cfg, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(passwordResetPath(cfg, "alice"))
+	if err != nil || strings.Contains(string(data), "test-password") {
+		t.Fatal("password reset journal leaked plaintext")
+	}
+	payload["password"] = "different-password"
+	if err := s.resetSyncedUserPassword(cfg, payload); err == nil {
+		t.Fatal("reused reset ID accepted different arguments")
+	}
+}
+
+func TestPermanentResetRefusesConflictingIdentitySources(t *testing.T) {
+	q := syncedPasswordTestStore(t, "alice")
+	if _, err := q.DBTX().ExecContext(context.Background(), `
+INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('other','feishu','Other');
+INSERT INTO external_accounts (id,provider_slug,subject,subject_norm,subject_type,app_identity_id,active)
+VALUES ('other-external','other','subject','subject','directory_subject','identity',1);
+INSERT INTO dsm_mapping_entries (id,mapping_type,provider_slug,external_account_id,provider_group_id,dsm_account_id)
+VALUES ('other-mapping','user','other','other-external','','account');`); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := db.SyncedPasswordResetAllowed(context.Background(), q, "source", "account", "alice")
+	if allowed || !errors.Is(err, db.ErrSyncedPasswordSourceConflict) {
+		t.Fatalf("conflicting password sources were accepted: %v", err)
+	}
+	if _, err := q.DBTX().ExecContext(context.Background(), `UPDATE identity_sources SET enabled=0 WHERE slug='other'`); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = db.SyncedPasswordResetAllowed(context.Background(), q, "source", "account", "alice")
+	if err != nil || !allowed {
+		t.Fatalf("inactive source blocked repair: %v", err)
+	}
+}
+
+func TestNativeAccountCommandHasDeadlineAndRedactsOutput(t *testing.T) {
+	command := filepath.Join(t.TempDir(), "synouser")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\necho secret-password >&2\nsleep 20\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := runAccountCommand(ctx, command)
+	if err == nil || strings.Contains(err.Error(), "secret-password") || time.Since(started) > 3*time.Second {
+		t.Fatalf("command timeout or redaction failed: %v", err)
 	}
 }

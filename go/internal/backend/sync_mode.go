@@ -56,33 +56,44 @@ ORDER BY a.id`, sourceSlug)
 		return nil, err
 	}
 	var operations []syncsvc.PlanItem
+	var resetErrors []error
+	var initialPassword string
 	if progress != nil {
 		progress.setTotal(ctx, "统一 DSM/SMB 密码", "仅重置当前身份源的有效同步账号", len(rows))
 	}
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return operations, errors.Join(append(resetErrors, err)...)
+		}
 		id, _ := row["id"].(string)
 		username, _ := row["dsm_username"].(string)
 		allowed, err := db.SyncedPasswordResetAllowed(ctx, s.store, sourceSlug, id, username)
 		if err != nil {
-			return operations, err
+			s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", err.Error())
+			resetErrors = append(resetErrors, fmt.Errorf("%s: %w", username, err))
+			continue
 		}
 		if !allowed || identity.IsReservedDSMUsername(username) {
 			s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", "非有效同步账号或系统保留账号，保留密码")
 		} else {
-			password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
-			if err == nil {
-				err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, password)
+			if initialPassword == "" {
+				initialPassword, err = s.provisionUserInitialPassword(ctx, sourceSlug)
+				if err != nil {
+					return operations, errors.Join(append(resetErrors, err)...)
+				}
 			}
+			err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, initialPassword)
 			if err != nil {
-				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", "密码重置失败，请查看任务错误并重新执行全量同步")
-				return operations, fmt.Errorf("全量同步重置 %s 的 DSM/SMB 密码失败；已完成的账号不会回滚，请排查后重新全量同步：%w", username, err)
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")
+				resetErrors = append(resetErrors, fmt.Errorf("全量同步重置 %s 的 DSM/SMB 密码未确认完成；已完成的账号不会回滚，请排查后重新全量同步：%w", username, err))
+			} else {
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "success", "", "source_initial_password", "")
+				operations = append(operations, syncsvc.PlanItem{Action: "reset_dsm_smb_password", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "success"})
 			}
-			s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "success", "", "source_initial_password", "")
-			operations = append(operations, syncsvc.PlanItem{Action: "reset_dsm_smb_password", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "success"})
 		}
 		if progress != nil {
 			progress.step(ctx, "统一 DSM/SMB 密码", username)
 		}
 	}
-	return operations, nil
+	return operations, errors.Join(resetErrors...)
 }

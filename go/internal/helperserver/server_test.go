@@ -760,6 +760,14 @@ func TestRestorePendingJournalVerifiesTempPasswordWhenHashWasNotSaved(t *testing
 			http.Error(w, "unexpected recovery credentials", http.StatusBadRequest)
 			return
 		}
+		// Legacy verification is an HTTP operation, so neither global writer
+		// lock may remain held while DSM processes the authentication request.
+		if err := withFileLock(filepath.Join(lockDir, "shadow.lock"), func() error {
+			return withFileLock(filepath.Join(lockDir, "shadow.lock.system"), func() error { return nil })
+		}); err != nil {
+			http.Error(w, "recovery held a writer lock during authentication", http.StatusInternalServerError)
+			return
+		}
 		_, _ = w.Write([]byte(`{"success":true,"data":{"sid":"recovery-session"}}`))
 	}))
 	defer auth.Close()

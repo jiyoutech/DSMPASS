@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
@@ -45,15 +43,7 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 			return errBrowserLoginInProgress
 		}
 		return withFileLock(cfg.ShadowLockPath, func() error {
-			// This is a permanent full-sync reset, not a temporary login password.
-			// Use DSM's command to update both shadow and SMB credentials together.
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			if err := exec.CommandContext(ctx, cfg.SynoUserPath, "--setpw", username, password).Run(); err != nil {
-				// Never include command output or arguments containing the password.
-				return fmt.Errorf("DSM/SMB password reset failed; rerun full sync after checking Helper: %w", err)
-			}
-			return nil
+			return applyPermanentPassword(cfg, values)
 		})
 	})
 }

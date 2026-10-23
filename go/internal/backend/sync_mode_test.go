@@ -17,6 +17,8 @@ type syncPasswordHelper struct {
 	resets    []string
 	passwords []string
 	fail      bool
+	failUser  string
+	busyUser  string
 }
 
 type oldSyncHelper struct{ testHelper }
@@ -52,10 +54,80 @@ func TestFullSyncRejectsOldHelperBeforeReadingOrChangingDirectory(t *testing.T) 
 func (h *syncPasswordHelper) ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error {
 	h.resets = append(h.resets, sourceSlug+":"+username)
 	h.passwords = append(h.passwords, password)
-	if h.fail {
+	if h.fail || h.failUser == username {
 		return errors.New("test reset failed")
 	}
 	return nil
+}
+
+func (h *syncPasswordHelper) ProvisionUser(ctx context.Context, requestID, username, displayName, email, password string) (bool, error) {
+	if h.busyUser == username {
+		return false, errors.New("account " + username + " has an active login")
+	}
+	return false, nil
+}
+
+func TestFullSyncContinuesOtherAccountsAfterPasswordFailure(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	h := &syncPasswordHelper{failUser: "alice"}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, h, database, q)
+	if _, err := database.Exec(`INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, username := range []string{"alice", "bob"} {
+		seedSyncedAccount(t, ctx, database, "a", username, "ext-"+username, username, username, "2999-01-01")
+	}
+	operations, err := s.syncSourceToDSM(ctx, "partial", "a", "2000-01-01", sourceSyncPolicy{FullSync: true})
+	if err == nil || !strings.Contains(err.Error(), "alice") {
+		t.Fatal("partial failure was hidden")
+	}
+	if len(h.resets) != 2 || h.resets[1] != "a:bob" {
+		t.Fatalf("failed account stopped other passwords: %v", h.resets)
+	}
+	var success bool
+	for _, operation := range operations {
+		if operation.Action == "reset_dsm_smb_password" && operation.DSMUsername == "bob" {
+			success = true
+		}
+	}
+	if !success || h.passwords[0] != h.passwords[1] {
+		t.Fatal("successful account result or stable password was lost")
+	}
+}
+
+func TestFullSyncContinuesWhenAnAccountHasAnActiveLogin(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	h := &syncPasswordHelper{busyUser: "alice"}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, h, database, q)
+	if _, err := database.Exec(`INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, username := range []string{"alice", "bob"} {
+		seedSyncedAccount(t, ctx, database, "a", username, "ext-"+username, username, username, "2999-01-01")
+	}
+	if _, err := s.syncSourceToDSM(ctx, "busy", "a", "2000-01-01", sourceSyncPolicy{FullSync: true}); err == nil {
+		t.Fatal("busy account was reported as synchronized")
+	}
+	if len(h.resets) != 1 || h.resets[0] != "a:bob" {
+		t.Fatalf("busy account blocked another account or had its password reset: %v", h.resets)
+	}
+	h.busyUser = ""
+	if _, err := s.syncSourceToDSM(ctx, "retry", "a", "2000-01-01", sourceSyncPolicy{FullSync: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.resets) != 3 || h.resets[1] != "a:alice" {
+		t.Fatal("explicit full sync did not repair the deferred account")
+	}
 }
 
 func TestReadSyncMode(t *testing.T) {

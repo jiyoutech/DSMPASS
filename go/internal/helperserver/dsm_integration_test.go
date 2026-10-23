@@ -300,7 +300,9 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, users[0].name, originalLine, brokenLine); err != nil {
+	if err := withShadowWrite(cfg, func() error {
+		return replaceShadowLineIfCurrentMatches(cfg.ShadowPath, users[0].name, originalLine, brokenLine)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if readDSMTestSMBRecord(t, users[0].name) == smbBefore[users[0].name] {

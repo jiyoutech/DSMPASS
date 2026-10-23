@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -38,6 +37,10 @@ type journal struct {
 	TempPasswordEncrypted string `json:"temp_password_encrypted,omitempty"`
 	TempPasswordNonce     string `json:"temp_password_nonce,omitempty"`
 	TempLineHash          string `json:"temp_line_hash,omitempty"`
+	TempPasswordHash      string `json:"temp_password_hash,omitempty"`
+	AccountUID            string `json:"account_uid,omitempty"`
+	RecoveryAttempts      int    `json:"recovery_attempts,omitempty"`
+	NextRecoveryAt        string `json:"next_recovery_at,omitempty"`
 	ExpiresAt             string `json:"expires_at,omitempty"`
 	CreatedAt             string `json:"created_at"`
 	UpdatedAt             string `json:"updated_at"`
@@ -98,11 +101,14 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 		var tempLine string
 		var tempPassword string
 		var j journal
-		if err := withFileLock(cfg.ShadowLockPath, func() error {
+		if err := withShadowWrite(cfg, func() error {
 			diaglog.Append(cfg.DataDir, requestID, "helper.lock.shadow.acquired", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"lock_path": cfg.ShadowLockPath,
 				"phase":     "prepare",
 			})
+			if err := ensureNewLoginJournal(cfg, requestID, username); err != nil {
+				return err
+			}
 			var err error
 			originalLine, err = shadowLine(cfg.ShadowPath, username)
 			if err != nil {
@@ -123,11 +129,17 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 				RequestID:        requestID,
 				DSMUsername:      username,
 				Status:           "pending",
+				ExpiresAt:        time.Now().Add(time.Duration(cfg.DSMTimeoutSeconds+30) * time.Second).UTC().Format(time.RFC3339Nano),
 				OriginalLine:     originalLine,
 				OriginalLineHash: lineHash(originalLine),
 				TempPassword:     tempPassword,
 				TempLineHash:     lineHash(tempLine),
+				TempPasswordHash: lineHash(strings.Split(tempLine, ":")[1]),
 				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+			}
+			j.AccountUID, err = accountUID(cfg, username)
+			if err != nil {
+				return err
 			}
 			if err := saveJournal(cfg, j); err != nil {
 				diaglog.Append(cfg.DataDir, requestID, "helper.journal.save_pending.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "journal_dir": cfg.JournalDir})
@@ -140,7 +152,11 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			// Persist the expected temporary record before changing shadow so a
 			// startup recovery can identify this operation's atomic replacement.
 			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, tempLine, originalLine); err != nil {
-				return errors.Join(err, restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j))
+				restoreErr := restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j)
+				if restoreErr != nil {
+					restoreErr = errors.Join(restoreErr, recordRecoveryFailure(cfg, requestID))
+				}
+				return errors.Join(err, restoreErr)
 			}
 			diaglog.Append(cfg.DataDir, requestID, "helper.shadow.read_temp.success", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"shadow_path":    cfg.ShadowPath,
@@ -154,11 +170,9 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			j.TempLineHash = lineHash(tempLine)
 			if err := saveJournal(cfg, j); err != nil {
 				diaglog.Append(cfg.DataDir, requestID, "helper.journal.save_temp_hash.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "journal_dir": cfg.JournalDir})
-				restoreErr := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
-				if restoreErr == nil {
-					j.Status = "restored"
-					j.clearTempPassword()
-					_ = saveJournal(cfg, j)
+				restoreErr := restoreJournalPasswordLocked(cfg, j, "journal_save_failed")
+				if restoreErr != nil {
+					restoreErr = errors.Join(restoreErr, recordRecoveryFailure(cfg, requestID))
 				}
 				return errors.Join(err, restoreErr)
 			}
@@ -175,13 +189,16 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			validateDSMDesktopSession(cfg, requestID, result, "after_dsm_login_before_shadow_restore")
 		}
 
-		restoreErr := withFileLock(cfg.ShadowLockPath, func() error {
+		restoreErr := withShadowWrite(cfg, func() error {
 			diaglog.Append(cfg.DataDir, requestID, "helper.lock.shadow.acquired", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"lock_path": cfg.ShadowLockPath,
 				"phase":     "restore",
 			})
 			return restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j)
 		})
+		if restoreErr != nil {
+			restoreErr = errors.Join(restoreErr, recordRecoveryFailure(cfg, requestID))
+		}
 		if loginErr != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.shadow.restore_after_dsm_login_error", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"dsm_login_error": loginErr.Error(),
@@ -206,41 +223,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 }
 
 func restoreRelayPassword(cfg config.HelperConfig, requestID, username, originalLine, tempLine string, j *journal) error {
-	if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine); err != nil {
-		diaglog.Append(cfg.DataDir, requestID, "helper.shadow.restore.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{
-			"error":         err.Error(),
-			"original_line": originalLine,
-			"expected_line": tempLine,
-		})
-		latest, latestErr := shadowLine(cfg.ShadowPath, username)
-		switch {
-		case latestErr == nil && latest == originalLine:
-			j.Status = "restored"
-		case latestErr == nil && lineHash(latest) != j.TempLineHash:
-			j.Status = journalStatusSuperseded
-		default:
-			j.Status = "conflict"
-			if saveErr := saveJournal(cfg, *j); saveErr != nil {
-				return errors.Join(err, saveErr)
-			}
-			return err
-		}
-		j.clearTempPassword()
-		return saveJournal(cfg, *j)
-	}
-
-	restoredLine, restoredErr := shadowLine(cfg.ShadowPath, username)
-	diaglog.Append(cfg.DataDir, requestID, "helper.shadow.restore.success", cfg.LoginDiagnosticsEnabled, diaglog.Event{
-		"restored_line":      restoredLine,
-		"restored_line_hash": lineHash(restoredLine),
-		"restore_read_error": errorString(restoredErr),
-		"matches_original":   restoredErr == nil && restoredLine == originalLine,
-		"matches_temp":       restoredErr == nil && restoredLine == tempLine,
-	})
-	j.Status = "restored"
-	j.clearTempPassword()
-	diaglog.Append(cfg.DataDir, requestID, "helper.journal.save_restored.start", cfg.LoginDiagnosticsEnabled, diaglog.Event{"journal_dir": cfg.JournalDir, "status": j.Status})
-	return saveJournal(cfg, *j)
+	return restoreJournalPasswordLocked(cfg, *j, "relay_complete")
 }
 
 func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (browserLoginResult, error) {
@@ -265,8 +248,10 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 			result, err = browserResultFromLease(cfg, existing)
 			return err
 		}
-		expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second).UTC()
-		return withFileLock(cfg.ShadowLockPath, func() error {
+		return withShadowWrite(cfg, func() error {
+			if err := ensureNewLoginJournal(cfg, requestID, username); err != nil {
+				return err
+			}
 			originalLine, err := shadowLine(cfg.ShadowPath, username)
 			if err != nil {
 				return err
@@ -276,7 +261,13 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 			if err != nil {
 				return err
 			}
+			expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second).UTC()
+			uid, err := accountUID(cfg, username)
+			if err != nil {
+				return err
+			}
 			j := journal{
+				AccountUID:       uid,
 				RequestID:        requestID,
 				DSMUsername:      username,
 				Status:           journalStatusPendingBrowser,
@@ -284,6 +275,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 				OriginalLineHash: lineHash(originalLine),
 				TempPassword:     tempPassword,
 				TempLineHash:     lineHash(tempLine),
+				TempPasswordHash: lineHash(strings.Split(tempLine, ":")[1]),
 				ExpiresAt:        expiresAt.Format(time.RFC3339Nano),
 				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 			}
@@ -294,18 +286,23 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 				"temp_password_length": len(tempPassword),
 			})
 			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, tempLine, originalLine); err != nil {
-				return errors.Join(err, restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j))
+				restoreErr := restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j)
+				if restoreErr != nil {
+					restoreErr = errors.Join(restoreErr, recordRecoveryFailure(cfg, requestID))
+				}
+				return errors.Join(err, restoreErr)
 			}
 			j.TempLineHash = lineHash(tempLine)
 			j.Status = journalStatusActiveBrowser
 			if err := saveJournal(cfg, j); err != nil {
-				restoreErr := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
-				if restoreErr == nil {
-					j.Status = "restored"
-					j.clearTempPassword()
-					_ = saveJournal(cfg, j)
+				restoreErr := restoreJournalPasswordLocked(cfg, j, "journal_save_failed")
+				if restoreErr != nil {
+					restoreErr = errors.Join(restoreErr, recordRecoveryFailure(cfg, requestID))
 				}
 				return errors.Join(err, restoreErr)
+			}
+			if !time.Now().Before(expiresAt) {
+				return errors.Join(errBrowserLoginInProgress, restoreJournalPasswordLocked(cfg, j, "expired_during_prepare"))
 			}
 			result = browserLoginResult{
 				Username:     username,
@@ -342,6 +339,10 @@ func restoreBrowserLoginAfterTTL(cfg config.HelperConfig, requestID, username st
 }
 
 func recoverPending(cfg config.HelperConfig) error {
+	return recoverJournals(cfg, true)
+}
+
+func recoverJournals(cfg config.HelperConfig, startup bool) error {
 	entries, err := os.ReadDir(cfg.JournalDir)
 	if os.IsNotExist(err) {
 		return nil
@@ -368,7 +369,16 @@ func recoverPending(cfg config.HelperConfig) error {
 		if !journalNeedsRecovery(j.Status) {
 			continue
 		}
-		if err := restorePendingJournal(cfg, j.RequestID, "startup"); err != nil {
+		if !startup {
+			now := time.Now()
+			if deadline, err := time.Parse(time.RFC3339Nano, j.ExpiresAt); err == nil && now.Before(deadline) && j.RecoveryAttempts == 0 && j.Status != journalStatusRestoringBrowser {
+				continue
+			}
+			if retry, err := time.Parse(time.RFC3339Nano, j.NextRecoveryAt); err == nil && now.Before(retry) {
+				continue
+			}
+		}
+		if err := restorePendingJournal(cfg, j.RequestID, "recovery_scan"); err != nil {
 			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover journal %s: %w", entry.Name(), err))
 		}
 	}
@@ -381,82 +391,27 @@ func restorePendingJournal(cfg config.HelperConfig, requestID, reason string) er
 		return err
 	}
 	return withFileLock(lockPath(cfg.LockDir, j.DSMUsername), func() error {
-		j, err = loadJournal(cfg, requestID)
+		j, err := loadJournal(cfg, requestID)
 		if err != nil {
 			return err
 		}
 		if j.Status == "restored" || j.Status == journalStatusSuperseded {
 			return nil
 		}
-		if !journalNeedsRecovery(j.Status) {
-			return fmt.Errorf("%w: journal status is %s", errBrowserLoginUnresolved, j.Status)
+		active, found, err := browserLeaseForUser(cfg, j.DSMUsername)
+		if err != nil || (found && active.RequestID != requestID) {
+			return errors.Join(errBrowserLoginUnresolved, err)
 		}
-		return withFileLock(cfg.ShadowLockPath, func() error {
-			current, err := shadowLine(cfg.ShadowPath, j.DSMUsername)
-			if err != nil {
-				return err
-			}
-			originalLine, err := j.decryptedOriginalLine(cfg)
-			if err != nil {
-				return err
-			}
-			if current == originalLine {
-				return finishJournal(cfg, j, "restored", requestID, reason)
-			}
-			if j.TempLineHash == "" {
-				candidateTempLine := current
-				tempPassword, err := j.decryptedTempPassword(cfg)
-				if err != nil {
-					j.Status = journalStatusUnresolvedBrowser
-					_ = saveJournal(cfg, j)
-					return errors.Join(errBrowserLoginUnresolved, err)
-				}
-				if _, err := dsmLogin(cfg, requestID+"_recovery_verify", j.DSMUsername, tempPassword); err != nil {
-					j.Status = journalStatusUnresolvedBrowser
-					_ = saveJournal(cfg, j)
-					return errors.Join(errBrowserLoginUnresolved, fmt.Errorf("temporary password verification failed: %w", err))
-				}
-				current, err = shadowLine(cfg.ShadowPath, j.DSMUsername)
-				if err != nil {
-					return err
-				}
-				if current == originalLine {
-					return finishJournal(cfg, j, "restored", requestID, reason)
-				}
-				if current != candidateTempLine {
-					return finishJournal(cfg, j, journalStatusSuperseded, requestID, reason)
-				}
-				j.TempLineHash = lineHash(current)
-				if err := saveJournal(cfg, j); err != nil {
-					return err
-				}
-			}
-			if lineHash(current) != j.TempLineHash {
-				return finishJournal(cfg, j, journalStatusSuperseded, requestID, reason)
-			}
-			if isBrowserJournalStatus(j.Status) {
-				j.Status = journalStatusRestoringBrowser
-				if err := saveJournal(cfg, j); err != nil {
-					return err
-				}
-			}
-			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, j.DSMUsername, originalLine, current); err != nil {
-				latest, latestErr := shadowLine(cfg.ShadowPath, j.DSMUsername)
-				if latestErr == nil && latest == originalLine {
-					return finishJournal(cfg, j, "restored", requestID, reason)
-				}
-				if latestErr == nil && lineHash(latest) != j.TempLineHash {
-					return finishJournal(cfg, j, journalStatusSuperseded, requestID, reason)
-				}
-				return err
-			}
-			return finishJournal(cfg, j, "restored", requestID, reason)
-		})
+		if err := restoreJournalUnderAccountLock(cfg, j, reason); err != nil {
+			return errors.Join(err, recordRecoveryFailure(cfg, requestID))
+		}
+		return nil
 	})
 }
 
 func finishJournal(cfg config.HelperConfig, j journal, status, requestID, reason string) error {
 	j.Status = status
+	j.NextRecoveryAt = ""
 	j.clearTempPassword()
 	diaglog.Append(cfg.DataDir, requestID, "helper.shadow.restore_pending_journal", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 		"dsm_username": j.DSMUsername,
@@ -487,8 +442,14 @@ func browserLeaseForUser(cfg config.HelperConfig, username string) (journal, boo
 		if err := json.Unmarshal(data, &existing); err != nil {
 			return journal{}, false, fmt.Errorf("%w: journal %s cannot be read", errBrowserLoginUnresolved, entry.Name())
 		}
-		if existing.DSMUsername != username || !browserLeaseBlocksNewLogin(existing.Status) {
+		if !strings.EqualFold(existing.DSMUsername, username) {
 			continue
+		}
+		if !browserLeaseBlocksNewLogin(existing.Status) {
+			if existing.Status == "restored" || existing.Status == journalStatusSuperseded {
+				continue
+			}
+			return journal{}, false, fmt.Errorf("%w: unknown account journal status", errBrowserLoginUnresolved)
 		}
 		if found.RequestID != "" && found.RequestID != existing.RequestID {
 			return journal{}, false, fmt.Errorf("%w: multiple active journals", errBrowserLoginUnresolved)
@@ -529,6 +490,9 @@ func loadJournal(cfg config.HelperConfig, requestID string) (journal, error) {
 	if err := json.Unmarshal(data, &j); err != nil {
 		return journal{}, err
 	}
+	if j.RequestID != requestID || j.DSMUsername == "" {
+		return journal{}, errors.New("journal identity does not match request")
+	}
 	return j, nil
 }
 
@@ -563,12 +527,19 @@ func shadowLine(path, username string) (string, error) {
 		return "", err
 	}
 	prefix := username + ":"
+	var found string
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, prefix) {
-			return line, nil
+			if found != "" {
+				return "", errors.New("DSM user appears more than once in shadow")
+			}
+			found = line
 		}
 	}
-	return "", errors.New("DSM user not found")
+	if found == "" {
+		return "", errors.New("DSM user not found")
+	}
+	return found, nil
 }
 
 func replaceShadowLineIfCurrentMatches(path, username, replacementLine, expectedCurrentLine string) error {
@@ -846,29 +817,13 @@ func dsmHTTPClient(cfg config.HelperConfig) http.Client {
 	return client
 }
 
-func withFileLock(path string, fn func() error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-	return fn()
-}
-
 func lockPath(dir, username string) string {
 	safe := strings.Map(func(r rune) rune {
 		if r == '_' || r == '-' || r == '.' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 			return r
 		}
 		return '_'
-	}, username)
+	}, strings.ToLower(username))
 	return filepath.Join(dir, "user-"+safe+".lock")
 }
 
