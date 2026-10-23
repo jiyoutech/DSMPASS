@@ -146,15 +146,16 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 	switch action {
 	case "health_check":
 		return map[string]any{
-			"success":          true,
-			"version":          buildinfo.Version,
-			"socket_path":      cfg.SocketPath,
-			"euid":             os.Geteuid(),
-			"egid":             os.Getegid(),
-			"synouser_path":    cfg.SynoUserPath,
-			"synouser_status":  helperCommandStatus(cfg.SynoUserPath),
-			"synogroup_path":   cfg.SynoGroupPath,
-			"synogroup_status": helperCommandStatus(cfg.SynoGroupPath),
+			"success":               true,
+			"synced_password_reset": true,
+			"version":               buildinfo.Version,
+			"socket_path":           cfg.SocketPath,
+			"euid":                  os.Geteuid(),
+			"egid":                  os.Getegid(),
+			"synouser_path":         cfg.SynoUserPath,
+			"synouser_status":       helperCommandStatus(cfg.SynoUserPath),
+			"synogroup_path":        cfg.SynoGroupPath,
+			"synogroup_status":      helperCommandStatus(cfg.SynoGroupPath),
 		}
 	case "relay_login":
 		username, err := requiredString(payload, "dsm_username")
@@ -221,6 +222,11 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			return errorResponse("COMPLETE_BROWSER_LOGIN_FAILED", err.Error())
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.complete_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{})
+		return map[string]any{"success": true}
+	case "reset_synced_user_password":
+		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
+		}
 		return map[string]any{"success": true}
 	case "provision_user":
 		username, err := requiredString(payload, "dsm_username")

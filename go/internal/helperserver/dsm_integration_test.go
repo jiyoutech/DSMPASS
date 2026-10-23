@@ -285,6 +285,46 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	}
 	registerDSMSessionCleanup(t, cfg, result.SID)
 	t.Log("normal browser completion after user password change: DSM session remains valid and new SMB password works")
+
+	// Reproduce the old setpw + shadow-only recovery bug on an isolated user,
+	// then exercise the exact Helper action used by a full sync.
+	originalLine, err := shadowLine(cfg.ShadowPath, users[0].name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(cfg.SynoUserPath, "--setpw", users[0].name, randomPassword(48)); err != nil {
+		t.Fatal(err)
+	}
+	brokenLine, err := shadowLine(cfg.ShadowPath, users[0].name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, users[0].name, originalLine, brokenLine); err != nil {
+		t.Fatal(err)
+	}
+	if readDSMTestSMBRecord(t, users[0].name) == smbBefore[users[0].name] {
+		t.Fatal("failed to reproduce legacy SMB mismatch")
+	}
+	repairPassword := randomPassword(48)
+	repairHelper := NewWithStore(cfg, syncedPasswordTestStore(t, users[0].name))
+	if err := repairHelper.resetSyncedUserPassword(cfg, syncedPasswordPayload(users[0].name, repairPassword)); err != nil {
+		t.Fatal(err)
+	}
+	assertDSMSMBLogin(t, users[0].name, repairPassword)
+	result, err = dsmLogin(cfg, "full-sync-repair-password", users[0].name, repairPassword)
+	if err != nil {
+		t.Fatalf("DSM rejected full-sync password: %v", err)
+	}
+	registerDSMSessionCleanup(t, cfg, result.SID)
+	repairedSMB := readDSMTestSMBRecord(t, users[0].name)
+	result, err = relayLoginReal(cfg, "after-full-sync-repair", users[0].name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerDSMSessionCleanup(t, cfg, result.SID)
+	assertDSMSMBUnchanged(t, users[0].name, repairPassword, repairedSMB)
+	assertDSMSMBUnchanged(t, users[1].name, changedPassword, changedSMB)
+	t.Log("full sync repaired legacy DSM/SMB mismatch; subsequent shadow-only login preserved the repaired password; other user unchanged")
 }
 
 func assertDSMDesktopSession(t *testing.T, cfg config.HelperConfig, result relayLoginResult) {

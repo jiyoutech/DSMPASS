@@ -46,7 +46,11 @@ func testServerPort(t *testing.T, serverURL string) int {
 }
 
 func (testHelper) HealthCheck(ctx context.Context) (map[string]any, error) {
-	return map[string]any{"success": true}, nil
+	return map[string]any{"success": true, "synced_password_reset": true}, nil
+}
+
+func (testHelper) ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error {
+	return nil
 }
 
 func (testHelper) RelayLogin(ctx context.Context, requestID, username, identityID, loginSource string) (helperclient.RelayLoginResult, error) {

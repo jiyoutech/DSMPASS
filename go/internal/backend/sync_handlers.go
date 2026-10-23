@@ -19,30 +19,38 @@ func (s *Server) syncApply(c *gin.Context) {
 }
 
 func (s *Server) startProviderSyncRun(c *gin.Context) {
+	mode, ok := readSyncMode(c)
+	if !ok {
+		return
+	}
 	sourceSlug := c.Param("slug")
 	if _, ok := s.directoryProvider(sourceSlug); !ok {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
 	}
-	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", "同步任务已创建", 0)
+	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", mode.label()+"任务已创建", 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	go func() {
 		ctx := context.Background()
-		_, err := s.runSyncProviderWithProgress(ctx, sourceSlug, progress)
+		_, err := s.runSyncProviderModeWithProgress(ctx, sourceSlug, mode, progress)
 		if err != nil {
 			progress.fail(ctx, err)
 			return
 		}
-		progress.complete(ctx, "同步完成")
+		progress.complete(ctx, mode.label()+"完成")
 	}()
 	c.JSON(http.StatusAccepted, gin.H{"run_id": progress.id})
 }
 
 func (s *Server) syncProvider(c *gin.Context) {
-	result, err := s.runSyncProvider(c.Request.Context(), c.Param("provider"))
+	mode, ok := readSyncMode(c)
+	if !ok {
+		return
+	}
+	result, err := s.runSyncProviderModeWithProgress(c.Request.Context(), c.Param("provider"), mode, nil)
 	if errors.Is(err, errUnknownProvider) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
@@ -63,6 +71,10 @@ func (s *Server) runSyncProvider(ctx context.Context, providerSlug string) (sync
 }
 
 func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug string, progress *operationProgress) (syncsvc.Result, error) {
+	return s.runSyncProviderModeWithProgress(ctx, providerSlug, syncIncremental, progress)
+}
+
+func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (syncsvc.Result, error) {
 	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
@@ -72,6 +84,15 @@ func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug s
 		return syncsvc.Result{}, errSyncAlreadyRunning
 	}
 	defer s.endSourceSync(directory.Slug())
+	if mode == syncFull {
+		health, err := s.helper.HealthCheck(ctx)
+		if err != nil {
+			return syncsvc.Result{}, err
+		}
+		if supported, _ := health["synced_password_reset"].(bool); !supported {
+			return syncsvc.Result{}, errors.New("Helper 不支持全量同步密码修复，请升级并重启 Helper")
+		}
+	}
 	runID := "sync_" + randomHex(12)
 	var syncStart string
 	_ = s.store.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
@@ -87,6 +108,8 @@ ON CONFLICT(id) DO NOTHING
 	logBuffer := s.newSyncLogBuffer(ctx)
 	defer func() { _ = logBuffer.Flush() }()
 	policy := s.sourceSyncPolicy(ctx, directory.Slug())
+	policy.FullSync = mode == syncFull
+	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "sync_mode", "success", "", string(mode), "")
 	if progress != nil {
 		progress.message(ctx, "读取身份源", "正在读取身份源通讯录")
 	}
@@ -195,6 +218,7 @@ func (s *Server) endSourceSync(slug string) {
 }
 
 type sourceSyncPolicy struct {
+	FullSync              bool
 	DisableMissingUsers   bool
 	DeactivateMissingData bool
 	PreserveMissingGroups bool
@@ -380,6 +404,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
 		if progress != nil {
 			progress.step(ctx, "同步 DSM 用户", username)
+		}
+	}
+	if policy.FullSync {
+		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress)
+		operations = append(operations, passwordOperations...)
+		if err != nil {
+			return operations, err
 		}
 	}
 
