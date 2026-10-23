@@ -1314,7 +1314,7 @@ function SourceDetail({
       return "会先禁用 DSM 中对应用户，然后清理该身份源的本地同步映射数据；如需彻底删除 DSM 用户，请到 DSM 手动操作。";
     }
     if (syncMode === "full") {
-      return "将重新同步全部用户、部门和成员关系，并把当前身份源的有效托管同步账号的 DSM 和 SMB 密码重置为本身份源的 DSM 初始密码，用于修复旧版本造成的密码不一致。用户自行修改的密码也会被覆盖，请通知用户更新 SMB 连接凭据。未同步的本地账号、手动指定关联账号和系统保留账号不重置。已完成的操作不会因后续失败而回滚；失败后可重新执行全量同步。";
+      return "将重新同步全部用户、部门和成员关系，并把当前身份源的有效同步账号的 DSM 和 SMB 密码重置为本身份源的 DSM 初始密码，用于修复旧版本造成的密码不一致。用户自行修改的密码也会被覆盖，请通知用户更新 SMB 连接凭据。已映射的已有 DSM 账号及手动修正用户名的同步账号也会重置；没有有效同步映射的本地账号和系统保留账号不重置。已完成的操作不会因后续失败而回滚；失败后可重新执行全量同步。";
     }
     return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。定时同步和冲突处理后的自动同步也使用增量模式。";
   }
@@ -1329,7 +1329,7 @@ function SourceDetail({
         await waitOperation(run_id);
         showLatestSyncLogs();
         await refreshAll();
-        message.success(syncMode === "full" ? "全量同步完成，已统一托管同步账号的 DSM/SMB 密码" : "增量同步完成");
+        message.success(syncMode === "full" ? "全量同步完成，已统一同步账号的 DSM/SMB 密码" : "增量同步完成");
       } catch (err) {
         setSyncError(err instanceof Error ? err.message : "同步失败");
         showLatestSyncLogs();

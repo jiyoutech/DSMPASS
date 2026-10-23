@@ -37,7 +37,7 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 			return fmt.Errorf("verify synced account: %w", err)
 		}
 		if !eligible {
-			return errors.New("account is not an active managed account of this identity source")
+			return errors.New("account is not an active synced account of this identity source")
 		}
 		if _, found, err := browserLeaseForUser(cfg, username); err != nil {
 			return err

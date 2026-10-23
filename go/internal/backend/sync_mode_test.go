@@ -83,7 +83,7 @@ func TestReadSyncMode(t *testing.T) {
 	}
 }
 
-func TestSyncModesOnlyResetMappedManagedUsersInFullMode(t *testing.T) {
+func TestSyncModesOnlyResetMappedUsersInFullMode(t *testing.T) {
 	ctx := context.Background()
 	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
 	if err != nil {
@@ -95,7 +95,7 @@ func TestSyncModesOnlyResetMappedManagedUsersInFullMode(t *testing.T) {
 	if _, err := database.Exec(`INSERT INTO identity_sources (slug, provider_type, display_name) VALUES ('a','feishu','A'),('b','feishu','B')`); err != nil {
 		t.Fatal(err)
 	}
-	for _, username := range []string{"alice", "manual", "inactive", "outside", "admin"} {
+	for _, username := range []string{"alice", "manual", "local", "inactive", "outside", "admin"} {
 		source := "a"
 		if username == "outside" {
 			source = "b"
@@ -103,7 +103,8 @@ func TestSyncModesOnlyResetMappedManagedUsersInFullMode(t *testing.T) {
 		seedSyncedAccount(t, ctx, database, source, username, "ext-"+username, username, username, "2999-01-01 00:00:00")
 	}
 	if _, err := database.Exec(`
-UPDATE dsm_accounts SET managed = 0 WHERE dsm_username = 'manual';
+UPDATE dsm_accounts SET managed = 0 WHERE dsm_username IN ('manual','local');
+DELETE FROM dsm_mapping_entries WHERE dsm_account_id = 'account-local';
 UPDATE external_accounts SET active = 0 WHERE subject = 'inactive';
 INSERT INTO external_accounts (id,provider_slug,subject,subject_norm,subject_type,app_identity_id)
 VALUES ('ext-alice-2','a','alice-2','alice-2','directory_subject','alice');
@@ -121,7 +122,7 @@ VALUES ('duplicate','user','a','ext-alice-2','','account-alice');`); err != nil 
 		if _, err := s.syncSourceToDSM(ctx, "full", "a", "2000-01-01", sourceSyncPolicy{FullSync: true}); err != nil {
 			t.Fatal(err)
 		}
-		if len(h.resets) != run+1 || h.resets[run] != "a:alice" {
+		if len(h.resets) != 2*(run+1) || h.resets[2*run] != "a:alice" || h.resets[2*run+1] != "a:manual" {
 			t.Fatalf("unexpected targets: %v", h.resets)
 		}
 	}
@@ -129,11 +130,11 @@ VALUES ('duplicate','user','a','ext-alice-2','','account-alice');`); err != nil 
 	if err != nil || !ok || password == "" {
 		t.Fatal("missing source password")
 	}
-	if h.passwords[0] != password || h.passwords[1] != password {
+	if h.passwords[0] != password || h.passwords[1] != password || h.passwords[2] != password || h.passwords[3] != password {
 		t.Fatal("full-sync retry rotated the source password")
 	}
 	var logCount int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'reset_password' AND status = 'success'`).Scan(&logCount); err != nil || logCount != 2 {
+	if err := database.QueryRow(`SELECT COUNT(*) FROM sync_operation_logs WHERE action = 'reset_password' AND status = 'success'`).Scan(&logCount); err != nil || logCount != 4 {
 		t.Fatalf("success logs = %d, %v", logCount, err)
 	}
 	var leaked int

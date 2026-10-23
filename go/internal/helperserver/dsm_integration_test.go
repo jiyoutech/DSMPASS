@@ -4,6 +4,7 @@ package helperserver
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -307,6 +308,9 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	}
 	repairPassword := randomPassword(48)
 	repairHelper := NewWithStore(cfg, syncedPasswordTestStore(t, users[0].name))
+	if _, err := repairHelper.store.DBTX().ExecContext(context.Background(), `UPDATE dsm_accounts SET managed = 0`); err != nil {
+		t.Fatal(err)
+	}
 	if err := repairHelper.resetSyncedUserPassword(cfg, syncedPasswordPayload(users[0].name, repairPassword)); err != nil {
 		t.Fatal(err)
 	}

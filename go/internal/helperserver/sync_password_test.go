@@ -54,7 +54,8 @@ func TestResetSyncedUserPasswordScopeAndErrors(t *testing.T) {
 	}{
 		{name: "managed linked account", allowed: true},
 		{name: "created account", change: `UPDATE dsm_accounts SET provision_status='created'`, allowed: true},
-		{name: "manual", change: `UPDATE dsm_accounts SET managed=0`},
+		{name: "manually named synced account", change: `UPDATE dsm_accounts SET managed=0`, allowed: true},
+		{name: "not synchronized", change: `DELETE FROM dsm_mapping_entries`},
 		{name: "inactive mapping", change: `UPDATE dsm_mapping_entries SET active=0`},
 		{name: "inactive source", change: `UPDATE identity_sources SET enabled=0`},
 		{name: "sync paused", change: `UPDATE identity_sources SET directory_sync_enabled=0`},

@@ -57,7 +57,7 @@ ORDER BY a.id`, sourceSlug)
 	}
 	var operations []syncsvc.PlanItem
 	if progress != nil {
-		progress.setTotal(ctx, "统一 DSM/SMB 密码", "仅重置当前身份源的托管同步账号", len(rows))
+		progress.setTotal(ctx, "统一 DSM/SMB 密码", "仅重置当前身份源的有效同步账号", len(rows))
 	}
 	for _, row := range rows {
 		id, _ := row["id"].(string)
@@ -67,7 +67,7 @@ ORDER BY a.id`, sourceSlug)
 			return operations, err
 		}
 		if !allowed || identity.IsReservedDSMUsername(username) {
-			s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", "非有效托管同步账号或系统保留账号，保留密码")
+			s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", "非有效同步账号或系统保留账号，保留密码")
 		} else {
 			password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
 			if err == nil {
