@@ -260,18 +260,18 @@ ssh 管理员账号@NAS_IP
 sudo -i
 /var/packages/DSMPASS/target/setup-helper-sudo.sh
 # 回到管理后台点击「重启并检查 Helper」后，再检查 socket 是否生成
-ls -l /var/packages/DSMPASS/var/run/helper.sock
+ls -l /run/dsmpass/helper.sock
 ```
 
 `ls` 用来确认 Helper 的 Unix Socket 是否已经创建。正常结果应显示 `helper.sock`，并且权限列以 `s` 开头，例如：
 
 ```text
-srw-rw---- 1 DSMPASS DSMPASS 0 ... /var/packages/DSMPASS/var/run/helper.sock
+srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 ```
 
 用户和用户组可能因 DSM 环境略有不同，重点看文件存在、第一列以 `s` 开头。如果显示 `No such file or directory`，说明 Helper 还没有成功启动，需要先在管理后台点击「重启并检查 Helper」并查看日志。
 
-脚本成功后会写入 `/etc/sudoers.d/DSMPASS-helper`，允许 DSMPASS 套件用户免密码执行 Helper 和 Helper 管理脚本。优先检查 Helper 是否提权成功，管理后台重启并检查 Helper 后 `/var/packages/DSMPASS/var/dsmpass.log` 是否还有启动错误。
+脚本成功后会把 Helper 安装到 root 控制的目录，并写入 `/etc/sudoers.d/DSMPASS-helper`，只允许套件用户执行固定的启停操作。Helper 不再以 root 执行套件用户可修改的 env 文件或程序路径。详细迁移、更新及日志位置见 [SPK 权限说明](dsm-spk-package.md)。
 
 卸载套件时会尝试删除这条 sudo 规则；保留套件数据只保留配置、数据库、日志和 TLS 文件。卸载后建议通过 SSH 确认：
 

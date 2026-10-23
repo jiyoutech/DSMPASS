@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/gin-gonic/gin"
 )
 
 var helperControlScripts = []string{
-	"/var/packages/DSMPASS/target/helper-control.sh",
+	config.HelperControlPath,
 }
 
 func (s *Server) restartHelper(c *gin.Context) {

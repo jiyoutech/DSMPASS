@@ -190,7 +190,7 @@ load_env() {
   export DSMPASS_RUN_DIR="${DSMPASS_RUN_DIR:-$RUN_DIR}"
   export DSMPASS_DATABASE_URL="${DSMPASS_DATABASE_URL:-sqlite://$PKGVAR/data/dsmpass.db}"
   export DSMPASS_FRONTEND_DIST_DIR="${DSMPASS_FRONTEND_DIST_DIR:-$PKGDEST/frontend/dist}"
-  export DSMPASS_HELPER_SOCKET="${DSMPASS_HELPER_SOCKET:-$RUN_DIR/helper.sock}"
+  export DSMPASS_HELPER_SOCKET="/run/dsmpass/helper.sock"
   export DSMPASS_HELPER_HMAC_SECRET="${DSMPASS_HELPER_HMAC_SECRET:-}"
   export DSMPASS_GO_LISTEN="${DSMPASS_GO_LISTEN:-0.0.0.0:25000}"
   export DSMPASS_IDP_LISTEN="${DSMPASS_IDP_LISTEN:-0.0.0.0:$default_idp_port}"
@@ -398,6 +398,10 @@ EOF
 
   cat > "$work_dir/scripts/preinst" <<'EOF'
 #!/bin/sh
+set -eu
+if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
+  /usr/local/libexec/dsmpass/helper-control.sh stop
+fi
 exit 0
 EOF
 
@@ -650,6 +654,10 @@ EOF
 
   cat > "$work_dir/scripts/preuninst" <<'EOF'
 #!/bin/sh
+set -eu
+if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
+  /usr/local/libexec/dsmpass/helper-control.sh stop
+fi
 exit 0
 EOF
 

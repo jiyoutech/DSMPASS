@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -32,7 +34,24 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*sql.DB, *db.Queries
 }
 
 func OpenDatabaseReader(ctx context.Context, databaseURL string) (*sql.DB, *db.Queries, error) {
-	return openDatabase(ctx, databaseURL)
+	path := strings.TrimPrefix(databaseURL, "sqlite://")
+	if !filepath.IsAbs(path) {
+		return nil, nil, errors.New("read-only database requires an absolute file path")
+	}
+	uri := url.URL{Scheme: "file", Path: path}
+	params := url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(10000)", "query_only(1)", "trusted_schema(0)"}}
+	uri.RawQuery = params.Encode()
+	database, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	database.SetMaxOpenConns(5)
+	database.SetMaxIdleConns(2)
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, nil, err
+	}
+	return database, db.New(database), nil
 }
 
 func OpenLogDatabase(ctx context.Context, databaseURL string) (*sql.DB, *db.Queries, error) {

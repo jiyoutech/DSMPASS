@@ -102,6 +102,8 @@ https://nas.example.com:26000/idp/<id>/launch  IDP 用户登录入口，可按�
 
 `dsmpass.env` 首次安装时会生成 `DSMPASS_HELPER_HMAC_SECRET`。升级时复用现有文件，不重新生成密钥。
 
+特权 Helper 使用独立的 root 配置 `/etc/dsmpass/helper.json`，程序与控制入口位于 `/usr/local/libexec/dsmpass/`，日志和恢复资料位于 `/var/lib/dsmpass/`。这些路径及其父目录必须由 root 控制，不能由套件用户写入，也不接受符号链接。Helper 不执行套件 env 文件，不接受调用方指定程序路径，后台数据库也不能覆盖其特权配置。
+
 常见覆盖项：
 
 ```sh
@@ -147,6 +149,8 @@ sudo /var/packages/DSMPASS/scripts/start-stop-status restart
 
 Helper sudo 规则属于系统级提权配置。无论卸载时是否保留套件数据，卸载脚本都会尝试删除 `/etc/sudoers.d/DSMPASS-helper`。
 
+升级和卸载前会停止受保护的 Helper 并完成待恢复密码；恢复失败会阻止继续。root 专用配置、程序和恢复资料不会由套件账户删除。确认恢复完成并停止 Helper 后，由管理员清理不再需要的 root 文件；不要通过删除恢复资料来跳过失败。
+
 卸载后建议 SSH 到 DSM 确认：
 
 ```bash
@@ -189,15 +193,21 @@ ssh 管理员账号@NAS_IP
 sudo -i
 /var/packages/DSMPASS/target/setup-helper-sudo.sh
 # 回到管理后台点击「重启并检查 Helper」后，再检查 socket 是否生成
-ls -l /var/packages/DSMPASS/var/run/helper.sock
+ls -l /run/dsmpass/helper.sock
 ```
 
 `ls` 用来确认 Helper 的 Unix Socket 是否已经创建。正常结果应显示 `helper.sock`，并且权限列以 `s` 开头，例如：
 
 ```text
-srw-rw---- 1 DSMPASS DSMPASS 0 ... /var/packages/DSMPASS/var/run/helper.sock
+srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 ```
 
 用户和用户组可能因 DSM 环境略有不同，重点看文件存在、第一列以 `s` 开头。如果显示 `No such file or directory`，说明 Helper 还没有成功启动，需要先在管理后台点击「重启并检查 Helper」并查看日志。
 
-执行成功后会生成 `/etc/sudoers.d/DSMPASS-helper`。回到管理后台点击「重启并检查 Helper」；继续失败时查看 `/var/packages/DSMPASS/var/dsmpass.log`。
+执行成功后会安装 root 保护的程序、配置和 `/etc/sudoers.d/DSMPASS-helper`。sudo 只允许固定控制入口的 start、stop、restart、status，不允许保留调用方环境，也不允许直接运行套件目录中的 Helper。socket 还会校验连接方的本机 UID。继续失败时由 root 查看 `/var/lib/dsmpass/helper.log`。
+
+有 `visudo` 时先验证候选规则；DSM 未提供 `visudo` 时，安装器原子写入固定规则，再使用系统 `sudo -l` 解析并检查指定控制命令的授权，不执行该命令。解析失败会恢复原规则或移除新规则，并报告失败；不会跳过规则检查。
+
+首次迁移前先让旧 Helper 完成密码恢复并停止它，再从可信 SPK 安装执行初始化脚本。每次升级 Helper 程序后，管理员需重新运行初始化脚本以更新受保护副本；套件用户不能自行替换 root 程序。安装器检查新版受保护目录中的实例锁和恢复日志，发现运行实例或未完成恢复时拒绝覆盖；这不能检测使用旧套件目录的进程和日志，首次迁移必须由管理员确认旧实例已停止且密码恢复完成。
+
+自定义 DSM 认证端口、Helper 签名密钥等特权设置由 root 编辑 `/etc/dsmpass/helper.json` 后重启；认证地址仅接受回环 IP 的 DSM API。后台可配置面向浏览器的访问地址，但不能用业务数据库改变 root Helper 的连接目标。

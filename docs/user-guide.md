@@ -81,6 +81,8 @@ Helper 不再校验 DSM 组件指纹，也不限制为指定 DSM 版本或 CPU �
 
 在运行命令中填写以下命令:
 `/var/packages/DSMPASS/target/setup-helper-sudo.sh`
+
+此步骤从可信 SPK 安装 root 保护的 Helper 副本和受限启停规则。首次迁移前应等待旧登录恢复完成并停止旧 Helper；以后更新 Helper 程序也需由管理员重新执行此步骤。后台不能自行替换 root 程序。具体说明见 [Helper 权限与升级](dsm-spk-package.md)。
 ![-w300](../media/17795482410730/17799552428360.jpg)
 
 <div STYLE="page-break-after: always;"></div>
