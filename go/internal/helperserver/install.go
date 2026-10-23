@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -118,27 +117,7 @@ func installProtectedHelperFiles(settings config.RootHelperSettings, binary, con
 	if err := securefs.EnsureRootDir(filepath.Dir(helperSudoersPath), 0755); err != nil {
 		return err
 	}
-	rule := helperSudoersRule()
-	visudo := "/usr/sbin/visudo"
-	if _, err := os.Stat(visudo); err != nil {
-		visudo = "/usr/bin/visudo"
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(helperSudoersPath), ".DSMPASS-helper-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(rule); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := exec.Command(visudo, "-cf", tmp.Name()).Run(); err != nil {
-		return fmt.Errorf("validate Helper sudo rule: %w", err)
-	}
-	return securefs.WriteRootFile(helperSudoersPath, []byte(rule), 0440)
+	return installHelperSudoers()
 }
 
 func assertNoPendingJournals(dir string) error {
