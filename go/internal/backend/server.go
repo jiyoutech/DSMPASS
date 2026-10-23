@@ -43,6 +43,8 @@ const oauthStateTTL = 10 * time.Minute
 type oauthState struct {
 	ProviderSlug string
 	ExpiresAt    time.Time
+	CookieName   string
+	BrowserHash  [32]byte
 }
 
 var errUnknownProvider = errors.New("unknown provider")
