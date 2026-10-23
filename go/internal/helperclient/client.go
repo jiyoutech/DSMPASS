@@ -80,7 +80,7 @@ func (c UnixSocketClient) RelayLogin(ctx context.Context, requestID, username, i
 		"timeout_ms":   c.Timeout.Milliseconds(),
 	})
 	response, err := c.send(ctx, map[string]any{
-		"action":       "relay_login",
+		"action":       "scoped_relay_login",
 		"request_id":   requestID,
 		"dsm_username": username,
 		"identity_id":  identityID,
@@ -116,7 +116,7 @@ func (c UnixSocketClient) PrepareBrowserLogin(ctx context.Context, requestID, us
 		"timeout_ms":   c.Timeout.Milliseconds(),
 	})
 	response, err := c.send(ctx, map[string]any{
-		"action":       "prepare_browser_login",
+		"action":       "scoped_prepare_browser_login",
 		"request_id":   requestID,
 		"dsm_username": username,
 		"identity_id":  identityID,
@@ -193,7 +193,7 @@ func relayCookiesFromResponse(response map[string]any) []RelayCookie {
 
 func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
-		"action":           "provision_user",
+		"action":           "scoped_provision_user",
 		"request_id":       requestID,
 		"dsm_username":     username,
 		"display_name":     displayName,
@@ -205,7 +205,7 @@ func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username
 
 func (c UnixSocketClient) DisableUser(ctx context.Context, requestID, username string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
-		"action":       "disable_user",
+		"action":       "scoped_disable_user",
 		"request_id":   requestID,
 		"dsm_username": username,
 	})
@@ -219,7 +219,7 @@ func (c UnixSocketClient) ResetSyncedUserPassword(ctx context.Context, requestID
 		c.Timeout = 30 * time.Second
 	}
 	_, err := c.send(ctx, map[string]any{
-		"action": "reset_synced_user_password", "request_id": requestID,
+		"action": "scoped_reset_synced_user_password", "request_id": requestID,
 		"source_slug": sourceSlug, "account_id": accountID,
 		"dsm_username": username, "password": password,
 	})
@@ -228,7 +228,7 @@ func (c UnixSocketClient) ResetSyncedUserPassword(ctx context.Context, requestID
 
 func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
-		"action":        "provision_group",
+		"action":        "scoped_provision_group",
 		"request_id":    requestID,
 		"dsm_groupname": groupname,
 	})
@@ -237,7 +237,7 @@ func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupna
 
 func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
-		"action":        "add_group_member",
+		"action":        "scoped_add_group_member",
 		"request_id":    requestID,
 		"dsm_groupname": groupname,
 		"dsm_username":  username,
@@ -247,7 +247,7 @@ func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupna
 
 func (c UnixSocketClient) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
-		"action":        "remove_group_member",
+		"action":        "scoped_remove_group_member",
 		"request_id":    requestID,
 		"dsm_groupname": groupname,
 		"dsm_username":  username,

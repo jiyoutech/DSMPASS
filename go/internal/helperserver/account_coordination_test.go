@@ -336,7 +336,7 @@ func TestProvisionAccountUsesGlobalWriterLock(t *testing.T) {
 	if err := os.WriteFile(cfg.SynoUserPath, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg)
+	s := NewWithStore(cfg, syncedPasswordTestStore(t, "new-account"))
 	result := make(chan map[string]any, 1)
 	if err := withFileLock(cfg.ShadowLockPath, func() error {
 		go func() {

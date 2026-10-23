@@ -140,7 +140,7 @@ func TestAddGroupMemberRejectsMissingDSMUser(t *testing.T) {
 	})
 
 	response := server.handlePayload(signedPayload(t, secret, map[string]any{
-		"action":        "add_group_member",
+		"action":        "scoped_add_group_member",
 		"dsm_groupname": "engineering",
 		"dsm_username":  "alice",
 	}))

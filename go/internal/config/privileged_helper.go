@@ -61,7 +61,7 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return HelperConfig{}, errors.New("trusted Helper configuration contains trailing data")
 	}
-	if settings.PackageUID <= 0 || settings.PackageGID <= 0 || !filepath.IsAbs(settings.DatabasePath) || filepath.Clean(settings.DatabasePath) != settings.DatabasePath {
+	if settings.PackageUID <= 0 || uint64(settings.PackageUID) >= 1<<32-1 || settings.PackageGID <= 0 || uint64(settings.PackageGID) >= 1<<32-1 || !filepath.IsAbs(settings.DatabasePath) || filepath.Clean(settings.DatabasePath) != settings.DatabasePath {
 		return HelperConfig{}, errors.New("trusted Helper configuration requires a non-root package identity and absolute database path")
 	}
 	if len(settings.HMACSecret) < 32 || strings.ContainsAny(settings.HMACSecret, "\x00\r\n") {
@@ -77,6 +77,7 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 	}
 	return HelperConfig{
 		Privileged: true, PackageUID: settings.PackageUID, PackageGID: settings.PackageGID,
+		AccountPolicyPath: HelperDataDir + "/account-policy.json", PasswdPath: "/etc/passwd", GroupPath: "/etc/group",
 		DatabaseURL: "sqlite://" + settings.DatabasePath, DataDir: HelperDataDir,
 		SocketPath: HelperSocketPath, HMACSecret: settings.HMACSecret, TimestampSkewSeconds: 60,
 		DSMLoginAPI: settings.DSMLoginAPI, DSMSession: "webui", DSMTLSSkipVerify: true,
@@ -85,6 +86,7 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 		OpenSSLPath: "/usr/bin/openssl", LockDir: HelperRunDir + "/locks",
 		JournalDir: HelperDataDir + "/journal", TempPasswordLength: 64, InitialPasswordLength: 32,
 		SynoUserPath: "/usr/syno/sbin/synouser", SynoGroupPath: "/usr/syno/sbin/synogroup",
+		SynoWebAPIPath: "/usr/syno/bin/synowebapi",
 	}, nil
 }
 
