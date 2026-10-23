@@ -11,7 +11,7 @@ func validRootSettings() RootHelperSettings {
 }
 
 func TestPrivilegedHelperIgnoresCallerEnvironment(t *testing.T) {
-	for _, key := range []string{"DSMPASS_APP_DIR", "DSMPASS_DATA_DIR", "DSMPASS_HELPER_SOCKET", "DSMPASS_DATABASE_URL", "DSMPASS_HELPER_HMAC_SECRET", "DSMPASS_DSM_LOGIN_API", "DSMPASS_SYNOUSER_PATH", "DSMPASS_SYNOGROUP_PATH"} {
+	for _, key := range []string{"DSMPASS_APP_DIR", "DSMPASS_DATA_DIR", "DSMPASS_HELPER_SOCKET", "DSMPASS_DATABASE_URL", "DSMPASS_HELPER_HMAC_SECRET", "DSMPASS_DSM_LOGIN_API", "DSMPASS_SYNOUSER_PATH", "DSMPASS_SYNOGROUP_PATH", "DSMPASS_SYNOWEBAPI_PATH"} {
 		t.Setenv(key, "/untrusted/caller/value")
 	}
 	settings := validRootSettings()
@@ -26,7 +26,7 @@ func TestPrivilegedHelperIgnoresCallerEnvironment(t *testing.T) {
 	if !cfg.Privileged || cfg.HMACSecret != settings.HMACSecret || cfg.DSMLoginAPI != settings.DSMLoginAPI || cfg.DatabaseURL != "sqlite://"+settings.DatabasePath {
 		t.Fatal("caller environment replaced root-approved settings")
 	}
-	if cfg.SynoUserPath != "/usr/syno/sbin/synouser" || cfg.SynoGroupPath != "/usr/syno/sbin/synogroup" || cfg.SocketPath != HelperSocketPath || cfg.DataDir != HelperDataDir {
+	if cfg.SynoUserPath != "/usr/syno/sbin/synouser" || cfg.SynoGroupPath != "/usr/syno/sbin/synogroup" || cfg.SynoWebAPIPath != "/usr/syno/bin/synowebapi" || cfg.SocketPath != HelperSocketPath || cfg.DataDir != HelperDataDir {
 		t.Fatal("caller environment redirected privileged paths")
 	}
 	if cfg.AccountPolicyPath != HelperDataDir+"/account-policy.json" || cfg.PasswdPath != "/etc/passwd" || cfg.GroupPath != "/etc/group" {

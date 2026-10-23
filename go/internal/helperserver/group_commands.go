@@ -1,8 +1,13 @@
 package helperserver
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 )
@@ -88,7 +93,7 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 			if !exists {
 				return nil
 			}
-			if err := run(cfg.SynoGroupPath, "--memberdel", groupname, username); err != nil {
+			if err := removeNativeGroupMember(cfg, groupname, username); err != nil {
 				return err
 			}
 			response["removed"] = true
@@ -101,4 +106,39 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 		return errorResponse("SYNOGROUP_FAILED", err.Error())
 	}
 	return response
+}
+
+// DSM synogroup has no --memberdel. Use the native single-member API instead
+// of reading and replacing the whole group membership list in this process.
+func removeNativeGroupMember(cfg config.HelperConfig, groupname, username string) error {
+	if cfg.SynoWebAPIPath == "" {
+		return errors.New("DSM group member API command is not configured")
+	}
+	groupJSON, err := json.Marshal(groupname)
+	if err != nil {
+		return err
+	}
+	memberJSON, err := json.Marshal([]string{username})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, cfg.SynoWebAPIPath, "--exec", "api=SYNO.Core.Group.Member", "method=remove", "version=1", "group="+string(groupJSON), "name="+string(memberJSON)).Output()
+	if err != nil {
+		return fmt.Errorf("DSM group member removal command failed: %w", err)
+	}
+	var response struct {
+		Success bool `json:"success"`
+		Error   struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		return errors.New("DSM group member API returned invalid JSON")
+	}
+	if !response.Success {
+		return fmt.Errorf("DSM group member API rejected removal (code %d)", response.Error.Code)
+	}
+	return nil
 }
