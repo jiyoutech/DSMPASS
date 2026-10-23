@@ -64,6 +64,31 @@ GOCACHE="$PWD/.gocache" go test ./...
 
 新增后端行为、Helper 安全逻辑、身份源解析或同步逻辑时，应补对应 Go 单元测试。
 
+### 临时登录与 SMB 密码隔离
+
+浏览器直登和服务端中继只临时替换目标用户的 `/etc/shadow` 密码字段，不再调用 `synouser --setpw`。账号创建和用户主动改密仍走 DSM 原有流程。
+
+- 使用 DSM 自带的 `/usr/bin/openssl passwd -6 -stdin` 生成 SHA-512 crypt 哈希，密码通过标准输入传递。
+- 先加密保存原 shadow 行、临时密码及预期临时行摘要，再进行条件检查和原子替换；保留密码期限字段、文件权限、所有者及扩展属性。
+- 完成回调、TTL 到期和启动恢复使用同一套条件恢复逻辑；检测到外部改密时保留外部变更。
+- 拒绝锁定账号和空密码账号；OpenSSL 缺失、输出异常或日志写入失败时终止登录，不回退到会修改 SMB 的改密命令。
+- 临时窗口内 DSM/SSH 的原密码认证仍可能受影响。该方案隔离的是 SMB 凭据，并不提供所有认证服务无感切换的保证。
+- 此改动不会自动修复旧版本已经造成的 SMB 密码不一致；受影响账号需要通过 DSM 重新设置密码。
+
+在专用测试 NAS 上运行以下实机测试。测试需要 root、DSM、SMB Service，以及可用的 `openssl`、`smbclient` 和 `pdbedit`；会创建并清理临时账号，不访问用户共享文件。
+
+```bash
+cd go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -tags dsm_integration \
+  -o /tmp/dsmpass-helper.test ./internal/helperserver
+# 将程序传到测试 NAS 的可执行临时目录后，以 root 执行：
+# DSM 的 /tmp 通常挂载为 noexec，以下使用卷上的临时目录。
+DSMPASS_DSM_INTEGRATION=1 /volume1/@tmp/dsmpass-helper.test \
+  -test.run '^TestDSMRealShadowConcurrentRelayAndRecovery$' -test.v
+```
+
+ARM NAS 构建时将 `GOARCH` 改为 `arm64`。覆盖并发中继、浏览器临时密码登录、完成回调、启动恢复、TTL 恢复，以及登录期间用户主动改密；在登录前、中、后检查目标账号 SMB 凭据记录及全新 SMB 连接，并检查恢复后的 DSM 桌面会话；同时验证 shadow 内容、权限、所有者和扩展属性恢复一致。
+
 ## 前端构建检查
 
 前端检查命令：

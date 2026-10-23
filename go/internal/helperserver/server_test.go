@@ -241,7 +241,7 @@ func TestPrepareBrowserLoginRejectsConcurrentRequestForSameUser(t *testing.T) {
 	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath)
+	cfg := browserLoginTestConfig(t, shadowPath, journalDir, lockDir, synouserPath)
 
 	start := make(chan struct{})
 	errs := make(chan error, 2)
@@ -275,12 +275,8 @@ func TestPrepareBrowserLoginRejectsConcurrentRequestForSameUser(t *testing.T) {
 	if succeeded != 1 || rejected != 1 {
 		t.Fatalf("concurrent prepare results success=%d rejected=%d", succeeded, rejected)
 	}
-	count, err := os.ReadFile(countPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(count) != "x" {
-		t.Fatalf("synouser called %d times, content=%q", len(count), string(count))
+	if _, err := os.Stat(countPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary login must not invoke synouser: %v", err)
 	}
 }
 
@@ -300,7 +296,7 @@ func TestPrepareBrowserLoginIsIdempotentForSameRequest(t *testing.T) {
 	if err := os.WriteFile(synouserPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath)
+	cfg := browserLoginTestConfig(t, shadowPath, journalDir, lockDir, synouserPath)
 
 	first, err := prepareBrowserLogin(cfg, "request-idempotent", "alice")
 	if err != nil {
@@ -313,12 +309,8 @@ func TestPrepareBrowserLoginIsIdempotentForSameRequest(t *testing.T) {
 	if first.Username != second.Username || first.TempPassword != second.TempPassword || first.ExpiresAt != second.ExpiresAt {
 		t.Fatalf("idempotent result changed: first=%#v second=%#v", first, second)
 	}
-	count, err := os.ReadFile(countPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(count) != "x" {
-		t.Fatalf("synouser called %d times, content=%q", len(count), string(count))
+	if _, err := os.Stat(countPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary login must not invoke synouser: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(journalDir, "request-idempotent.json"))
 	if err != nil {
@@ -429,7 +421,7 @@ func TestRestorePendingJournalIsIdempotentUnderConcurrency(t *testing.T) {
 	}
 }
 
-func browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath string) config.HelperConfig {
+func browserLoginTestConfig(t *testing.T, shadowPath, journalDir, lockDir, synouserPath string) config.HelperConfig {
 	return config.HelperConfig{
 		HMACSecret:                "journal-secret",
 		JournalDir:                journalDir,
@@ -437,6 +429,7 @@ func browserLoginTestConfig(shadowPath, journalDir, lockDir, synouserPath string
 		ShadowLockPath:            filepath.Join(lockDir, "shadow.lock"),
 		ShadowPath:                shadowPath,
 		SynoUserPath:              synouserPath,
+		OpenSSLPath:               testShadowHashCommand(t),
 		TempPasswordLength:        32,
 		DSMBrowserLoginTTLSeconds: 3600,
 	}
@@ -454,7 +447,7 @@ func TestRestoreIfCurrentMatchesAtomicallyReplacesShadowWithoutSedPatterns(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restoreIfCurrentMatches(path, "alice", original, temp); err != nil {
+	if err := replaceShadowLineIfCurrentMatches(path, "alice", original, temp); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -485,7 +478,7 @@ func TestRestoreIfCurrentMatchesRejectsDuplicateUser(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := restoreIfCurrentMatches(path, "alice", original, temporary); err == nil || !strings.Contains(err.Error(), "more than once") {
+	if err := replaceShadowLineIfCurrentMatches(path, "alice", original, temporary); err == nil || !strings.Contains(err.Error(), "more than once") {
 		t.Fatalf("expected duplicate-user rejection, got %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -607,6 +600,7 @@ func TestRelayLoginPreservesPasswordChangedBeforeRestore(t *testing.T) {
 		ShadowLockPath:     filepath.Join(lockDir, "shadow.lock"),
 		ShadowPath:         shadowPath,
 		SynoUserPath:       synouserPath,
+		OpenSSLPath:        testShadowHashCommand(t),
 		TempPasswordLength: 32,
 		DSMLoginAPI:        auth.URL,
 		DSMSession:         "webui",
@@ -679,6 +673,7 @@ func TestRelayLoginAllowsDifferentUsersToAuthenticateConcurrently(t *testing.T) 
 		ShadowLockPath:     filepath.Join(lockDir, "shadow.lock"),
 		ShadowPath:         shadowPath,
 		SynoUserPath:       synouserPath,
+		OpenSSLPath:        testShadowHashCommand(t),
 		TempPasswordLength: 32,
 		DSMLoginAPI:        auth.URL,
 		DSMSession:         "webui",

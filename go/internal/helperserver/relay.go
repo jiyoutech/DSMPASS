@@ -115,6 +115,10 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 				"original_line_hash": lineHash(originalLine),
 			})
 			tempPassword = randomPassword(cfg.TempPasswordLength)
+			tempLine, err = temporaryShadowLine(cfg.OpenSSLPath, username, originalLine, tempPassword)
+			if err != nil {
+				return err
+			}
 			j = journal{
 				RequestID:        requestID,
 				DSMUsername:      username,
@@ -122,6 +126,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 				OriginalLine:     originalLine,
 				OriginalLineHash: lineHash(originalLine),
 				TempPassword:     tempPassword,
+				TempLineHash:     lineHash(tempLine),
 				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 			}
 			if err := saveJournal(cfg, j); err != nil {
@@ -132,14 +137,10 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			diaglog.Append(cfg.DataDir, requestID, "helper.password.generated", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"temp_password_length": len(tempPassword),
 			})
-			if err := runWithDiag(cfg, requestID, "helper.synouser.setpw", cfg.SynoUserPath, "--setpw", username, tempPassword); err != nil {
-				diaglog.Append(cfg.DataDir, requestID, "helper.synouser.setpw.failed", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error()})
-				return err
-			}
-			tempLine, err = shadowLine(cfg.ShadowPath, username)
-			if err != nil {
-				diaglog.Append(cfg.DataDir, requestID, "helper.shadow.read_temp.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "shadow_path": cfg.ShadowPath})
-				return err
+			// Persist the expected temporary record before changing shadow so a
+			// startup recovery can identify this operation's atomic replacement.
+			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, tempLine, originalLine); err != nil {
+				return errors.Join(err, restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j))
 			}
 			diaglog.Append(cfg.DataDir, requestID, "helper.shadow.read_temp.success", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"shadow_path":    cfg.ShadowPath,
@@ -153,7 +154,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			j.TempLineHash = lineHash(tempLine)
 			if err := saveJournal(cfg, j); err != nil {
 				diaglog.Append(cfg.DataDir, requestID, "helper.journal.save_temp_hash.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "journal_dir": cfg.JournalDir})
-				restoreErr := restoreIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
+				restoreErr := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
 				if restoreErr == nil {
 					j.Status = "restored"
 					j.clearTempPassword()
@@ -205,7 +206,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 }
 
 func restoreRelayPassword(cfg config.HelperConfig, requestID, username, originalLine, tempLine string, j *journal) error {
-	if err := restoreIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine); err != nil {
+	if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine); err != nil {
 		diaglog.Append(cfg.DataDir, requestID, "helper.shadow.restore.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 			"error":         err.Error(),
 			"original_line": originalLine,
@@ -271,6 +272,10 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 				return err
 			}
 			tempPassword := randomPassword(cfg.TempPasswordLength)
+			tempLine, err := temporaryShadowLine(cfg.OpenSSLPath, username, originalLine, tempPassword)
+			if err != nil {
+				return err
+			}
 			j := journal{
 				RequestID:        requestID,
 				DSMUsername:      username,
@@ -278,6 +283,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 				OriginalLine:     originalLine,
 				OriginalLineHash: lineHash(originalLine),
 				TempPassword:     tempPassword,
+				TempLineHash:     lineHash(tempLine),
 				ExpiresAt:        expiresAt.Format(time.RFC3339Nano),
 				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 			}
@@ -287,17 +293,13 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 			diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.password_generated", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"temp_password_length": len(tempPassword),
 			})
-			if err := runWithDiag(cfg, requestID, "helper.prepare_browser_login.synouser.setpw", cfg.SynoUserPath, "--setpw", username, tempPassword); err != nil {
-				return err
-			}
-			tempLine, err := shadowLine(cfg.ShadowPath, username)
-			if err != nil {
-				return err
+			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, tempLine, originalLine); err != nil {
+				return errors.Join(err, restoreRelayPassword(cfg, requestID, username, originalLine, tempLine, &j))
 			}
 			j.TempLineHash = lineHash(tempLine)
 			j.Status = journalStatusActiveBrowser
 			if err := saveJournal(cfg, j); err != nil {
-				restoreErr := restoreIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
+				restoreErr := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, username, originalLine, tempLine)
 				if restoreErr == nil {
 					j.Status = "restored"
 					j.clearTempPassword()
@@ -438,7 +440,7 @@ func restorePendingJournal(cfg config.HelperConfig, requestID, reason string) er
 					return err
 				}
 			}
-			if err := restoreIfCurrentMatches(cfg.ShadowPath, j.DSMUsername, originalLine, current); err != nil {
+			if err := replaceShadowLineIfCurrentMatches(cfg.ShadowPath, j.DSMUsername, originalLine, current); err != nil {
 				latest, latestErr := shadowLine(cfg.ShadowPath, j.DSMUsername)
 				if latestErr == nil && latest == originalLine {
 					return finishJournal(cfg, j, "restored", requestID, reason)
@@ -569,7 +571,7 @@ func shadowLine(path, username string) (string, error) {
 	return "", errors.New("DSM user not found")
 }
 
-func restoreIfCurrentMatches(path, username, originalLine, expectedCurrentLine string) error {
+func replaceShadowLineIfCurrentMatches(path, username, replacementLine, expectedCurrentLine string) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -584,12 +586,12 @@ func restoreIfCurrentMatches(path, username, originalLine, expectedCurrentLine s
 				if line != expectedCurrentLine {
 					return errors.New("shadow line changed by another process")
 				}
-				lines[i] = originalLine
+				lines[i] = replacementLine
 				replaced++
 			}
 		}
 		if replaced == 0 {
-			return errors.New("DSM user not found during restore")
+			return errors.New("DSM user not found during shadow replacement")
 		}
 		if replaced != 1 {
 			return errors.New("DSM user appears more than once in shadow")

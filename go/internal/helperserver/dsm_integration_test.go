@@ -5,9 +5,13 @@ package helperserver
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,6 +24,8 @@ import (
 const (
 	dsmIntegrationShadowPath   = "/etc/shadow"
 	dsmIntegrationSynouserPath = "/usr/syno/sbin/synouser"
+	dsmIntegrationSMBClient    = "/var/packages/SMBService/target/usr/bin/smbclient"
+	dsmIntegrationPDBEdit      = "/var/packages/SMBService/target/usr/bin/pdbedit"
 )
 
 type dsmShadowSnapshot struct {
@@ -49,6 +55,11 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	if _, err := os.Stat(dsmIntegrationSynouserPath); err != nil {
 		t.Fatal(err)
 	}
+	for _, command := range []string{dsmIntegrationSMBClient, dsmIntegrationPDBEdit, "/usr/bin/openssl"} {
+		if _, err := os.Stat(command); err != nil {
+			t.Fatalf("required DSM integration command is unavailable: %s", command)
+		}
+	}
 
 	suffix := fmt.Sprintf("%x", uint64(time.Now().UnixNano())&0xffffff)
 	users := []struct {
@@ -59,6 +70,9 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 		{name: "dsmpass_it_b_" + suffix, password: randomPassword(48)},
 	}
 	for _, user := range users {
+		if _, err := getSynoUser(dsmIntegrationSynouserPath, user.name); err == nil {
+			t.Fatalf("refusing to modify an existing test username: %s", user.name)
+		}
 		if err := run(dsmIntegrationSynouserPath, synouserAddArgs(user.name, user.password, "DSMPASS integration test", "")...); err != nil {
 			t.Fatalf("create DSM integration user %s: %v", user.name, err)
 		}
@@ -68,6 +82,11 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 				t.Errorf("remove DSM integration user %s: %v", username, err)
 			}
 		})
+	}
+	smbBefore := map[string]string{}
+	for _, user := range users {
+		assertDSMSMBLogin(t, user.name, user.password)
+		smbBefore[user.name] = readDSMTestSMBRecord(t, user.name)
 	}
 
 	before, err := readDSMShadowSnapshot()
@@ -88,6 +107,7 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 		ShadowLockPath:            filepath.Join(dir, "locks", "shadow.lock"),
 		ShadowPath:                dsmIntegrationShadowPath,
 		SynoUserPath:              dsmIntegrationSynouserPath,
+		OpenSSLPath:               "/usr/bin/openssl",
 		TempPasswordLength:        64,
 		DSMLoginAPI:               "https://127.0.0.1:5001/webapi/entry.cgi",
 		DSMSession:                "webui",
@@ -95,6 +115,13 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 		DSMTLSSkipVerify:          true,
 		DSMBrowserLoginTTLSeconds: 3600,
 	}
+	// Recover pending leases before deleting test accounts or their journals,
+	// including when an assertion terminates the test early.
+	t.Cleanup(func() {
+		if err := recoverPending(cfg); err != nil {
+			t.Errorf("recover pending integration leases: %v", err)
+		}
+	})
 
 	start := make(chan struct{})
 	outcomes := make(chan dsmRelayOutcome, len(users))
@@ -117,6 +144,7 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 			t.Fatalf("concurrent DSM relay login: %v", outcome.err)
 		}
 		registerDSMSessionCleanup(t, cfg, outcome.result.SID)
+		assertDSMDesktopSession(t, cfg, outcome.result)
 	}
 
 	afterConcurrentRelay, err := readDSMShadowSnapshot()
@@ -125,17 +153,29 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	}
 	assertDSMShadowUnchanged(t, before, afterConcurrentRelay)
 	for _, user := range users {
+		assertDSMSMBUnchanged(t, user.name, user.password, smbBefore[user.name])
 		result, err := dsmLogin(cfg, "dsm-integration-password-check-"+user.name, user.name, user.password)
 		if err != nil {
 			t.Fatalf("original password was not restored for %s: %v", user.name, err)
 		}
 		registerDSMSessionCleanup(t, cfg, result.SID)
 	}
+	t.Log("concurrent server relay: DSM original passwords and SMB credentials preserved")
 
 	requestID := "dsm-integration-recovery-" + users[0].name
-	if _, err := prepareBrowserLogin(cfg, requestID, users[0].name); err != nil {
+	browser, err := prepareBrowserLogin(cfg, requestID, users[0].name)
+	if err != nil {
 		t.Fatalf("prepare interrupted DSM lease: %v", err)
 	}
+	for _, user := range users {
+		assertDSMSMBUnchanged(t, user.name, user.password, smbBefore[user.name])
+	}
+	result, err := dsmLogin(cfg, "dsm-integration-browser-auth", users[0].name, browser.TempPassword)
+	if err != nil {
+		t.Fatalf("DSM rejected the shadow-only temporary password: %v", err)
+	}
+	registerDSMSessionCleanup(t, cfg, result.SID)
+	t.Log("active browser lease: temporary DSM authentication succeeded; original SMB passwords still work")
 	duringLease, err := readDSMShadowSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +184,7 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 	if bytes.Equal(duringLease.data, before.data) {
 		t.Fatal("temporary DSM password lease did not change shadow")
 	}
-	if err := restorePendingJournal(cfg, requestID, "dsm_integration"); err != nil {
+	if err := recoverPending(cfg); err != nil {
 		t.Fatalf("restore interrupted DSM lease: %v", err)
 	}
 	afterRecovery, err := readDSMShadowSnapshot()
@@ -152,11 +192,161 @@ func TestDSMRealShadowConcurrentRelayAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDSMShadowUnchanged(t, before, afterRecovery)
-	result, err := dsmLogin(cfg, "dsm-integration-recovery-password-check", users[0].name, users[0].password)
+	assertDSMDesktopSession(t, cfg, result)
+	result, err = dsmLogin(cfg, "dsm-integration-recovery-password-check", users[0].name, users[0].password)
 	if err != nil {
 		t.Fatalf("original password was not restored after recovery: %v", err)
 	}
 	registerDSMSessionCleanup(t, cfg, result.SID)
+	assertDSMSMBUnchanged(t, users[0].name, users[0].password, smbBefore[users[0].name])
+	t.Log("startup recovery: original shadow and SMB credentials preserved")
+
+	ttlCfg := cfg
+	ttlCfg.DSMBrowserLoginTTLSeconds = 1
+	ttlRequest := "dsm-integration-ttl-" + users[1].name
+	if _, err := prepareBrowserLogin(ttlCfg, ttlRequest, users[1].name); err != nil {
+		t.Fatal(err)
+	}
+	assertDSMSMBUnchanged(t, users[1].name, users[1].password, smbBefore[users[1].name])
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		j, err := loadJournal(cfg, ttlRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j.Status == "restored" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("DSM browser lease was not restored after TTL")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	afterTTL, err := readDSMShadowSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDSMShadowUnchanged(t, before, afterTTL)
+	assertDSMSMBUnchanged(t, users[1].name, users[1].password, smbBefore[users[1].name])
+	t.Log("TTL recovery: original shadow and SMB credentials preserved")
+
+	changeRequest := "dsm-integration-external-change-" + users[1].name
+	if _, err := prepareBrowserLogin(cfg, changeRequest, users[1].name); err != nil {
+		t.Fatal(err)
+	}
+	changedPassword := randomPassword(48)
+	if err := run(dsmIntegrationSynouserPath, "--setpw", users[1].name, changedPassword); err != nil {
+		t.Fatalf("change isolated test user's password during the lease: %v", err)
+	}
+	changedShadow, err := readDSMShadowSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedSMB := readDSMTestSMBRecord(t, users[1].name)
+	if err := restorePendingJournal(cfg, changeRequest, "browser_login_complete"); err != nil {
+		t.Fatal(err)
+	}
+	j, err := loadJournal(cfg, changeRequest)
+	if err != nil || j.Status != journalStatusSuperseded {
+		t.Fatalf("external password change was not preserved: %v", err)
+	}
+	afterChange, err := readDSMShadowSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDSMShadowUnchanged(t, changedShadow, afterChange)
+	assertDSMSMBUnchanged(t, users[1].name, changedPassword, changedSMB)
+	t.Log("external password change during a lease: new DSM/SMB credentials preserved")
+
+	completeRequest := "dsm-integration-complete-" + users[1].name
+	browser, err = prepareBrowserLogin(cfg, completeRequest, users[1].name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDSMSMBUnchanged(t, users[1].name, changedPassword, changedSMB)
+	result, err = dsmLogin(cfg, "dsm-integration-after-user-change", users[1].name, browser.TempPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerDSMSessionCleanup(t, cfg, result.SID)
+	if err := restorePendingJournal(cfg, completeRequest, "browser_login_complete"); err != nil {
+		t.Fatal(err)
+	}
+	afterComplete, err := readDSMShadowSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDSMShadowUnchanged(t, changedShadow, afterComplete)
+	assertDSMSMBUnchanged(t, users[1].name, changedPassword, changedSMB)
+	assertDSMDesktopSession(t, cfg, result)
+	result, err = dsmLogin(cfg, "dsm-integration-new-password-check", users[1].name, changedPassword)
+	if err != nil {
+		t.Fatalf("user's new password was not restored after a later login: %v", err)
+	}
+	registerDSMSessionCleanup(t, cfg, result.SID)
+	t.Log("normal browser completion after user password change: DSM session remains valid and new SMB password works")
+}
+
+func assertDSMDesktopSession(t *testing.T, cfg config.HelperConfig, result relayLoginResult) {
+	t.Helper()
+	values := url.Values{"api": {"SYNO.Core.Desktop.SessionData"}, "version": {"1"}, "method": {"getjs"}, "SynoToken": {""}}
+	request, err := http.NewRequest(http.MethodGet, cfg.DSMLoginAPI+"?"+values.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range result.Cookies {
+		if cookie.Name != "id" {
+			request.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+		}
+	}
+	request.AddCookie(&http.Cookie{Name: "id", Value: result.SID})
+	client := dsmHTTPClient(cfg)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 65536))
+	if err != nil || response.StatusCode != http.StatusOK || !regexp.MustCompile(`"isLogined"\s*:\s*true`).Match(body) {
+		t.Fatal("DSM desktop session is invalid after shadow restoration")
+	}
+}
+
+func readDSMTestSMBRecord(t *testing.T, username string) string {
+	t.Helper()
+	output, err := exec.Command(dsmIntegrationPDBEdit, "-L", "-w", "-u", username).Output()
+	if err != nil {
+		t.Fatalf("read test user SMB record: %v", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, username+":") {
+			return line
+		}
+	}
+	t.Fatal("test user SMB record is missing")
+	return ""
+}
+
+func assertDSMSMBUnchanged(t *testing.T, username, password, before string) {
+	t.Helper()
+	if readDSMTestSMBRecord(t, username) != before {
+		t.Fatal("DSM temporary login changed the test user's SMB credential record")
+	}
+	assertDSMSMBLogin(t, username, password)
+}
+
+func assertDSMSMBLogin(t *testing.T, username, password string) {
+	t.Helper()
+	authPath := filepath.Join(t.TempDir(), "smb-auth")
+	if err := os.WriteFile(authPath, []byte("username = "+username+"\npassword = "+password+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(authPath)
+	command := exec.Command(dsmIntegrationSMBClient, "//127.0.0.1/IPC$", "-A", authPath,
+		"--use-kerberos=off", "-m", "SMB3", "-t", "5", "-d", "0", "-c", "quit")
+	if err := command.Run(); err != nil {
+		t.Fatalf("fresh SMB authentication with the original password failed: %v", err)
+	}
 }
 
 func registerDSMSessionCleanup(t *testing.T, cfg config.HelperConfig, sid string) {
