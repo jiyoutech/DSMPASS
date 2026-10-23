@@ -34,9 +34,8 @@ func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
 		return nil, err
 	}
 	result := map[string]systemAccount{}
-	ids := map[int]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
-		if line == "" {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
 		fields := strings.Split(line, ":")
@@ -48,8 +47,8 @@ func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
 			return nil, errors.New("invalid system account database")
 		}
 		id, err := strconv.Atoi(fields[2])
-		if err != nil || id < 0 || ids[id] {
-			return nil, errors.New("invalid or duplicate system account ID")
+		if err != nil || id < 0 {
+			return nil, errors.New("invalid system account ID")
 		}
 		if _, ok := result[fields[0]]; ok {
 			return nil, errors.New("duplicate system account name")
@@ -63,7 +62,7 @@ func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
 				return nil, errors.New("invalid system account group")
 			}
 		}
-		result[a.name], ids[id] = a, true
+		result[a.name] = a
 	}
 	return result, nil
 }
@@ -83,6 +82,11 @@ func normalUser(cfg config.HelperConfig, username string) (systemAccount, error)
 	if a.id < 1024 || a.gid == 0 {
 		return a, errors.New("system or privileged account is forbidden")
 	}
+	for name, other := range users {
+		if name != username && other.id == a.id {
+			return a, errors.New("ambiguous target account UID")
+		}
+	}
 	groups, err := systemAccounts(cfg.GroupPath, true)
 	if err != nil {
 		return a, err
@@ -95,7 +99,7 @@ func normalUser(cfg config.HelperConfig, username string) (systemAccount, error)
 		return a, errors.New("DSM administrator account is forbidden")
 	}
 	for _, group := range groups {
-		if group.id != 0 && group.name != "administrators" {
+		if group.id != 0 && group.id != admins.id {
 			continue
 		}
 		for _, member := range group.members {
@@ -121,6 +125,11 @@ func normalGroup(cfg config.HelperConfig, name string) (systemAccount, error) {
 	}
 	if a.id < 1024 {
 		return a, errors.New("system group is forbidden")
+	}
+	for otherName, other := range groups {
+		if otherName != name && other.id == a.id {
+			return a, errors.New("ambiguous target group GID")
+		}
 	}
 	return a, nil
 }

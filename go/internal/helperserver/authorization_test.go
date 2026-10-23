@@ -276,3 +276,37 @@ func TestGroupMutationsRefuseExistingUnapprovedGroups(t *testing.T) {
 		t.Fatalf("authorized mutation failed: %v", r)
 	}
 }
+
+func TestSystemAliasesAndCommentsDoNotBlockUnrelatedManagedAccounts(t *testing.T) {
+	cfg := policyTestConfig(t)
+	passwd, err := os.ReadFile(cfg.PasswdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := os.ReadFile(cfg.GroupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cfg.PasswdPath, string(passwd)+"service_a:x:21:21::/:/bin/false\nservice_b:x:21:21::/:/bin/false\n")
+	writeFile(t, cfg.GroupPath, "# DSM system groups\n   \n"+string(groups)+"root_alias:x:0:\n")
+	if err := updateAccountPolicy(cfg, "alice", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireManagedUser(cfg, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateAccountPolicy(cfg, "engineering", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireManagedGroup(cfg, "engineering"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cfg.GroupPath, string(groups)+"administrator_alias:x:101:alice\n")
+	if err := requireManagedUser(cfg, "alice"); err == nil {
+		t.Fatal("administrator group alias bypassed protection")
+	}
+	writeFile(t, cfg.GroupPath, string(groups)+"engineering_alias:x:65536:\n")
+	if err := requireManagedGroup(cfg, "engineering"); err == nil {
+		t.Fatal("ambiguous target GID accepted")
+	}
+}
