@@ -63,6 +63,9 @@ type HelperConfig struct {
 	Privileged                bool
 	PackageUID                int
 	PackageGID                int
+	AccountPolicyPath         string
+	PasswdPath                string
+	GroupPath                 string
 	DatabaseURL               string
 	DataDir                   string
 	LoginDiagnosticsEnabled   bool

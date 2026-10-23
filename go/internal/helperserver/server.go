@@ -170,6 +170,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return map[string]any{
 			"success":                    true,
 			"privileged_boundary":        cfg.Privileged,
+			"account_authorization":      true,
 			"synced_password_reset":      true,
 			"account_write_coordination": true,
 			"shadow_login_supported":     shadowLockErr == nil,
@@ -183,7 +184,10 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"synogroup_path":             cfg.SynoGroupPath,
 			"synogroup_status":           helperCommandStatus(cfg.SynoGroupPath),
 		}
-	case "relay_login":
+	case "scoped_relay_login":
+		if err := s.authorizeLogin(cfg, payload); err != nil {
+			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.bad_request", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "payload": payload})
@@ -211,7 +215,10 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "sid": result.SID, "cookies": result.Cookies})
 		return map[string]any{"success": true, "sid": result.SID, "cookies": result.Cookies}
-	case "prepare_browser_login":
+	case "scoped_prepare_browser_login":
+		if err := s.authorizeLogin(cfg, payload); err != nil {
+			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.bad_request", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "payload": payload})
@@ -249,7 +256,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.complete_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{})
 		return map[string]any{"success": true}
-	case "reset_synced_user_password":
+	case "scoped_reset_synced_user_password":
 		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
 			if errors.Is(err, errPasswordResetUnknown) {
 				return errorResponse("SYNC_PASSWORD_RESET_UNCONFIRMED", err.Error())
@@ -257,83 +264,12 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
 		}
 		return map[string]any{"success": true}
-	case "provision_user":
+	case "scoped_provision_user":
 		return s.provisionAccount(cfg, payload)
-	case "provision_group":
-		groupname, err := requiredString(payload, "dsm_groupname")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		if err := assertAllowedGroup(groupname); err != nil {
-			return errorResponse("GROUPNAME_NOT_ALLOWED", err.Error())
-		}
-		if err := run(cfg.SynoGroupPath, "--get", groupname); err == nil {
-			return map[string]any{"success": true, "created": true}
-		}
-		if err := run(cfg.SynoGroupPath, "--add", groupname); err != nil {
-			if isSynoNoSuchGroupError(err) {
-				return map[string]any{
-					"success":  true,
-					"created":  false,
-					"deferred": true,
-					"warning":  "DSM synogroup cannot create this group without members; it will be created when the first member is added",
-				}
-			}
-			return errorResponse("SYNOGROUP_FAILED", synoGroupError("create", groupname, "", err))
-		}
-		return map[string]any{"success": true, "created": true}
-	case "disable_user":
+	case "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
-	case "add_group_member":
-		groupname, err := requiredString(payload, "dsm_groupname")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		username, err := requiredString(payload, "dsm_username")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		if err := assertAllowed(cfg, username); err != nil {
-			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
-		}
-		if err := assertAllowedGroup(groupname); err != nil {
-			return errorResponse("GROUPNAME_NOT_ALLOWED", err.Error())
-		}
-		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
-			return errorResponse("SYNOUSER_MISSING", "DSM 用户不存在，不能添加到群组："+err.Error())
-		}
-		if err := run(cfg.SynoGroupPath, "--memberadd", groupname, username); err != nil {
-			if isSynoGroupMemberPresent(err, groupname, username) {
-				return map[string]any{"success": true, "created": false}
-			}
-			if isSynoNoSuchGroupError(err) {
-				if createErr := run(cfg.SynoGroupPath, "--add", groupname, username); createErr == nil {
-					return map[string]any{"success": true, "created": true}
-				} else if isSynoGroupMemberPresent(createErr, groupname, username) {
-					return map[string]any{"success": true, "created": false}
-				} else {
-					return errorResponse("SYNOGROUP_FAILED", synoGroupError("create_with_member", groupname, username, createErr))
-				}
-			}
-			return errorResponse("SYNOGROUP_FAILED", synoGroupError("add_member", groupname, username, err))
-		}
-		return map[string]any{"success": true, "created": true}
-	case "remove_group_member":
-		groupname, err := requiredString(payload, "dsm_groupname")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		username, err := requiredString(payload, "dsm_username")
-		if err != nil {
-			return errorResponse("BAD_REQUEST", err.Error())
-		}
-		if err := run(cfg.SynoGroupPath, "--memberdel", groupname, username); err != nil {
-			if isSynoNoSuchGroupError(err) {
-				return map[string]any{"success": true, "removed": false}
-			}
-			return errorResponse("SYNOGROUP_FAILED", synoGroupError("remove_member", groupname, username, err))
-		}
-		return map[string]any{"success": true, "removed": true}
+	case "scoped_provision_group", "scoped_add_group_member", "scoped_remove_group_member":
+		return s.mutateGroup(cfg, action, payload)
 	default:
 		return errorResponse("BAD_REQUEST", "unsupported action")
 	}
@@ -538,7 +474,7 @@ func synoGroupError(action, groupname, username string, err error) string {
 }
 
 func assertAllowed(cfg config.HelperConfig, username string) error {
-	if strings.ContainsAny(username, "\\/:*?\"<>|[];=,+") {
+	if username == "" || strings.TrimSpace(username) != username || strings.HasPrefix(username, "-") || strings.ContainsAny(username, "\r\n\x00\t") || strings.ContainsAny(username, "\\/:*?\"<>|[];=,+") {
 		return errors.New("invalid DSM username")
 	}
 	if identity.IsReservedDSMUsername(username) {
@@ -548,6 +484,9 @@ func assertAllowed(cfg config.HelperConfig, username string) error {
 }
 
 func assertAllowedGroup(groupname string) error {
+	if err := assertAllowed(config.HelperConfig{}, groupname); err != nil {
+		return err
+	}
 	if identity.IsReservedDSMGroupname(groupname) {
 		return errors.New("reserved DSM group name")
 	}

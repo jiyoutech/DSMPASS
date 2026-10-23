@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
 func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]any) map[string]any {
@@ -16,11 +17,17 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 	if err := assertAllowed(cfg, username); err != nil {
 		return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 	}
+	if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "provision", Username: username}); err != nil {
+		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+	}
 	created := false
 	err = withAccountMutation(cfg, username, false, func() error {
 		displayName, _ := optionalString(payload, "display_name")
 		email, _ := optionalString(payload, "email")
 		if info, err := getSynoUser(cfg.SynoUserPath, username); err == nil {
+			if err := requireManagedUser(cfg, username); err != nil {
+				return err
+			}
 			if displayName == "" {
 				displayName = info.FullName
 			}
@@ -31,6 +38,9 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 				return modifySynoUser(cfg.SynoUserPath, username, displayName, false, email)
 			}
 			return nil
+		}
+		if err := verifyAccountAbsent(cfg, username); err != nil {
+			return err
 		}
 		password, _ := optionalString(payload, "initial_password")
 		if password == "" {
@@ -43,6 +53,9 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 		}
 		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
 			return fmt.Errorf("DSM 用户创建命令已返回成功，但随后无法查询到该用户: %w", err)
+		}
+		if err := updateAccountPolicy(cfg, username, false, false); err != nil {
+			return err
 		}
 		created = true
 		return nil
@@ -61,8 +74,17 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	if err := assertAllowed(cfg, username); err != nil {
 		return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 	}
+	if err := requireManagedUser(cfg, username); err != nil {
+		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+	}
+	if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "mapped", Username: username}); err != nil {
+		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+	}
 	disabled := false
 	err = withAccountMutation(cfg, username, true, func() error {
+		if err := requireManagedUser(cfg, username); err != nil {
+			return err
+		}
 		info, err := getSynoUser(cfg.SynoUserPath, username)
 		if err != nil {
 			return err

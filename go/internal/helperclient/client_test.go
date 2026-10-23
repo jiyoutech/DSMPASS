@@ -87,7 +87,7 @@ func TestResetSyncedUserPasswordSendsSignedScopeAndRedactsPassword(t *testing.T)
 	if signing.Verify(payload, "test-secret", 60) != nil {
 		t.Fatal("invalid signature")
 	}
-	for key, want := range map[string]string{"action": "reset_synced_user_password", "source_slug": "source", "account_id": "account", "dsm_username": "alice", "password": "private-reset-password"} {
+	for key, want := range map[string]string{"action": "scoped_reset_synced_user_password", "source_slug": "source", "account_id": "account", "dsm_username": "alice", "password": "private-reset-password"} {
 		if payload[key] != want {
 			t.Fatalf("incorrect %s", key)
 		}

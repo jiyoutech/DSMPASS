@@ -1,9 +1,7 @@
 package helperserver
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -27,15 +25,8 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 		return errors.New("invalid synced account password request")
 	}
 	return withFileLock(lockPath(cfg.LockDir, username), func() error {
-		if s.store == nil {
-			return errors.New("cannot verify synced account without database")
-		}
-		eligible, err := db.SyncedPasswordResetAllowed(context.Background(), s.store, values["source_slug"], values["account_id"], username)
-		if err != nil {
-			return fmt.Errorf("verify synced account: %w", err)
-		}
-		if !eligible {
-			return errors.New("account is not an active synced account of this identity source")
+		if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "password_reset", Username: username, SourceSlug: values["source_slug"], AccountID: values["account_id"]}); err != nil {
+			return err
 		}
 		if _, found, err := browserLeaseForUser(cfg, username); err != nil {
 			return err
@@ -43,6 +34,9 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 			return errBrowserLoginInProgress
 		}
 		return withFileLock(cfg.ShadowLockPath, func() error {
+			if err := requireManagedUser(cfg, username); err != nil {
+				return err
+			}
 			return applyPermanentPassword(cfg, values)
 		})
 	})

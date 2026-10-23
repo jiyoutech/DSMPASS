@@ -29,10 +29,13 @@ func TestPrivilegedHelperIgnoresCallerEnvironment(t *testing.T) {
 	if cfg.SynoUserPath != "/usr/syno/sbin/synouser" || cfg.SynoGroupPath != "/usr/syno/sbin/synogroup" || cfg.SocketPath != HelperSocketPath || cfg.DataDir != HelperDataDir {
 		t.Fatal("caller environment redirected privileged paths")
 	}
+	if cfg.AccountPolicyPath != HelperDataDir+"/account-policy.json" || cfg.PasswdPath != "/etc/passwd" || cfg.GroupPath != "/etc/group" {
+		t.Fatal("privileged authorization paths are not fixed")
+	}
 }
 
 func TestPrivilegedHelperRejectsUnsafeConfiguration(t *testing.T) {
-	for _, name := range []string{"root uid", "root gid", "relative database", "short secret", "remote endpoint", "DNS endpoint", "userinfo", "query", "wrong path", "unknown field", "trailing JSON"} {
+	for _, name := range []string{"root uid", "root gid", "overflow uid", "overflow gid", "relative database", "short secret", "remote endpoint", "DNS endpoint", "userinfo", "query", "wrong path", "unknown field", "trailing JSON"} {
 		t.Run(name, func(t *testing.T) {
 			settings := validRootSettings()
 			switch name {
@@ -40,6 +43,10 @@ func TestPrivilegedHelperRejectsUnsafeConfiguration(t *testing.T) {
 				settings.PackageUID = 0
 			case "root gid":
 				settings.PackageGID = 0
+			case "overflow uid":
+				settings.PackageUID = 1 << 32
+			case "overflow gid":
+				settings.PackageGID = 1 << 32
 			case "relative database":
 				settings.DatabasePath = "relative.db"
 			case "short secret":
