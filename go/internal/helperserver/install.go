@@ -73,7 +73,14 @@ func InstallPrivilegedHelper() error {
 		return err
 	}
 	for _, dir := range []string{config.HelperInstallDir, filepath.Dir(config.HelperConfigPath), config.HelperDataDir, config.HelperRunDir, config.HelperRunDir + "/locks"} {
-		if err := securefs.EnsureRootDir(dir, 0700); err != nil {
+		mode := os.FileMode(0700)
+		if dir == config.HelperInstallDir {
+			mode = 0755
+		}
+		if dir == config.HelperRunDir {
+			mode = 0750
+		}
+		if err := securefs.EnsureRootDir(dir, mode); err != nil {
 			return err
 		}
 	}
