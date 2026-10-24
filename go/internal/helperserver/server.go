@@ -167,6 +167,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 	switch action {
 	case "health_check":
 		_, shadowLockErr := shadowSystemLockPath(cfg)
+		endpoint, endpointErr := config.ResolveDSMLoginAPI(cfg)
 		return map[string]any{
 			"success":                    true,
 			"privileged_boundary":        cfg.Privileged,
@@ -175,7 +176,11 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"account_write_coordination": true,
 			"shadow_login_supported":     shadowLockErr == nil,
 			"shadow_lock_error":          errorString(shadowLockErr),
+			"dsm_login_api":              endpoint,
+			"dsm_endpoint_error":         errorString(endpointErr),
 			"version":                    buildinfo.Version,
+			"revision":                   buildinfo.Revision,
+			"signed_helper_upgrade":      true,
 			"socket_path":                cfg.SocketPath,
 			"euid":                       os.Geteuid(),
 			"egid":                       os.Getegid(),

@@ -72,4 +72,19 @@ INSERT INTO dsm_mapping_entries (id,mapping_type,provider_slug,external_account_
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatal("reader created database")
 	}
+	request, err = json.Marshal(db.HelperAuthorizationQuery{DatabasePath: path, Action: "enrollment_snapshot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := runAccountQuery(bytes.NewReader(request), &output); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot db.HelperAuthorizationResult
+	if err := json.Unmarshal(output.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Error != "" || snapshot.Allowed || snapshot.Enrollment == nil || snapshot.Enrollment.Users == nil || snapshot.Enrollment.Groups == nil || len(snapshot.Enrollment.Users) != 0 {
+		t.Fatalf("pending unmapped identity granted in migration snapshot: %+v", snapshot)
+	}
 }

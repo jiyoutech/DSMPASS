@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
 func (s *Server) getSettings(c *gin.Context) {
@@ -243,14 +244,18 @@ func runtimeSettingAllowed(key string) bool {
 
 func (s *Server) helperStatus(c *gin.Context) {
 	health, err := s.helper.HealthCheck(c.Request.Context())
+	compatibilityErr := helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision)
 	response := gin.H{
 		"mode":        s.cfg.RelayMode,
 		"socket_path": s.cfg.RelayHelperSocket,
 		"reachable":   err == nil,
 		"details":     health,
+		"compatible":  err == nil && compatibilityErr == nil,
 	}
 	if err != nil {
-		response["error"] = err.Error()
+		response["error"] = "Helper 未启动或升级未完成；首次迁移需管理员执行 setup-helper-sudo.sh 一次。" + err.Error()
+	} else if compatibilityErr != nil {
+		response["error"] = compatibilityErr.Error()
 	}
 	c.JSON(http.StatusOK, response)
 }

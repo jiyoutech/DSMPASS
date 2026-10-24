@@ -4,6 +4,8 @@ import "strings"
 
 var Version = "dev"
 var FrontendVersion = "dev"
+var Revision = "dev"
+var BuildEpoch = "0"
 var AllowMultipleIdentitySources = "true"
 
 func MultipleIdentitySourcesAllowed() bool {

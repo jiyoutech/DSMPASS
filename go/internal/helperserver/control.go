@@ -48,7 +48,7 @@ func PreparePrivilegedRuntime(cfg config.HelperConfig) error {
 }
 
 func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
-	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "uninstall-preserve" && action != "uninstall-purge" {
+	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" && action != "uninstall-preserve" && action != "uninstall-purge" {
 		return errors.New("unsupported Helper control action")
 	}
 	if err := PreparePrivilegedRuntime(cfg); err != nil {
@@ -62,6 +62,10 @@ func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
 		}
 		if action == "uninstall-preserve" || action == "uninstall-purge" {
 			return uninstallPrivilegedHelper(cfg, action == "uninstall-purge")
+
+		}
+		if action == "upgrade" {
+			return upgradePrivilegedHelper(cfg)
 		}
 		if action == "stop" || action == "restart" {
 			if err := stopPrivilegedHelper(cfg); err != nil {
@@ -85,6 +89,10 @@ func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
 }
 
 func startPrivilegedHelper(cfg config.HelperConfig) error {
+	return startPrivilegedHelperVersion(cfg, buildinfo.Version, buildinfo.Revision)
+}
+
+func startPrivilegedHelperVersion(cfg config.HelperConfig, version, revision string) error {
 	if _, running, err := installedHelperProcess(); err != nil || running {
 		return err
 	}
@@ -136,7 +144,7 @@ func startPrivilegedHelper(cfg config.HelperConfig) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := client.HealthCheck(context.Background())
-		if err == nil && response["version"] == buildinfo.Version && response["privileged_boundary"] == true {
+		if err == nil && response["version"] == version && response["revision"] == revision && response["privileged_boundary"] == true {
 			return nil
 		}
 		if _, running, err := installedHelperProcess(); err != nil || !running {

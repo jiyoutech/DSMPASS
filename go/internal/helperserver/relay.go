@@ -89,7 +89,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 		"journal_dir":      cfg.JournalDir,
 	})
 	var result relayLoginResult
-	err := withFileLock(lockPath(cfg.LockDir, username), func() error {
+	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
 		if err := requireManagedUser(cfg, username); err != nil {
 			return err
 		}
@@ -245,7 +245,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 		"ttl_seconds":  ttlSeconds,
 	})
 	var result browserLoginResult
-	err := withFileLock(lockPath(cfg.LockDir, username), func() error {
+	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
 		if err := requireManagedUser(cfg, username); err != nil {
 			return err
 		}
@@ -355,7 +355,15 @@ func recoverPending(cfg config.HelperConfig) error {
 }
 
 func recoverJournals(cfg config.HelperConfig, startup bool) error {
-	entries, err := os.ReadDir(cfg.JournalDir)
+	if _, err := os.Stat(cfg.JournalDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := ensureJournalStore(cfg); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.JournalDir, "active-index"))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -367,32 +375,51 @@ func recoverJournals(cfg config.HelperConfig, startup bool) error {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		path := filepath.Join(cfg.JournalDir, entry.Name())
-		data, err := os.ReadFile(path)
+		index, err := readJournalIndex(filepath.Join(cfg.JournalDir, "active-index", entry.Name()))
 		if err != nil {
-			recoveryErrors = append(recoveryErrors, fmt.Errorf("read journal %s: %w", entry.Name(), err))
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("read account journal index %s: %w", entry.Name(), err))
 			continue
 		}
-		var j journal
-		if err := json.Unmarshal(data, &j); err != nil {
-			recoveryErrors = append(recoveryErrors, fmt.Errorf("decode journal %s: %w", entry.Name(), err))
-			continue
-		}
-		if !journalNeedsRecovery(j.Status) {
-			continue
-		}
-		if !startup {
-			now := time.Now()
-			if deadline, err := time.Parse(time.RFC3339Nano, j.ExpiresAt); err == nil && now.Before(deadline) && j.RecoveryAttempts == 0 && j.Status != journalStatusRestoringBrowser {
+		for _, requestID := range index.Requests {
+			j, err := loadJournal(cfg, requestID)
+			if err != nil || !strings.EqualFold(j.DSMUsername, index.Username) {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("read account recovery journal %s: %w", requestID, errors.Join(err, errBrowserLoginUnresolved)))
 				continue
 			}
-			if retry, err := time.Parse(time.RFC3339Nano, j.NextRecoveryAt); err == nil && now.Before(retry) {
+			if terminalJournal(j.Status) {
+				if _, err := os.Stat(filepath.Join(cfg.JournalDir, j.RequestID+".json")); err == nil {
+					if err := archiveJournal(cfg, j.RequestID); err != nil {
+						recoveryErrors = append(recoveryErrors, err)
+						continue
+					}
+				} else if !os.IsNotExist(err) {
+					recoveryErrors = append(recoveryErrors, err)
+					continue
+				}
+				if err := updateJournalIndex(cfg, j, true); err != nil {
+					recoveryErrors = append(recoveryErrors, err)
+				}
 				continue
 			}
+			if !journalNeedsRecovery(j.Status) {
+				continue
+			}
+			if !startup {
+				now := time.Now()
+				if deadline, err := time.Parse(time.RFC3339Nano, j.ExpiresAt); err == nil && now.Before(deadline) && j.RecoveryAttempts == 0 && j.Status != journalStatusRestoringBrowser {
+					continue
+				}
+				if retry, err := time.Parse(time.RFC3339Nano, j.NextRecoveryAt); err == nil && now.Before(retry) {
+					continue
+				}
+			}
+			if err := restorePendingJournal(cfg, j.RequestID, "recovery_scan"); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("recover journal %s: %w", entry.Name(), err))
+			}
 		}
-		if err := restorePendingJournal(cfg, j.RequestID, "recovery_scan"); err != nil {
-			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover journal %s: %w", entry.Name(), err))
-		}
+	}
+	if err := pruneCompletedJournals(cfg, time.Now()); err != nil {
+		recoveryErrors = append(recoveryErrors, err)
 	}
 	return errors.Join(recoveryErrors...)
 }
@@ -402,7 +429,7 @@ func restorePendingJournal(cfg config.HelperConfig, requestID, reason string) er
 	if err != nil {
 		return err
 	}
-	return withFileLock(lockPath(cfg.LockDir, j.DSMUsername), func() error {
+	return withLoginAccountLock(lockPath(cfg.LockDir, j.DSMUsername), func() error {
 		j, err := loadJournal(cfg, requestID)
 		if err != nil {
 			return err
@@ -434,28 +461,27 @@ func finishJournal(cfg config.HelperConfig, j journal, status, requestID, reason
 }
 
 func browserLeaseForUser(cfg config.HelperConfig, username string) (journal, bool, error) {
-	entries, err := os.ReadDir(cfg.JournalDir)
+	if err := ensureJournalStore(cfg); err != nil {
+		return journal{}, false, err
+	}
+	index, err := readJournalIndex(journalIndexPath(cfg, username))
 	if os.IsNotExist(err) {
 		return journal{}, false, nil
 	}
 	if err != nil {
-		return journal{}, false, err
+		return journal{}, false, errors.Join(errBrowserLoginUnresolved, err)
+	}
+	if !strings.EqualFold(index.Username, username) {
+		return journal{}, false, errBrowserLoginUnresolved
 	}
 	var found journal
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(cfg.JournalDir, entry.Name()))
+	for _, requestID := range index.Requests {
+		existing, err := loadJournal(cfg, requestID)
 		if err != nil {
-			return journal{}, false, err
-		}
-		var existing journal
-		if err := json.Unmarshal(data, &existing); err != nil {
-			return journal{}, false, fmt.Errorf("%w: journal %s cannot be read", errBrowserLoginUnresolved, entry.Name())
+			return journal{}, false, fmt.Errorf("%w: account journal %s cannot be read: %v", errBrowserLoginUnresolved, requestID, err)
 		}
 		if !strings.EqualFold(existing.DSMUsername, username) {
-			continue
+			return journal{}, false, errBrowserLoginUnresolved
 		}
 		if !browserLeaseBlocksNewLogin(existing.Status) {
 			if existing.Status == "restored" || existing.Status == journalStatusSuperseded {
@@ -494,7 +520,13 @@ func journalNeedsRecovery(status string) bool {
 }
 
 func loadJournal(cfg config.HelperConfig, requestID string) (journal, error) {
+	if requestID == "" || safeName(requestID) != requestID {
+		return journal{}, errors.New("invalid login request ID")
+	}
 	data, err := os.ReadFile(filepath.Join(cfg.JournalDir, safeName(requestID)+".json"))
+	if os.IsNotExist(err) {
+		data, err = os.ReadFile(filepath.Join(cfg.JournalDir, "completed", requestID+".json"))
+	}
 	if err != nil {
 		return journal{}, err
 	}
@@ -593,6 +625,11 @@ func replaceShadowLineIfCurrentMatches(path, username, replacementLine, expected
 }
 
 func dsmLogin(cfg config.HelperConfig, requestID, username, password string) (relayLoginResult, error) {
+	endpoint, err := config.ResolveDSMLoginAPI(cfg)
+	if err != nil {
+		return relayLoginResult{}, fmt.Errorf("DSM 登录端口读取失败，请检查 DSM 登录门户设置：%w", err)
+	}
+	cfg.DSMLoginAPI = endpoint
 	values := url.Values{}
 	values.Set("api", "SYNO.API.Auth")
 	values.Set("method", "login")
@@ -716,6 +753,12 @@ func headerNames(headers http.Header) []string {
 }
 
 func validateDSMDesktopSession(cfg config.HelperConfig, requestID string, result relayLoginResult, phase string) {
+	endpoint, err := config.ResolveDSMLoginAPI(cfg)
+	if err != nil {
+		diaglog.Append(cfg.DataDir, requestID, "helper.dsm_sessiondata.validate.skip", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "phase": phase})
+		return
+	}
+	cfg.DSMLoginAPI = endpoint
 	parsed, err := url.Parse(cfg.DSMLoginAPI)
 	if err != nil {
 		diaglog.Append(cfg.DataDir, requestID, "helper.dsm_sessiondata.validate.skip", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "dsm_login_api": cfg.DSMLoginAPI, "phase": phase})
@@ -840,6 +883,12 @@ func lockPath(dir, username string) string {
 }
 
 func saveJournal(cfg config.HelperConfig, j journal) error {
+	if j.RequestID == "" || safeName(j.RequestID) != j.RequestID || j.DSMUsername == "" {
+		return errors.New("invalid journal identity")
+	}
+	if err := ensureJournalStore(cfg); err != nil {
+		return err
+	}
 	if err := j.encryptOriginalLine(cfg); err != nil {
 		return err
 	}
@@ -857,7 +906,22 @@ func saveJournal(cfg config.HelperConfig, j journal) error {
 		return err
 	}
 	path := filepath.Join(dir, safeName(j.RequestID)+".json")
-	return writeFileAtomically(path, data, 0o600)
+	if !terminalJournal(j.Status) {
+		// Persist the account association before any password write can happen.
+		if err := updateJournalIndex(cfg, j, false); err != nil {
+			return err
+		}
+	}
+	if err := writeFileAtomically(path, data, 0o600); err != nil {
+		return err
+	}
+	if terminalJournal(j.Status) {
+		if err := archiveJournal(cfg, j.RequestID); err != nil {
+			return err
+		}
+		return updateJournalIndex(cfg, j, true)
+	}
+	return nil
 }
 
 func (j *journal) encryptOriginalLine(cfg config.HelperConfig) error {

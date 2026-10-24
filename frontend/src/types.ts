@@ -175,6 +175,7 @@ export interface HelperStatus {
   mode: string;
   socket_path: string;
   reachable: boolean;
+  compatible: boolean;
   error: string | null;
   details: HelperStatusDetails;
 }
@@ -191,6 +192,9 @@ export interface HelperCommandStatus {
 
 export interface HelperStatusDetails {
   version?: string;
+  shadow_login_supported?: boolean;
+  shadow_lock_error?: string;
+  dsm_endpoint_error?: string;
   socket_path?: string;
   euid?: number;
   egid?: number;

@@ -18,7 +18,10 @@ case "$ALLOW_MULTIPLE_IDENTITY_SOURCES" in
     exit 1
     ;;
 esac
-LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.FrontendVersion=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.AllowMultipleIdentitySources=$ALLOW_MULTIPLE_IDENTITY_SOURCES"
+BUILD_REVISION=$(git -C "$ROOT_DIR" rev-parse HEAD)
+BUILD_EPOCH=${DSMPASS_BUILD_EPOCH:-$(date +%s)}
+case "$BUILD_EPOCH" in ''|*[!0-9]*) echo "invalid DSMPASS_BUILD_EPOCH" >&2; exit 1 ;; esac
+LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.FrontendVersion=$VERSION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Revision=$BUILD_REVISION -X github.com/dsmpass/dsmpass/go/internal/buildinfo.BuildEpoch=$BUILD_EPOCH -X github.com/dsmpass/dsmpass/go/internal/buildinfo.AllowMultipleIdentitySources=$ALLOW_MULTIPLE_IDENTITY_SOURCES"
 export GOCACHE="${GOCACHE:-$GO_DIR/.gocache}"
 export GOMODCACHE="${GOMODCACHE:-$GO_DIR/.gomodcache}"
 
@@ -44,6 +47,14 @@ cp scripts/dsm/helper-control.sh dist/dsm/package-linux-amd64/helper-control.sh
 cp scripts/dsm/helper-control.sh dist/dsm/package-linux-arm64/helper-control.sh
 cp scripts/dsm/setup-helper-sudo.sh dist/dsm/package-linux-amd64/setup-helper-sudo.sh
 cp scripts/dsm/setup-helper-sudo.sh dist/dsm/package-linux-arm64/setup-helper-sudo.sh
+if [ -n "${DSMPASS_HELPER_SIGNING_KEY:-}${DSMPASS_HELPER_SIGNING_KEY_FILE:-}" ]; then
+  for arch in amd64 arm64; do
+    go run ./cmd/sign-helper -dir "dist/dsm/package-linux-$arch" -arch "$arch" \
+      -version "$VERSION" -revision "$BUILD_REVISION" -epoch "$BUILD_EPOCH"
+  done
+else
+  echo "Unsigned source build: initial installation and Helper updates require explicit root setup." >&2
+fi
 printf '%s\n' "$VERSION" > dist/dsm/package-linux-amd64/VERSION
 printf '%s\n' "$VERSION" > dist/dsm/package-linux-arm64/VERSION
 

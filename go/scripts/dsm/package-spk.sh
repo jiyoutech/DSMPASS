@@ -647,6 +647,13 @@ fi
 render_desktop_launcher
 sync_installed_admin_port
 sync_installed_admin_port_later
+if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
+  if /usr/local/libexec/dsmpass/helper-control.sh upgrade; then
+    log_install_status "signed_helper_upgrade_success"
+  else
+    log_install_status "signed_helper_upgrade_failed: first migration or unsigned builds require root setup-helper-sudo.sh; check Helper status in management page"
+  fi
+fi
 log_install_status "install_or_upgrade_success management_port=$management_port provided=$management_port_was_provided"
 
 exit 0

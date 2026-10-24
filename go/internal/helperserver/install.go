@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -33,7 +34,7 @@ func InstallPrivilegedHelper() error {
 	}
 	settings := config.RootHelperSettings{PackageUID: uid, PackageGID: gid,
 		DatabasePath: installedPackageVar + "/data/dsmpass.db",
-		DSMLoginAPI:  "https://127.0.0.1:5001/webapi/entry.cgi"}
+		DSMLoginAPI:  "auto"}
 	if _, err := os.Lstat(config.HelperConfigPath); err == nil {
 		// Preserve root-approved settings on upgrades, never reload package env.
 		if err := securefs.CheckRootPath(config.HelperConfigPath); err != nil {
@@ -87,7 +88,19 @@ func InstallPrivilegedHelper() error {
 		if err := assertNoPendingJournals(config.HelperDataDir + "/journal"); err != nil {
 			return err
 		}
-		return installProtectedHelperFiles(settings, binary, controller)
+		if err := installProtectedHelperFiles(settings, binary, controller); err != nil {
+			return err
+		}
+		cfg, err := config.LoadPrivilegedHelper()
+		if err != nil {
+			return err
+		}
+		result, err := migrateInstalledAccounts(cfg)
+		if err != nil {
+			return fmt.Errorf("automatic account enrollment failed; start the backend to initialize its database and retry setup: %w", err)
+		}
+		log.Printf("account enrollment migration: users=%d groups=%d skipped=%d already_complete=%t", result.Users, result.Groups, result.Skipped, result.AlreadyComplete)
+		return nil
 	})
 }
 
@@ -121,6 +134,15 @@ func installProtectedHelperFiles(settings config.RootHelperSettings, binary, con
 }
 
 func assertNoPendingJournals(dir string) error {
+	indexes, err := os.ReadDir(filepath.Join(dir, "active-index"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range indexes {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			return errors.New("account recovery index is pending; resolve password recovery before changing Helper")
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
@@ -172,5 +194,5 @@ func bootstrapHelperSecret(data string) (string, error) {
 func helperSudoersRule() string {
 	controller := config.HelperControlPath
 	return "Defaults!" + controller + " env_reset, !setenv, secure_path=\"/usr/sbin:/usr/bin:/sbin:/bin\"\n" +
-		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status, " + controller + " uninstall-preserve, " + controller + " uninstall-purge\n"
+		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status, " + controller + " upgrade, " + controller + " uninstall-preserve, " + controller + " uninstall-purge\n"
 }

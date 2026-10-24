@@ -13,7 +13,7 @@ import (
 func policyTestConfig(t *testing.T) config.HelperConfig {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := config.HelperConfig{AccountPolicyPath: filepath.Join(dir, "policy.json"), PasswdPath: filepath.Join(dir, "passwd"), GroupPath: filepath.Join(dir, "group"), LockDir: filepath.Join(dir, "locks"), ShadowLockPath: filepath.Join(dir, "shadow.lock")}
+	cfg := config.HelperConfig{AccountPolicyPath: filepath.Join(dir, "policy.json"), PasswdPath: filepath.Join(dir, "passwd"), GroupPath: filepath.Join(dir, "group"), JournalDir: filepath.Join(dir, "journal"), LockDir: filepath.Join(dir, "locks"), ShadowLockPath: filepath.Join(dir, "shadow.lock")}
 	writeFile(t, cfg.PasswdPath, "root:x:0:0:root:/root:/bin/sh\nalice:x:1026:100:Alice:/home/alice:/bin/sh\nbob:x:1027:100:Bob:/home/bob:/bin/sh\noperator:x:1028:100:Operator:/home/operator:/bin/sh\nservice:x:500:100:Service:/:/bin/false\n")
 	writeFile(t, cfg.GroupPath, "root:x:0:root\nusers:x:100:alice,bob\nadministrators:x:101:operator\nengineering:x:65536:alice\nfinance:x:65537:bob\n")
 	return cfg
@@ -147,7 +147,7 @@ func TestSignedRequestsCannotGrantOrBypassAccountScope(t *testing.T) {
 	cfg.HMACSecret, cfg.TimestampSkewSeconds = "test-secret", 60
 	cfg.SynoUserPath, cfg.SynoGroupPath = "/must-not-run", "/must-not-run"
 	server := NewWithStore(cfg, syncedPasswordTestStore(t, "alice"))
-	for _, action := range []string{"relay_login", "prepare_browser_login", "provision_user", "reset_synced_user_password", "disable_user", "add_group_member", "remove_group_member", "provision_group", "authorize-user", "scoped_relay_login", "scoped_prepare_browser_login", "scoped_disable_user", "scoped_reset_synced_user_password", "scoped_remove_group_member"} {
+	for _, action := range []string{"enrollment_snapshot", "migrate-accounts", "scoped_enroll_existing", "relay_login", "prepare_browser_login", "provision_user", "reset_synced_user_password", "disable_user", "add_group_member", "remove_group_member", "provision_group", "authorize-user", "scoped_relay_login", "scoped_prepare_browser_login", "scoped_disable_user", "scoped_reset_synced_user_password", "scoped_remove_group_member"} {
 		p := signedPayload(t, cfg.HMACSecret, map[string]any{"action": action, "request_id": "test", "dsm_username": "alice", "identity_id": "identity", "login_source": "source", "source_slug": "source", "account_id": "account", "password": "test-password", "dsm_groupname": "engineering"})
 		if response := server.handlePayload(p); response["success"] == true {
 			t.Fatalf("action %s bypassed authorization: %v", action, response)

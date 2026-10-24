@@ -33,6 +33,14 @@ func runAccountQuery(input io.Reader, output io.Writer) error {
 		return errors.New("account database is unavailable")
 	}
 	defer database.Close()
+	if request.Action == "enrollment_snapshot" {
+		snapshot, err := db.HelperEnrollmentCandidates(context.Background(), queries)
+		result := db.HelperAuthorizationResult{Enrollment: snapshot}
+		if err != nil {
+			result.Error = "query_failed"
+		}
+		return json.NewEncoder(output).Encode(result)
+	}
 	allowed, err := db.HelperAccountAllowed(context.Background(), queries, request)
 	result := db.HelperAuthorizationResult{Allowed: allowed}
 	if errors.Is(err, db.ErrSyncedPasswordSourceConflict) {
