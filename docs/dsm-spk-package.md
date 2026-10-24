@@ -212,4 +212,6 @@ srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 
 初始化会一次性自动批准已有有效同步映射对应的普通账号和自定义群组，不需要逐个执行授权命令；管理员和系统账号仍禁止。完成标记保存在 root 授权文件中，后续升级不会重新批准已撤销的账号。此操作不改密码；首次迁移会信任当前映射数据，详见[账号授权说明](helper-account-authorization.md)。如果数据库尚未初始化或读取失败，应先启动后台完成数据库初始化，再重试脚本。
 
-自定义 DSM 认证端口、Helper 签名密钥等特权设置由 root 编辑 `/etc/dsmpass/helper.json` 后重启；认证地址仅接受回环 IP 的 DSM API。后台可配置面向浏览器的访问地址，但不能用业务数据库改变 root Helper 的连接目标。
+Helper 默认从 DSM 的 root 所有配置 `/usr/syno/etc/www/DSM.json` 自动读取认证协议和端口，每次认证重新读取；在 DSM 登录门户修改端口后无需编辑 Helper 文件或重启。已有默认 `https://127.0.0.1:5001/webapi/entry.cgi` 自动采用此模式，新的配置写为 `dsm_login_api: "auto"`。健康检查返回实际认证地址及端口读取错误。
+
+自动发现始终连接回环地址，不使用后台可写的访问地址、域名或环境变量。若 DSM 配置文件不存在、权限不安全或内容无效，会明确报错，不猜测端口。管理员已有的非默认回环 API 配置保留；确需覆盖时可以由 root 编辑 `/etc/dsmpass/helper.json`。Helper 签名密钥等特权设置仍只能由 root 修改。

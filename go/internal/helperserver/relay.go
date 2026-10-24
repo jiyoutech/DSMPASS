@@ -593,6 +593,11 @@ func replaceShadowLineIfCurrentMatches(path, username, replacementLine, expected
 }
 
 func dsmLogin(cfg config.HelperConfig, requestID, username, password string) (relayLoginResult, error) {
+	endpoint, err := config.ResolveDSMLoginAPI(cfg)
+	if err != nil {
+		return relayLoginResult{}, fmt.Errorf("DSM 登录端口读取失败，请检查 DSM 登录门户设置：%w", err)
+	}
+	cfg.DSMLoginAPI = endpoint
 	values := url.Values{}
 	values.Set("api", "SYNO.API.Auth")
 	values.Set("method", "login")
@@ -716,6 +721,12 @@ func headerNames(headers http.Header) []string {
 }
 
 func validateDSMDesktopSession(cfg config.HelperConfig, requestID string, result relayLoginResult, phase string) {
+	endpoint, err := config.ResolveDSMLoginAPI(cfg)
+	if err != nil {
+		diaglog.Append(cfg.DataDir, requestID, "helper.dsm_sessiondata.validate.skip", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "phase": phase})
+		return
+	}
+	cfg.DSMLoginAPI = endpoint
 	parsed, err := url.Parse(cfg.DSMLoginAPI)
 	if err != nil {
 		diaglog.Append(cfg.DataDir, requestID, "helper.dsm_sessiondata.validate.skip", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "dsm_login_api": cfg.DSMLoginAPI, "phase": phase})
