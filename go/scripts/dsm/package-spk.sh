@@ -655,8 +655,17 @@ EOF
   cat > "$work_dir/scripts/preuninst" <<'EOF'
 #!/bin/sh
 set -eu
+cleanup_action=uninstall-preserve
+for value in "${delete_data:-}" "${DSMPASS_DELETE_DATA:-}" "${remove_data:-}"; do
+  case "$value" in true|TRUE|yes|YES|1) cleanup_action=uninstall-purge ;; esac
+done
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
-  /usr/local/libexec/dsmpass/helper-control.sh stop
+  # Run while the package account and sudo policy still exist. If recovery is
+  # incomplete the controller restarts Helper and retains all recovery data.
+  if ! /usr/local/libexec/dsmpass/helper-control.sh "$cleanup_action"; then
+    echo "Uninstall cancelled: Helper recovery or cleanup failed. Recovery files were retained; check the protected Helper log before retrying." >&2
+    exit 1
+  fi
 fi
 exit 0
 EOF
@@ -666,7 +675,6 @@ EOF
 PACKAGE_NAME="$PACKAGE_NAME"
 PKGVAR=\${SYNOPKG_PKGVAR:-"/var/packages/\$PACKAGE_NAME/var"}
 APPDATA_DIR="/volume1/@appdata/\$PACKAGE_NAME"
-SUDOERS_FILE="/etc/sudoers.d/\$PACKAGE_NAME-helper"
 
 delete_data_selected=false
 for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"; do
@@ -676,11 +684,6 @@ for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"
       ;;
   esac
 done
-
-rm -f "\$SUDOERS_FILE" 2>/dev/null || true
-if [ -e "\$SUDOERS_FILE" ]; then
-  echo "WARNING: failed to remove \$SUDOERS_FILE; remove it manually with: sudo rm -f \$SUDOERS_FILE" >&2
-fi
 
 if [ "\$delete_data_selected" = "true" ]; then
   rm -rf "\$PKGVAR" "\$APPDATA_DIR"
@@ -694,7 +697,7 @@ EOF
   "step_title": "Remove DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "Choose whether to keep configuration, synced identities, logs, and TLS files. After uninstall, SSH into DSM and confirm /etc/sudoers.d/DSMPASS-helper has been removed.",
+    "desc": "Keep or delete package data and protected Helper settings, account grants and logs. Helper programs and sudo rules are removed automatically. Uninstall waits for password recovery; unresolved recovery is retained and reported.",
     "subitems": [{
       "key": "keep_data",
       "desc": "Keep package data",

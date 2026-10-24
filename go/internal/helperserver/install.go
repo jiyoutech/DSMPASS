@@ -172,5 +172,5 @@ func bootstrapHelperSecret(data string) (string, error) {
 func helperSudoersRule() string {
 	controller := config.HelperControlPath
 	return "Defaults!" + controller + " env_reset, !setenv, secure_path=\"/usr/sbin:/usr/bin:/sbin:/bin\"\n" +
-		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status\n"
+		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status, " + controller + " uninstall-preserve, " + controller + " uninstall-purge\n"
 }
