@@ -48,13 +48,22 @@ func PreparePrivilegedRuntime(cfg config.HelperConfig) error {
 }
 
 func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
-	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" {
+	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" && action != "uninstall-preserve" && action != "uninstall-purge" {
 		return errors.New("unsupported Helper control action")
 	}
 	if err := PreparePrivilegedRuntime(cfg); err != nil {
 		return err
 	}
 	return withFileLock(filepath.Join(config.HelperRunDir, "control.lock"), func() error {
+		// Recheck after waiting: a preceding uninstall may have removed the
+		// protected files while this process was queued on the control lock.
+		if err := PreparePrivilegedRuntime(cfg); err != nil {
+			return err
+		}
+		if action == "uninstall-preserve" || action == "uninstall-purge" {
+			return uninstallPrivilegedHelper(cfg, action == "uninstall-purge")
+
+		}
 		if action == "upgrade" {
 			return upgradePrivilegedHelper(cfg)
 		}
@@ -182,7 +191,13 @@ func stopPrivilegedHelper(cfg config.HelperConfig) error {
 		}
 		return assertNoPendingJournals(cfg.JournalDir)
 	}); err != nil {
-		return fmt.Errorf("Helper stopped but password recovery is incomplete: %w", err)
+		// An aborted stop/uninstall must not leave every other account offline.
+		// The instance lock has been released; restart the protected recovery loop.
+		restartErr := startPrivilegedHelper(cfg)
+		if restartErr != nil {
+			return errors.Join(fmt.Errorf("password recovery incomplete; uninstall/update was cancelled: %w", err), fmt.Errorf("restart Helper recovery service: %w", restartErr))
+		}
+		return fmt.Errorf("password recovery incomplete; Helper was restarted to continue recovery, uninstall/update was cancelled: %w", err)
 	}
 	err = os.Remove(filepath.Join(config.HelperRunDir, "helper.pid"))
 	if os.IsNotExist(err) {

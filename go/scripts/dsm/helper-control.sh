@@ -6,8 +6,8 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 case "${1:-}" in
-  start|stop|restart|status|upgrade) ;;
-  *) echo "usage: $0 {start|stop|restart|status|upgrade}" >&2; exit 1 ;;
+  start|stop|restart|status|upgrade|uninstall-preserve|uninstall-purge) ;;
+  *) echo "usage: $0 {start|stop|restart|status|upgrade|uninstall-preserve|uninstall-purge}" >&2; exit 1 ;;
 esac
 [ "$#" -eq 1 ] || exit 1
 
