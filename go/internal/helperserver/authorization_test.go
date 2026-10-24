@@ -13,7 +13,7 @@ import (
 func policyTestConfig(t *testing.T) config.HelperConfig {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := config.HelperConfig{AccountPolicyPath: filepath.Join(dir, "policy.json"), PasswdPath: filepath.Join(dir, "passwd"), GroupPath: filepath.Join(dir, "group"), LockDir: filepath.Join(dir, "locks"), ShadowLockPath: filepath.Join(dir, "shadow.lock")}
+	cfg := config.HelperConfig{AccountPolicyPath: filepath.Join(dir, "policy.json"), PasswdPath: filepath.Join(dir, "passwd"), GroupPath: filepath.Join(dir, "group"), JournalDir: filepath.Join(dir, "journal"), LockDir: filepath.Join(dir, "locks"), ShadowLockPath: filepath.Join(dir, "shadow.lock")}
 	writeFile(t, cfg.PasswdPath, "root:x:0:0:root:/root:/bin/sh\nalice:x:1026:100:Alice:/home/alice:/bin/sh\nbob:x:1027:100:Bob:/home/bob:/bin/sh\noperator:x:1028:100:Operator:/home/operator:/bin/sh\nservice:x:500:100:Service:/:/bin/false\n")
 	writeFile(t, cfg.GroupPath, "root:x:0:root\nusers:x:100:alice,bob\nadministrators:x:101:operator\nengineering:x:65536:alice\nfinance:x:65537:bob\n")
 	return cfg
