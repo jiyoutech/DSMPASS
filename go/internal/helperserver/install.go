@@ -134,6 +134,15 @@ func installProtectedHelperFiles(settings config.RootHelperSettings, binary, con
 }
 
 func assertNoPendingJournals(dir string) error {
+	indexes, err := os.ReadDir(filepath.Join(dir, "active-index"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range indexes {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			return errors.New("account recovery index is pending; resolve password recovery before changing Helper")
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
