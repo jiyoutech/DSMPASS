@@ -817,6 +817,15 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
               </div>
             </Header>
             <Content className="app-content">
+              {helperReachable && (helperDetails?.shadow_login_supported === false || helperDetails?.dsm_endpoint_error) && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  className="runtime-alert"
+                  message="DSM 登录环境检查未通过"
+                  description={`临时登录暂不可用，请检查 DSM 账户锁或登录端口配置。${[helperDetails?.shadow_lock_error, helperDetails?.dsm_endpoint_error].filter(Boolean).join("；")}`}
+                />
+              )}
               {!helperStatus.loading && !helperPermissionOK && (
                 <Alert
                   type="error"
