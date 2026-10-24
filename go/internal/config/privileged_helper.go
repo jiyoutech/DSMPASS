@@ -67,7 +67,15 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 	if len(settings.HMACSecret) < 32 || strings.ContainsAny(settings.HMACSecret, "\x00\r\n") {
 		return HelperConfig{}, errors.New("trusted Helper configuration has an invalid signing secret")
 	}
-	endpoint, err := url.Parse(settings.DSMLoginAPI)
+	loginAPI := settings.DSMLoginAPI
+	nativeConfig := ""
+	if loginAPI == "auto" || loginAPI == "https://127.0.0.1:5001/webapi/entry.cgi" {
+		// Upgrade the old default to native discovery. Explicit root overrides
+		// retain their meaning; mutable backend settings cannot redirect root.
+		nativeConfig = "/usr/syno/etc/www/DSM.json"
+		loginAPI = "https://127.0.0.1:5001/webapi/entry.cgi"
+	}
+	endpoint, err := url.Parse(loginAPI)
 	if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "/webapi/entry.cgi" {
 		return HelperConfig{}, errors.New("trusted Helper DSM endpoint must be a loopback DSM Auth API URL")
 	}
@@ -80,7 +88,7 @@ func parsePrivilegedHelper(data []byte) (HelperConfig, error) {
 		AccountPolicyPath: HelperDataDir + "/account-policy.json", PasswdPath: "/etc/passwd", GroupPath: "/etc/group",
 		DatabaseURL: "sqlite://" + settings.DatabasePath, DataDir: HelperDataDir,
 		SocketPath: HelperSocketPath, HMACSecret: settings.HMACSecret, TimestampSkewSeconds: 60,
-		DSMLoginAPI: settings.DSMLoginAPI, DSMSession: "webui", DSMTLSSkipVerify: true,
+		DSMLoginAPI: loginAPI, DSMNativeConfigPath: nativeConfig, DSMSession: "webui", DSMTLSSkipVerify: true,
 		DSMTimeoutSeconds: 10, DSMBrowserLoginTTLSeconds: 30,
 		ShadowPath: "/etc/shadow", ShadowLockPath: HelperRunDir + "/locks/shadow.lock",
 		OpenSSLPath: "/usr/bin/openssl", LockDir: HelperRunDir + "/locks",

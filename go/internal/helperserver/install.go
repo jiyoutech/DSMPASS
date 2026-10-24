@@ -34,7 +34,7 @@ func InstallPrivilegedHelper() error {
 	}
 	settings := config.RootHelperSettings{PackageUID: uid, PackageGID: gid,
 		DatabasePath: installedPackageVar + "/data/dsmpass.db",
-		DSMLoginAPI:  "https://127.0.0.1:5001/webapi/entry.cgi"}
+		DSMLoginAPI:  "auto"}
 	if _, err := os.Lstat(config.HelperConfigPath); err == nil {
 		// Preserve root-approved settings on upgrades, never reload package env.
 		if err := securefs.CheckRootPath(config.HelperConfigPath); err != nil {

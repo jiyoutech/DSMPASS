@@ -73,6 +73,7 @@ type HelperConfig struct {
 	HMACSecret                string
 	TimestampSkewSeconds      int64
 	DSMLoginAPI               string
+	DSMNativeConfigPath       string
 	DSMSession                string
 	DSMFormat                 string
 	DSMOTPCode                string
