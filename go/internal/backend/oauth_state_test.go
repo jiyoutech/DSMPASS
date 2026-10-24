@@ -180,6 +180,38 @@ func TestOAuthLaunchAndCallbackEnforceBrowserBinding(t *testing.T) {
 	if attack.Code != http.StatusBadRequest || !strings.Contains(attack.Body.String(), "浏览器") {
 		t.Fatalf("unbound callback advanced: %d %s", attack.Code, attack.Body.String())
 	}
+	if !strings.Contains(attack.Body.String(), `"restart_url":"/idp/source/launch"`) {
+		t.Fatal("API client did not receive safe restart URL")
+	}
+	page := httptest.NewRecorder()
+	pageRequest := callbackRequest(state)
+	pageRequest.URL.RawQuery += "&code=attacker-code&redirect=https://untrusted.example/"
+	pageRequest.Header.Set("Accept", "text/html")
+	router.ServeHTTP(page, pageRequest)
+	if page.Code != http.StatusBadRequest || !strings.Contains(page.Header().Get("Content-Type"), "text/html") || !strings.Contains(page.Body.String(), `href="/idp/source/launch"`) {
+		t.Fatal("browser did not receive restart page")
+	}
+	for _, secret := range []string{state, cookie.Value, "attacker-code", "untrusted.example"} {
+		if strings.Contains(page.Body.String(), secret) {
+			t.Fatal("old callback data leaked into restart page")
+		}
+	}
+	if page.Header().Get("Cache-Control") != "no-store" || page.Header().Get("Referrer-Policy") != "no-referrer" || page.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("restart page missing protections")
+	}
+	newLaunch := httptest.NewRecorder()
+	newRequest := httptest.NewRequest(http.MethodGet, "https://nas.example.com/idp/source/launch", nil)
+	newRequest.RemoteAddr = "192.168.1.20:12345"
+	router.ServeHTTP(newLaunch, newRequest)
+	newCookie := false
+	for _, c := range newLaunch.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "__Host-dsmpass_oauth_") && c.Name != cookie.Name && c.Value != cookie.Value {
+			newCookie = true
+		}
+	}
+	if !newCookie {
+		t.Fatal("restart did not create a fresh browser-bound flow")
+	}
 	valid := httptest.NewRecorder()
 	router.ServeHTTP(valid, callbackRequest(state, cookie))
 	// No code is supplied: advancing to code validation proves that the original

@@ -391,7 +391,26 @@ func (s *Server) failRelayCallback(c *gin.Context, source db.IdentitySource, req
 		IPAddress:         requestClientIP(c),
 		DurationMs:        time.Since(start).Milliseconds(),
 	})
+	if failure.ErrorCode == "invalid_state" || failure.ErrorCode == "missing_state" {
+		// Restart with a fresh browser-bound flow. Never forward the old code,
+		// state, callback URL or identity into the new browser's authorization.
+		restartURL := "/idp/" + url.PathEscape(source.Slug) + "/launch"
+		if strings.Contains(c.GetHeader("Accept"), "text/html") {
+			c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+			c.Data(failure.Status, "text/html; charset=utf-8", []byte(renderOAuthRestartPage(restartURL)))
+		} else {
+			c.JSON(failure.Status, gin.H{"detail": failure.Detail, "restart_url": restartURL})
+		}
+		return
+	}
 	c.JSON(failure.Status, gin.H{"detail": failure.Detail})
+}
+
+func renderOAuthRestartPage(restartURL string) string {
+	return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>重新开始登录</title>
+<style>body{font-family:system-ui,sans-serif;background:#f6f8fb;color:#172033;margin:0;min-height:100vh;display:grid;place-items:center}main{max-width:480px;margin:20px;padding:28px;background:white;border:1px solid #dce3ee;border-radius:10px}h1{font-size:22px}p{line-height:1.7;color:#526070}a{display:inline-block;padding:12px 18px;border-radius:6px;background:#1d6fdc;color:white;text-decoration:none}</style></head>
+<body><main><h1>请在当前浏览器重新登录</h1><p>登录已过期，或授权过程中切换了浏览器。点击下方按钮，重新验证你自己的账号。</p><p>如果需要从飞书、企业微信或钉钉内置浏览器切换到系统浏览器，请先在系统浏览器打开登录入口，再完成授权。请勿复制授权完成后的回调地址。</p><a href="` + html.EscapeString(restartURL) + `">在当前浏览器重新登录</a></main></body></html>`
 }
 
 func firstProfileString(raw map[string]any, keys ...string) string {
