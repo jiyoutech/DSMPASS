@@ -50,7 +50,7 @@ DSMPASS_VERSION=0.8.7 make package-dsm
 /run/dsmpass/helper.sock
 ```
 
-Helper 不再读取调用者的环境变量来选择程序路径、数据库、DSM 端点或恢复资料目录。普通套件用户只能调用受限制的启动、停止、重启和状态操作，不能自行替换 root 程序。
+Helper 不再读取调用者的环境变量来选择程序路径、数据库、DSM 端点或恢复资料目录。普通套件用户只能调用固定控制操作；更新 root 程序必须通过 [发行签名校验](helper-upgrades.md)，不能用任意套件文件替换。
 
 后端以 `DSMPASS` 普通账号运行。不要以 root 执行位于套件用户可写目录中的 `start-dsmpass.sh`，也不要恢复旧版 `SETENV` sudo 规则。独立 tar 部署尚未提供与此边界等价的自动安装流程；仅解压 tar 包或设置环境变量不能完成受保护 Helper 的初始化。
 

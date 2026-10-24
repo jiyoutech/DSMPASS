@@ -23,6 +23,8 @@ DSMPASS_VERSION=<version> make package-spk
 
 测试入口和覆盖范围见 [`testing.md`](testing.md)。
 
+正式发行须配置 Helper 签名私钥；自动升级边界、首次迁移及源码构建方法见 [Helper 自动升级](helper-upgrades.md)。私钥不进入提交或 SPK。
+
 确认产物存在：
 
 ```text

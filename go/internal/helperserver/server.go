@@ -179,6 +179,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"dsm_login_api":              endpoint,
 			"dsm_endpoint_error":         errorString(endpointErr),
 			"version":                    buildinfo.Version,
+			"revision":                   buildinfo.Revision,
+			"signed_helper_upgrade":      true,
 			"socket_path":                cfg.SocketPath,
 			"euid":                       os.Geteuid(),
 			"egid":                       os.Getegid(),

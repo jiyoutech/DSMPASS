@@ -48,13 +48,16 @@ func PreparePrivilegedRuntime(cfg config.HelperConfig) error {
 }
 
 func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
-	if action != "start" && action != "stop" && action != "restart" && action != "status" {
+	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" {
 		return errors.New("unsupported Helper control action")
 	}
 	if err := PreparePrivilegedRuntime(cfg); err != nil {
 		return err
 	}
 	return withFileLock(filepath.Join(config.HelperRunDir, "control.lock"), func() error {
+		if action == "upgrade" {
+			return upgradePrivilegedHelper(cfg)
+		}
 		if action == "stop" || action == "restart" {
 			if err := stopPrivilegedHelper(cfg); err != nil {
 				return err
@@ -77,6 +80,10 @@ func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
 }
 
 func startPrivilegedHelper(cfg config.HelperConfig) error {
+	return startPrivilegedHelperVersion(cfg, buildinfo.Version, buildinfo.Revision)
+}
+
+func startPrivilegedHelperVersion(cfg config.HelperConfig, version, revision string) error {
 	if _, running, err := installedHelperProcess(); err != nil || running {
 		return err
 	}
@@ -128,7 +135,7 @@ func startPrivilegedHelper(cfg config.HelperConfig) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := client.HealthCheck(context.Background())
-		if err == nil && response["version"] == buildinfo.Version && response["privileged_boundary"] == true {
+		if err == nil && response["version"] == version && response["revision"] == revision && response["privileged_boundary"] == true {
 			return nil
 		}
 		if _, running, err := installedHelperProcess(); err != nil || !running {
