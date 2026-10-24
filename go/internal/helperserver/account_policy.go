@@ -16,10 +16,12 @@ import (
 )
 
 // This authority is independent of the package database and HMAC secret.
-// Existing DSM accounts can only be enrolled by a root administrator.
+// Existing DSM accounts are enrolled by the root install migration or an
+// explicit root action; package RPCs cannot extend this authority.
 type accountPolicy struct {
-	Users  map[string]int `json:"users"`
-	Groups map[string]int `json:"groups"`
+	Users                   map[string]int `json:"users"`
+	Groups                  map[string]int `json:"groups"`
+	LegacyMigrationComplete bool           `json:"legacy_migration_complete,omitempty"`
 }
 
 type systemAccount struct {
@@ -238,6 +240,10 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		}
 		entries[name] = a.id
 	}
+	return saveAccountPolicy(cfg, p)
+}
+
+func saveAccountPolicy(cfg config.HelperConfig, p accountPolicy) error {
 	data, err := json.Marshal(p)
 	if err != nil {
 		return err
