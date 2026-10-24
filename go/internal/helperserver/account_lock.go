@@ -13,6 +13,16 @@ import (
 
 var errAccountBusy = errors.New("account operation is busy; retry after the current operation finishes")
 
+// Native DSM mutations can take up to 20 seconds. Login/recovery waits must
+// outlast one such operation, while process-control locks remain short.
+const loginLockWait = 25 * time.Second
+
+func withLoginAccountLock(path string, fn func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), loginLockWait)
+	defer cancel()
+	return withFileLockContext(ctx, path, fn)
+}
+
 // Lock files have a stable inode: never unlink them, including during recovery.
 // Every writer takes the account lock before the project-wide writer lock.
 func withFileLock(path string, fn func() error) error {
@@ -57,12 +67,14 @@ func withFileLockContext(ctx context.Context, path string, fn func() error) erro
 }
 
 func withShadowWrite(cfg config.HelperConfig, fn func() error) error {
-	return withFileLock(cfg.ShadowLockPath, func() error {
+	ctx, cancel := context.WithTimeout(context.Background(), loginLockWait)
+	defer cancel()
+	return withFileLockContext(ctx, cfg.ShadowLockPath, func() error {
 		path, err := shadowSystemLockPath(cfg)
 		if err != nil {
 			return err
 		}
-		return withFileLock(path, fn)
+		return withFileLockContext(ctx, path, fn)
 	})
 }
 

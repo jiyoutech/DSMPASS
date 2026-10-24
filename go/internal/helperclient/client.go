@@ -286,7 +286,26 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		return nil, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(c.Timeout))
+	// Include account/global lock waits, hashing and (for relay) DSM HTTP and
+	// recovery. Health checks and unrelated actions retain their short timeout.
+	timeout := c.Timeout
+	switch action {
+	case "scoped_prepare_browser_login", "complete_browser_login":
+		if timeout < 75*time.Second {
+			timeout = 75 * time.Second
+		}
+	case "scoped_relay_login":
+		if timeout < 120*time.Second {
+			timeout = 120 * time.Second
+		}
+	}
+	deadline := time.Now().Add(timeout)
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
 
 	if err := json.NewEncoder(conn).Encode(payload); err != nil {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.write.error", c.DiagnosticsEnabled, diaglog.Event{"action": action, "error": err.Error(), "payload": payload})
@@ -295,6 +314,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	diaglog.Append(c.DataDir, requestID, "backend.helper.socket.write.success", c.DiagnosticsEnabled, diaglog.Event{"action": action, "payload": payload})
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.read.error", c.DiagnosticsEnabled, diaglog.Event{"action": action, "error": err.Error(), "duration_ms": time.Since(start).Milliseconds()})
 		return nil, err
 	}
