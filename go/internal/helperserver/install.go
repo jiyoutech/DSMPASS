@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -87,7 +88,19 @@ func InstallPrivilegedHelper() error {
 		if err := assertNoPendingJournals(config.HelperDataDir + "/journal"); err != nil {
 			return err
 		}
-		return installProtectedHelperFiles(settings, binary, controller)
+		if err := installProtectedHelperFiles(settings, binary, controller); err != nil {
+			return err
+		}
+		cfg, err := config.LoadPrivilegedHelper()
+		if err != nil {
+			return err
+		}
+		result, err := migrateInstalledAccounts(cfg)
+		if err != nil {
+			return fmt.Errorf("automatic account enrollment failed; start the backend to initialize its database and retry setup: %w", err)
+		}
+		log.Printf("account enrollment migration: users=%d groups=%d skipped=%d already_complete=%t", result.Users, result.Groups, result.Skipped, result.AlreadyComplete)
+		return nil
 	})
 }
 
