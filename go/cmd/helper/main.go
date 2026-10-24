@@ -26,6 +26,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if len(os.Args) == 2 && os.Args[1] == "finalize-upgrade" {
+		if err := helperserver.FinalizePrivilegedUpgrade(cfg); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) == 3 && (os.Args[1] == "authorize-user" || os.Args[1] == "revoke-user" || os.Args[1] == "authorize-group" || os.Args[1] == "revoke-group") {
 		if err := helperserver.ManageAccountPolicy(cfg, os.Args[1], os.Args[2]); err != nil {
 			log.Fatal(err)

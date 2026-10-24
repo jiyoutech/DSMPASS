@@ -11,6 +11,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/diaglog"
 	"github.com/dsmpass/dsmpass/go/internal/signing"
@@ -258,6 +259,15 @@ func (c UnixSocketClient) RemoveGroupMember(ctx context.Context, requestID, grou
 func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map[string]any, error) {
 	requestID, _ := payload["request_id"].(string)
 	action, _ := payload["action"].(string)
+	if action != "health_check" && buildinfo.Version != "dev" {
+		health, err := c.HealthCheck(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("Helper 不可连接，请在管理页面检查安装或升级状态: %w", err)
+		}
+		if err := CheckCompatibility(health, buildinfo.Version, buildinfo.Revision); err != nil {
+			return nil, err
+		}
+	}
 	diaglog.Append(c.DataDir, requestID, "backend.helper.socket.send.start", c.DiagnosticsEnabled, diaglog.Event{
 		"action":      action,
 		"socket_path": c.SocketPath,
