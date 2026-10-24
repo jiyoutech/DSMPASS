@@ -176,6 +176,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"shadow_login_supported":     shadowLockErr == nil,
 			"shadow_lock_error":          errorString(shadowLockErr),
 			"version":                    buildinfo.Version,
+			"revision":                   buildinfo.Revision,
+			"signed_helper_upgrade":      true,
 			"socket_path":                cfg.SocketPath,
 			"euid":                       os.Geteuid(),
 			"egid":                       os.Getegid(),

@@ -76,12 +76,16 @@ function sleep(ms: number) {
 function helperStatusOK(status: HelperStatus | null | undefined) {
   const details = status?.details;
   return status?.reachable === true &&
+    status.compatible === true &&
     details?.euid === 0 &&
     details.synouser_status?.executable === true &&
     details.synogroup_status?.executable === true;
 }
 
 function helperStatusProblem(status: HelperStatus) {
+  if (status.error) {
+    return `检查未通过：${status.error}`;
+  }
   if (!status.reachable) {
     return `检查未通过：${status.error || "Helper 不可连接"}`;
   }
@@ -818,18 +822,18 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                   type="error"
                   showIcon
                   className="runtime-alert"
-                  message="Helper 无法执行 DSM 用户和群组命令"
+                  message="Helper 尚未就绪，登录和同步可能不可用"
                   description={
                     <div className="runtime-alert-detail">
                       <div>
-                        {helperReachable
+                        {helperStatus.data?.error || (helperReachable
                           ? `当前 EUID: ${helperDetails?.euid ?? "-"}，synouser: ${helperDetails?.synouser_status?.error ?? "ok"}，synogroup: ${helperDetails?.synogroup_status?.error ?? "ok"}`
-                          : helperStatus.data?.error ?? helperStatus.error ?? "Helper 不可连接"}
+                          : helperStatus.error ?? "Helper 不可连接")}
                       </div>
                       <div>
-                        Helper 需要 root 权限调用 DSM 的用户和群组命令。请用管理员账号 SSH 登录 NAS，切换到 root 后安装 Helper sudo 规则；完成后点击下方按钮重启并自动检查。
+                        请先点击“重启并检查 Helper”。完成首次管理员初始化后，带有效发行签名的套件会自动更新 Helper。首次从旧机制迁移，或自行编译的未签名套件，需要管理员执行下面的安装命令。
                       </div>
-                      <pre><code>ssh 管理员账号@NAS_IP{"\n"}sudo -i{"\n"}/var/packages/DSMPASS/target/setup-helper-sudo.sh{"\n"}# 回到本页面点击「重启并检查 Helper」后，再检查 socket 是否生成{"\n"}ls -l /var/packages/DSMPASS/var/run/helper.sock</code></pre>
+                      <pre><code>ssh 管理员账号@NAS_IP{"\n"}sudo -i{"\n"}/var/packages/DSMPASS/target/setup-helper-sudo.sh{"\n"}# 回到本页面点击「重启并检查 Helper」后，再检查 socket 是否生成{"\n"}ls -l /run/dsmpass/helper.sock</code></pre>
                       <div>
                         正常结果应显示 `helper.sock`，并且权限列以 `s` 开头，例如 `srw-rw----`；如果显示 `No such file or directory`，说明 Helper 还没有成功启动。
                       </div>

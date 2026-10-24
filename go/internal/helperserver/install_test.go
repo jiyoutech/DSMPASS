@@ -31,7 +31,7 @@ func TestHelperSudoRuleRestrictsCommandsAndEnvironment(t *testing.T) {
 	if !strings.Contains(rule, "NOSETENV:") || !strings.Contains(rule, "!setenv") {
 		t.Fatal("sudo environment restrictions missing")
 	}
-	for _, action := range []string{"start", "stop", "restart", "status"} {
+	for _, action := range []string{"start", "stop", "restart", "status", "upgrade"} {
 		if !strings.Contains(rule, config.HelperControlPath+" "+action) {
 			t.Fatal("required control action missing")
 		}

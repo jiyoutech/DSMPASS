@@ -19,3 +19,4 @@ go/dist/
 
 coverage/
 tmp/
+.local/release-signing/

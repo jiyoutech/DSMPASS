@@ -175,6 +175,7 @@ export interface HelperStatus {
   mode: string;
   socket_path: string;
   reachable: boolean;
+  compatible: boolean;
   error: string | null;
   details: HelperStatusDetails;
 }
