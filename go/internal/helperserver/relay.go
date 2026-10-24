@@ -89,7 +89,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 		"journal_dir":      cfg.JournalDir,
 	})
 	var result relayLoginResult
-	err := withFileLock(lockPath(cfg.LockDir, username), func() error {
+	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
 		if err := requireManagedUser(cfg, username); err != nil {
 			return err
 		}
@@ -245,7 +245,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 		"ttl_seconds":  ttlSeconds,
 	})
 	var result browserLoginResult
-	err := withFileLock(lockPath(cfg.LockDir, username), func() error {
+	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
 		if err := requireManagedUser(cfg, username); err != nil {
 			return err
 		}
@@ -402,7 +402,7 @@ func restorePendingJournal(cfg config.HelperConfig, requestID, reason string) er
 	if err != nil {
 		return err
 	}
-	return withFileLock(lockPath(cfg.LockDir, j.DSMUsername), func() error {
+	return withLoginAccountLock(lockPath(cfg.LockDir, j.DSMUsername), func() error {
 		j, err := loadJournal(cfg, requestID)
 		if err != nil {
 			return err

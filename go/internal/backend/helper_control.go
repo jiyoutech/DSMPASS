@@ -37,7 +37,7 @@ func (s *Server) restartHelperProcess(ctx context.Context) error {
 		return fmt.Errorf("helper-control.sh not found; reinstall the latest SPK or restart Helper over SSH")
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, script, "restart")
 	output, err := cmd.CombinedOutput()
