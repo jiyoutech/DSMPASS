@@ -54,12 +54,18 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 }
 
 func queryAccountAsPackage(cfg config.HelperConfig, request db.HelperAuthorizationQuery) (bool, error) {
+	result, err := queryHelperAsPackage(cfg, request)
+	return result.Allowed, err
+}
+
+func queryHelperAsPackage(cfg config.HelperConfig, request db.HelperAuthorizationQuery) (db.HelperAuthorizationResult, error) {
+	var result db.HelperAuthorizationResult
 	if cfg.PackageUID <= 0 || uint64(cfg.PackageUID) >= 1<<32-1 || cfg.PackageGID <= 0 || uint64(cfg.PackageGID) >= 1<<32-1 {
-		return false, errors.New("unprivileged query identity is unavailable")
+		return result, errors.New("unprivileged query identity is unavailable")
 	}
 	data, err := json.Marshal(request)
 	if err != nil {
-		return false, err
+		return result, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -69,27 +75,36 @@ func queryAccountAsPackage(cfg config.HelperConfig, request db.HelperAuthorizati
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(cfg.PackageUID), Gid: uint32(cfg.PackageGID), Groups: []uint32{}}}
 	cmd.Stdin = bytes.NewReader(data)
 	var output limitedAuthorizationOutput
+	if request.Action == "enrollment_snapshot" {
+		output.limit = 1 << 20
+	}
 	cmd.Stdout, cmd.Stderr = &output, io.Discard
 	if err := cmd.Run(); err != nil {
-		return false, errors.New("unprivileged account query failed")
+		return result, errors.New("unprivileged account query failed")
 	}
-	var result db.HelperAuthorizationResult
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
-		return false, errors.New("invalid account query response")
+		return result, errors.New("invalid account query response")
 	}
 	if result.Error == "source_conflict" {
-		return false, db.ErrSyncedPasswordSourceConflict
+		return result, db.ErrSyncedPasswordSourceConflict
 	}
 	if result.Error != "" {
-		return false, errors.New("account query could not verify authorization")
+		return result, errors.New("account query could not verify authorization")
 	}
-	return result.Allowed, nil
+	return result, nil
 }
 
-type limitedAuthorizationOutput struct{ bytes.Buffer }
+type limitedAuthorizationOutput struct {
+	bytes.Buffer
+	limit int
+}
 
 func (b *limitedAuthorizationOutput) Write(data []byte) (int, error) {
-	if b.Len()+len(data) > 8192 {
+	limit := b.limit
+	if limit == 0 {
+		limit = 8192
+	}
+	if b.Len()+len(data) > limit {
 		return 0, errors.New("account query response exceeds limit")
 	}
 	return b.Buffer.Write(data)

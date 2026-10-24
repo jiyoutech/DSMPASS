@@ -17,8 +17,9 @@ type HelperAuthorizationQuery struct {
 }
 
 type HelperAuthorizationResult struct {
-	Allowed bool   `json:"allowed"`
-	Error   string `json:"error,omitempty"`
+	Allowed    bool                      `json:"allowed"`
+	Error      string                    `json:"error,omitempty"`
+	Enrollment *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {

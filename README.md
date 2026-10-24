@@ -143,6 +143,8 @@ Feishu / WeCom / DingTalk OAuth
 
 DSM Pass 后端默认不以 root 权限运行。创建 DSM 用户、部门组、成员关系和登录中继等高权限操作由 Helper 执行。安装完成后，需要在 DSM 中以 root 运行一次套件自带的 sudo 规则初始化脚本。
 
+初始化会一次性自动批准已有有效同步映射的普通账号和自定义群组，无需逐个授权，不修改原密码。管理员和系统账号仍受保护；后续升级不会恢复已撤销的授权。范围与信任前提见[账号授权说明](docs/helper-account-authorization.md)。
+
 1. 在 DSM 控制面板中新增用户定义脚本任务。
 
    ![新增用户定义脚本](media/17795482410730/ae04d3df18e2dd4f822bc40b6e2a4230.png)
