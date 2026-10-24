@@ -655,6 +655,9 @@ EOF
   cat > "$work_dir/scripts/preuninst" <<'EOF'
 #!/bin/sh
 set -eu
+# DSM also invokes the old uninstall hooks during UPGRADE. Keep the protected
+# updater and its policy until the new signed payload has been installed.
+[ "${SYNOPKG_PKG_STATUS:-}" = "UNINSTALL" ] || exit 0
 cleanup_action=uninstall-preserve
 for value in "${delete_data:-}" "${DSMPASS_DELETE_DATA:-}" "${remove_data:-}"; do
   case "$value" in true|TRUE|yes|YES|1) cleanup_action=uninstall-purge ;; esac
@@ -672,6 +675,7 @@ EOF
 
   cat > "$work_dir/scripts/postuninst" <<EOF
 #!/bin/sh
+[ "\${SYNOPKG_PKG_STATUS:-}" = "UNINSTALL" ] || exit 0
 PACKAGE_NAME="$PACKAGE_NAME"
 PKGVAR=\${SYNOPKG_PKGVAR:-"/var/packages/\$PACKAGE_NAME/var"}
 APPDATA_DIR="/volume1/@appdata/\$PACKAGE_NAME"

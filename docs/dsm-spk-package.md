@@ -151,6 +151,8 @@ sudo /var/packages/DSMPASS/scripts/start-stop-status restart
 
 选择保留数据时，同时保留 root 私有的 `/etc/dsmpass` 配置和 `/var/lib/dsmpass` 授权、日志及恢复资料；选择删除数据时，控制器在确认没有未完成恢复后自动清理这两个固定目录。`/run/dsmpass` 中少量空的进程锁文件保留到重启，防止排队控制进程绕过同一把锁，不包含密码或可执行程序。
 
+DSM 升级也会调用旧包的 `preuninst` 和 `postuninst`。两个钩子仅在 `SYNOPKG_PKG_STATUS=UNINSTALL` 时清理；升级、安装或状态缺失时均不会删除受保护 Helper 和套件数据。
+
 升级和卸载前会停止 Helper 并完成待恢复密码。若恢复失败，操作取消并尝试重新启动 Helper，使恢复循环与其他账号服务继续运行，错误会明确提示处理恢复后重试。无法恢复的密码仍会阻止卸载，不会通过删除记录掩盖问题。路径权限异常、磁盘错误或重启失败仍需管理员检查日志；中途系统断电可能需要重新初始化受保护 Helper。
 
 卸载后建议 SSH 到 DSM 确认：
