@@ -210,4 +210,6 @@ srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 
 首次迁移前先让旧 Helper 完成密码恢复并停止它，再从可信 SPK 安装执行初始化脚本。每次升级 Helper 程序后，管理员需重新运行初始化脚本以更新受保护副本；套件用户不能自行替换 root 程序。安装器检查新版受保护目录中的实例锁和恢复日志，发现运行实例或未完成恢复时拒绝覆盖；这不能检测使用旧套件目录的进程和日志，首次迁移必须由管理员确认旧实例已停止且密码恢复完成。
 
-自定义 DSM 认证端口、Helper 签名密钥等特权设置由 root 编辑 `/etc/dsmpass/helper.json` 后重启；认证地址仅接受回环 IP 的 DSM API。后台可配置面向浏览器的访问地址，但不能用业务数据库改变 root Helper 的连接目标。
+Helper 默认从 DSM 的 root 所有配置 `/usr/syno/etc/www/DSM.json` 自动读取认证协议和端口，每次认证重新读取；在 DSM 登录门户修改端口后无需编辑 Helper 文件或重启。已有默认 `https://127.0.0.1:5001/webapi/entry.cgi` 自动采用此模式，新的配置写为 `dsm_login_api: "auto"`。健康检查返回实际认证地址及端口读取错误。
+
+自动发现始终连接回环地址，不使用后台可写的访问地址、域名或环境变量。若 DSM 配置文件不存在、权限不安全或内容无效，会明确报错，不猜测端口。管理员已有的非默认回环 API 配置保留；确需覆盖时可以由 root 编辑 `/etc/dsmpass/helper.json`。Helper 签名密钥等特权设置仍只能由 root 修改。
