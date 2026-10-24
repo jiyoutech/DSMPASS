@@ -10,7 +10,9 @@
 
 ## 发行签名
 
-发行私钥不放进 Git、SPK 或 NAS。构建机通过 `DSMPASS_HELPER_SIGNING_KEY_FILE` 读取权限为 `0600` 的 Base64 Ed25519 seed 文件；GitHub Release 工作流使用加密 Actions secret `DSMPASS_HELPER_SIGNING_KEY`。构建工具确认私钥对应源码内置公钥后，分别签名 amd64 和 arm64 载荷。缺少签名密钥时，正式 Release 工作流拒绝发布；普通本地源码构建仍然成功，输出未签名提示。
+发行私钥不放进 Git、SPK 或 NAS。构建机通过 `DSMPASS_HELPER_SIGNING_KEY_FILE` 读取权限为 `0600` 的 Base64 Ed25519 seed 文件，也支持环境变量 `DSMPASS_HELPER_SIGNING_KEY`。构建工具确认私钥对应源码内置公钥后，分别签名 amd64 和 arm64 载荷。普通源码构建在没有密钥时仍然成功，输出未签名提示。
+
+当前由维护者在本地签名并上传发行资产。GitHub Actions 尚未接入签名 secret；启用前需要更新 Release 工作流，显式传入加密 secret 并在其缺失时拒绝发布。不能把当前 CI 构建出的未签名包标为可自动升级的正式包。
 
 公钥轮换需要由原受信任密钥签名发布包含新公钥的 Helper，或由管理员明确重新初始化。丢失私钥会失去自动签名能力，应由维护者在本地之外保存安全备份。撤销已经签发的离线包没有在线撤销机制；构建时间仅阻止已经升级过的设备回退到较旧载荷。
 
