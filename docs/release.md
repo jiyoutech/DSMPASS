@@ -18,7 +18,7 @@
 
 ```bash
 make test
-DSMPASS_VERSION=<version> make package-spk
+DSMPASS_REQUIRE_SIGNED_RELEASE=1 DSMPASS_HELPER_SIGNING_KEY_FILE=/受保护路径/ed25519-seed DSMPASS_VERSION=<version> make package-spk
 ```
 
 测试入口和覆盖范围见 [`testing.md`](testing.md)。
