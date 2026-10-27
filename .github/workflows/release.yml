@@ -18,6 +18,12 @@ jobs:
         with:
           go-version: "1.26.4"
 
+      - name: Validate release signing key
+        env:
+          DSMPASS_HELPER_SIGNING_KEY: ${{ secrets.DSMPASS_HELPER_SIGNING_KEY }}
+        working-directory: go
+        run: go run ./cmd/sign-helper -check-key
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,6 +34,9 @@ jobs:
         working-directory: frontend
 
       - name: Build SPK
+        env:
+          DSMPASS_HELPER_SIGNING_KEY: ${{ secrets.DSMPASS_HELPER_SIGNING_KEY }}
+          DSMPASS_REQUIRE_SIGNED_RELEASE: "1"
         run: |
           version="${GITHUB_REF_NAME#v}"
           DSMPASS_VERSION="$version" DSMPASS_ALLOW_MULTIPLE_IDENTITY_SOURCES=0 make package-spk
@@ -36,6 +45,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             go/dist/dsm/DSMPASS-*.spk
             go/dist/dsm/SHA256SUMS

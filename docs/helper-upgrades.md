@@ -12,11 +12,9 @@
 
 发行私钥不放进 Git、SPK 或 NAS。构建机通过 `DSMPASS_HELPER_SIGNING_KEY_FILE` 读取权限为 `0600` 的 Base64 Ed25519 seed 文件，也支持环境变量 `DSMPASS_HELPER_SIGNING_KEY`。构建工具确认私钥对应源码内置公钥后，分别签名 amd64 和 arm64 载荷。普通源码构建在没有密钥时仍然成功，输出未签名提示。
 
-当前由维护者在本地签名并上传发行资产。构建脚本已独立拒绝缺少密钥的 GitHub Actions 标签构建；即使旧 Release 工作流遗漏传入密钥，也会在编译前失败，不会继续发布未签名包。传入的密钥必须是有效 Base64 Ed25519 seed，且对应内置发行公钥。
+Release 工作流读取仓库 Actions secret `DSMPASS_HELPER_SIGNING_KEY`。维护者须将与内置公钥对应的 Base64 Ed25519 seed 配置到该 secret；工作流修改本身不会创建 secret。工作流先检查密钥是否存在、格式有效且公钥匹配，再构建两个架构的签名包；任一步失败均不进入发布步骤。构建脚本还会独立拒绝 GitHub Actions 标签构建缺少签名密钥，即使旧工作流遗漏传入 secret 也不会产生未签名正式包。
 
-GitHub Actions 自动签名仍需维护者完成两项配置：将发行密钥写入仓库 Actions secret `DSMPASS_HELPER_SIGNING_KEY`，并在 Release 工作流的构建步骤显式传入该 secret。密钥上传需要明确授权，修改工作流需要 GitHub `workflow` 写入权限；仅合入构建防护不会自动配置这两项。在完成配置之前，标签发布会明确失败，维护者仍可使用本地签名产物。
-
-本地正式发行使用 `DSMPASS_REQUIRE_SIGNED_RELEASE=1 DSMPASS_HELPER_SIGNING_KEY_FILE=/受保护路径/ed25519-seed make package-spk`。缺少、无效或不匹配的密钥都会在编译前失败；普通分支 CI 和源码构建仍可不签名。接入自动签名后，应通过一次实际标签发行验证 Actions 到发布资产的完整链路，本地构建不能代替这项验证。
+本地正式发行使用 `DSMPASS_REQUIRE_SIGNED_RELEASE=1 DSMPASS_HELPER_SIGNING_KEY_FILE=/受保护路径/ed25519-seed make package-spk`。缺少、无效或不匹配的密钥都会在编译前失败；普通分支 CI 和源码构建仍可不签名。配置 secret 后，应通过一次实际标签发行验证 Actions 到发布资产的完整链路；本地签名构建不能代替这项验证。
 
 公钥轮换需要由原受信任密钥签名发布包含新公钥的 Helper，或由管理员明确重新初始化。丢失私钥会失去自动签名能力，应由维护者在本地之外保存安全备份。撤销已经签发的离线包没有在线撤销机制；构建时间仅阻止已经升级过的设备回退到较旧载荷。
 
