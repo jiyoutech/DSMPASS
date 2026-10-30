@@ -192,6 +192,8 @@ export interface HelperCommandStatus {
 
 export interface HelperStatusDetails {
   version?: string;
+  startup_ready?: boolean;
+  startup_error?: string;
   shadow_login_supported?: boolean;
   shadow_lock_error?: string;
   dsm_endpoint_error?: string;

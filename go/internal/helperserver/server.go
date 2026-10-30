@@ -26,10 +26,13 @@ import (
 )
 
 type Server struct {
-	cfg       config.HelperConfig
-	store     *db.Queries
-	replayMu  sync.Mutex
-	seenNonce map[string]int64
+	cfg        config.HelperConfig
+	store      *db.Queries
+	replayMu   sync.Mutex
+	seenNonce  map[string]int64
+	startupMu  sync.RWMutex
+	starting   bool
+	startupErr string
 }
 
 func New(cfg config.HelperConfig) *Server {
@@ -41,6 +44,10 @@ func NewWithStore(cfg config.HelperConfig, store *db.Queries) *Server {
 }
 
 func (s *Server) Serve() error {
+	return s.serve(context.Background())
+}
+
+func (s *Server) serve(ctx context.Context) error {
 	if s.cfg.SocketPath == "" {
 		return errors.New("helper socket path is empty")
 	}
@@ -48,10 +55,10 @@ func (s *Server) Serve() error {
 	if lockDir == "" {
 		lockDir = filepath.Dir(s.cfg.SocketPath)
 	}
-	return withFileLock(filepath.Join(lockDir, "helper.instance.lock"), s.serveWithLock)
+	return withFileLock(filepath.Join(lockDir, "helper.instance.lock"), func() error { return s.serveWithLock(ctx) })
 }
 
-func (s *Server) serveWithLock() error {
+func (s *Server) serveWithLock(ctx context.Context) error {
 	secret, generated, err := settings.EnsureHelperHMACSecret(context.Background(), s.store, s.cfg.HMACSecret)
 	if err != nil {
 		return err
@@ -64,9 +71,7 @@ func (s *Server) serveWithLock() error {
 		log.Printf("DSM Pass helper hmac secret generated and persisted")
 	}
 	startupCfg := settings.ApplyHelperRuntime(context.Background(), s.cfg, s.store)
-	if err := recoverPending(startupCfg); err != nil {
-		log.Printf("DSM Pass helper password recovery incomplete: %v", err)
-	}
+	s.setStartupState(true, nil)
 	if err := os.MkdirAll(filepath.Dir(startupCfg.SocketPath), 0o700); err != nil {
 		return err
 	}
@@ -81,9 +86,18 @@ func (s *Server) serveWithLock() error {
 	if err := setSocketPermissions(startupCfg.SocketPath); err != nil {
 		return err
 	}
-	recoveryCtx, stopRecovery := context.WithCancel(context.Background())
-	defer stopRecovery()
-	go runRecoveryLoop(recoveryCtx, startupCfg)
+	recoveryCtx, stopRecovery := context.WithCancel(ctx)
+	recoveryDone := make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		s.initializeRecovery(recoveryCtx, startupCfg)
+	}()
+	defer func() {
+		stopRecovery()
+		<-recoveryDone // Keep the instance lock until the recovery writer exits.
+	}()
+	stopClose := context.AfterFunc(recoveryCtx, func() { _ = listener.Close() })
+	defer stopClose()
 	log.Printf("DSM Pass helper listening on %s", startupCfg.SocketPath)
 	for {
 		conn, err := listener.Accept()
@@ -164,12 +178,18 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return errorResponse("REPLAY_REJECTED", err.Error())
 	}
 	diaglog.Append(cfg.DataDir, requestID, "helper.socket.signature.valid", cfg.LoginDiagnosticsEnabled, diaglog.Event{"action": action})
+	ready, startupError := s.startupStatus()
+	if action != "health_check" && !ready {
+		return errorResponse("HELPER_INITIALIZING", helperInitializingMessage+startupError)
+	}
 	switch action {
 	case "health_check":
 		_, shadowLockErr := shadowSystemLockPath(cfg)
 		endpoint, endpointErr := config.ResolveDSMLoginAPI(cfg)
 		return map[string]any{
 			"success":                    true,
+			"startup_ready":              ready,
+			"startup_error":              startupError,
 			"privileged_boundary":        cfg.Privileged,
 			"account_authorization":      true,
 			"synced_password_reset":      true,

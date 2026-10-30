@@ -191,6 +191,11 @@ func TestShadowOnlyBrowserTTLRestoresPassword(t *testing.T) {
 	for time.Now().Before(deadline) {
 		j, err := loadJournal(cfg, "ttl-restore")
 		if err == nil && j.Status == "restored" {
+			// Restored status is persisted before archival/index cleanup ends.
+			// Wait for the recovery writer before TempDir removes its files.
+			if err := withLoginAccountLock(lockPath(cfg.LockDir, "alice"), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
 			line, err := shadowLine(cfg.ShadowPath, "alice")
 			if err != nil || line != original {
 				t.Fatalf("TTL recovery did not restore the original password: %v", err)

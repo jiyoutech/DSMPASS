@@ -77,6 +77,7 @@ function helperStatusOK(status: HelperStatus | null | undefined) {
   const details = status?.details;
   return status?.reachable === true &&
     status.compatible === true &&
+    details?.startup_ready !== false &&
     details?.euid === 0 &&
     details.synouser_status?.executable === true &&
     details.synogroup_status?.executable === true;
@@ -88,6 +89,9 @@ function helperStatusProblem(status: HelperStatus) {
   }
   if (!status.reachable) {
     return `检查未通过：${status.error || "Helper 不可连接"}`;
+  }
+  if (status.details.startup_ready === false) {
+    return `Helper 正在迁移恢复日志并恢复密码，请稍后刷新，无需反复重启。${status.details.startup_error || ""}`;
   }
   const details = status.details;
   const synouser = details.synouser_status?.executable ? "ok" : details.synouser_status?.error || "不可执行";
@@ -677,7 +681,21 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
   const [helperRestarting, setHelperRestarting] = useState(false);
   const helperReachable = helperStatus.data?.reachable === true;
   const helperDetails = helperStatus.data?.details;
+  const helperInitializing = helperReachable && helperStatus.data?.compatible === true && helperDetails?.startup_ready === false;
   const helperPermissionOK = helperStatusOK(helperStatus.data);
+  const reloadHelperStatus = helperStatus.reloadWithResult;
+
+  useEffect(() => {
+    if (!helperInitializing) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await reloadHelperStatus({ silent: true });
+      if (!cancelled) timer = setTimeout(() => void poll(), 3000);
+    };
+    timer = setTimeout(() => void poll(), 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [helperInitializing, reloadHelperStatus]);
   const menuItems = [
     { key: "providers", icon: <KeyOutlined />, label: "身份源" },
     { key: "settings", icon: <SettingOutlined />, label: "系统设置" }
@@ -807,8 +825,8 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                 <Space className="runtime-status">
                   <Badge status="success" text="Backend" />
                   <Badge
-                    status={helperStatus.loading ? "processing" : helperPermissionOK ? "success" : "error"}
-                    text={helperStatus.loading ? "Helper" : helperPermissionOK ? "Helper" : "Helper 权限异常"}
+                    status={helperStatus.loading || helperInitializing ? "processing" : helperPermissionOK ? "success" : "error"}
+                    text={helperInitializing ? "Helper 初始化中" : helperStatus.loading || helperPermissionOK ? "Helper" : "Helper 权限异常"}
                   />
                 </Space>
                 <Button icon={<LogoutOutlined />} onClick={async () => { await api.adminLogout(); onLogout(); }}>
@@ -826,7 +844,16 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                   description={`临时登录暂不可用，请检查 DSM 账户锁或登录端口配置。${[helperDetails?.shadow_lock_error, helperDetails?.dsm_endpoint_error].filter(Boolean).join("；")}`}
                 />
               )}
-              {!helperStatus.loading && !helperPermissionOK && (
+              {helperInitializing && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  className="runtime-alert"
+                  message="Helper 正在迁移恢复日志并恢复密码"
+                  description={`登录和同步将在初始化完成后恢复。日志较多时需要等待，页面会自动检查进度，无需反复重启。${helperDetails?.startup_error ? `迁移尚未完成：${helperDetails.startup_error}。修复原因后会自动重试。` : ""}`}
+                />
+              )}
+              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && (
                 <Alert
                   type="error"
                   showIcon

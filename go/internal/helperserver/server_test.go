@@ -19,22 +19,13 @@ import (
 )
 
 func TestHelperHealthCheck(t *testing.T) {
-	socketPath := shortSocketPath(t)
-	server := New(config.HelperConfig{
-		SocketPath:           socketPath,
-		HMACSecret:           "secret",
-		TimestampSkewSeconds: 60,
+	_, client := startRecoveryTestServer(t, config.HelperConfig{
+		HMACSecret: "secret",
+		JournalDir: filepath.Join(t.TempDir(), "journals"),
 	})
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Serve()
-	}()
-	skipIfSocketServeBlocked(t, errCh)
-	waitForSocket(t, socketPath)
-
-	response := send(t, socketPath, "secret", map[string]any{"action": "health_check"})
-	if response["success"] != true {
-		t.Fatalf("unexpected response %#v", response)
+	response, err := client.HealthCheck(t.Context())
+	if err != nil || response["success"] != true {
+		t.Fatalf("unexpected response %#v: %v", response, err)
 	}
 }
 
