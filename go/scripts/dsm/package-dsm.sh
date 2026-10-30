@@ -25,6 +25,22 @@ LDFLAGS="-s -w -X github.com/dsmpass/dsmpass/go/internal/buildinfo.Version=$VERS
 export GOCACHE="${GOCACHE:-$GO_DIR/.gocache}"
 export GOMODCACHE="${GOMODCACHE:-$GO_DIR/.gomodcache}"
 
+# Tag builds must fail closed even if an older Release workflow omits the key.
+require_signature=${DSMPASS_REQUIRE_SIGNED_RELEASE:-0}
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+  require_signature=1
+fi
+case "$require_signature" in
+  0|1) ;;
+  *) echo "DSMPASS_REQUIRE_SIGNED_RELEASE must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ -n "${DSMPASS_HELPER_SIGNING_KEY:-}${DSMPASS_HELPER_SIGNING_KEY_FILE:-}" ]; then
+  (cd "$GO_DIR" && go run ./cmd/sign-helper -check-key)
+elif [ "$require_signature" = "1" ]; then
+  echo "Signed release required: configure DSMPASS_HELPER_SIGNING_KEY or DSMPASS_HELPER_SIGNING_KEY_FILE; refusing to build or publish an unsigned release." >&2
+  exit 1
+fi
+
 cd "$FRONTEND_DIR"
 npm run build
 
