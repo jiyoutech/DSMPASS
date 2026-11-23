@@ -33,6 +33,7 @@ func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig,
 		rows[i] = map[string]any{"dsm_username": name, "display_name": displayName, "email": email, "initial_password": password}
 	}
 	unchanged := s.unchangedAccounts(ctx, cfg, rows)
+	created := s.createMissingUsers(ctx, cfg, rows, password)
 	results := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		if ctx.Err() != nil {
@@ -40,7 +41,9 @@ func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig,
 		}
 		var result map[string]any
 		name := row["dsm_username"].(string)
-		if unchanged[name] {
+		if outcome, done := created[name]; done {
+			result = outcome
+		} else if unchanged[name] {
 			result = map[string]any{"success": true, "created": false, "initial_password_applied": false}
 		} else {
 			result = s.provisionAccount(cfg, row)

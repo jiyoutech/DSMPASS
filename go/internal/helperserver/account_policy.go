@@ -456,6 +456,13 @@ func verifyAccountAbsent(cfg config.HelperConfig, name string) error {
 	if err != nil {
 		return err
 	}
+	return verifyNewAccountPolicy(p, name)
+}
+
+func verifyNewAccountPolicy(p accountPolicy, name string) error {
+	if _, bound := p.CredentialOwners[name]; bound {
+		return fmt.Errorf("DSM 用户 %q 已绑定来源身份", name)
+	}
 	_, limited := p.DirectoryUsers[name]
 	captured := false
 	if p.DingTalkScope != nil {
