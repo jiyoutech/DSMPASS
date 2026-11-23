@@ -8,6 +8,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
+// Acknowledge unchanged managed profiles in bulk. Other accounts retain
+// their individual mutation, identity checks, lock and creation receipt.
 // Validate the envelope before writing the first account. If the caller disconnects,
 // finish the in-flight native mutation and leave subsequent rows for a later sync.
 func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig, payload map[string]any) map[string]any {
@@ -30,12 +32,19 @@ func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig,
 		seen[key] = true
 		rows[i] = map[string]any{"dsm_username": name, "display_name": displayName, "email": email, "initial_password": password}
 	}
+	unchanged := s.unchangedAccounts(ctx, cfg, rows)
 	results := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			return errorResponse("USER_BATCH_INTERRUPTED", "user batch interrupted; reconcile confirmed identities on next sync")
 		}
-		result := s.provisionAccount(cfg, row)
+		var result map[string]any
+		name := row["dsm_username"].(string)
+		if unchanged[name] {
+			result = map[string]any{"success": true, "created": false, "initial_password_applied": false}
+		} else {
+			result = s.provisionAccount(cfg, row)
+		}
 		result["dsm_username"] = row["dsm_username"]
 		results = append(results, result)
 	}

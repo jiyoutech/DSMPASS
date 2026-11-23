@@ -49,9 +49,10 @@ type accountPolicy struct {
 }
 
 type systemAccount struct {
-	name    string
-	id, gid int
-	members []string
+	name        string
+	description string
+	id, gid     int
+	members     []string
 }
 
 func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
@@ -83,6 +84,7 @@ func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
 		if group {
 			a.members = strings.Split(fields[3], ",")
 		} else {
+			a.description = fields[4]
 			a.gid, err = strconv.Atoi(fields[3])
 			if err != nil || a.gid < 0 {
 				return nil, errors.New("invalid system account group")
