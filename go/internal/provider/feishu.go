@@ -322,8 +322,11 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 		}
 		hasMore, _ := data["has_more"].(bool)
 		pageToken, _ = data["page_token"].(string)
-		if !hasMore || pageToken == "" {
+		if !hasMore {
 			break
+		}
+		if strings.TrimSpace(pageToken) == "" {
+			return nil, errors.New("飞书通讯录分页缺少后续游标")
 		}
 		if seenPageTokens[pageToken] {
 			return nil, errors.New("飞书部门用户分页游标重复，请稍后重试")
@@ -355,8 +358,11 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 		}
 		hasMore, _ := data["has_more"].(bool)
 		pageToken, _ = data["page_token"].(string)
-		if !hasMore || pageToken == "" {
+		if !hasMore {
 			break
+		}
+		if strings.TrimSpace(pageToken) == "" {
+			return nil, errors.New("飞书通讯录分页缺少后续游标")
 		}
 		if seenPageTokens[pageToken] {
 			return nil, errors.New("飞书部门分页游标重复，请稍后重试")
