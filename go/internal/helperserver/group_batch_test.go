@@ -2,6 +2,7 @@ package helperserver
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -61,7 +62,7 @@ func TestGroupBatchPreflightAndPartialReadback(t *testing.T) {
 	cfg := policyTestConfig(t)
 	enrollBatchUsers(t, cfg)
 	s := &Server{}
-	for _, names := range [][]any{nil, {"alice", "alice"}, {1}, {"root"}, make([]any, 33)} {
+	for _, names := range [][]any{nil, {"alice", "alice"}, {1}, {"root"}, make([]any, helperclient.GroupMemberBatchSize+1)} {
 		resp := s.addGroupMembers(cfg, map[string]any{"dsm_groupname": "engineering", "dsm_usernames": names})
 		if resp["error_code"] != "BAD_REQUEST" {
 			t.Fatalf("unexpected validation response %v", resp)
@@ -142,5 +143,45 @@ func TestGroupBatchRestrictedAccountCannotCreateOrClaimGroup(t *testing.T) {
 	}
 	if confirmed, err := (&Server{}).applyGroupMembers(cfg, "engineering", []string{"alice", "bob"}); err == nil || errors.Is(err, helperclient.ErrGroupBatchUnsupported) || len(confirmed) > 0 {
 		t.Fatalf("unauthorized member: %v %v", confirmed, err)
+	}
+}
+
+func TestGroupBatchSize200And201(t *testing.T) {
+	cfg := policyTestConfig(t)
+	var passwd, group strings.Builder
+	passwd.WriteString("root:x:0:0::/:/bin/sh\n")
+	names := make([]any, 201)
+	policy := accountPolicy{Users: map[string]int{}, Groups: map[string]int{"engineering": 65536}}
+	for i := range names {
+		name := fmt.Sprintf("user%03d", i)
+		names[i] = name
+		policy.Users[name] = 1026 + i
+		fmt.Fprintf(&passwd, "%s:x:%d:100::/:/bin/sh\n", name, 1026+i)
+		if i > 0 {
+			group.WriteByte(',')
+		}
+		group.WriteString(name)
+	}
+	writeFile(t, cfg.PasswdPath, passwd.String())
+	writeFile(t, cfg.GroupPath, "users:x:100:\nadministrators:x:101:\nengineering:x:65536:"+group.String()+"\n")
+	if err := saveAccountPolicy(cfg, policy); err != nil {
+		t.Fatal(err)
+	}
+	call := func(n int) map[string]any {
+		return (&Server{}).addGroupMembers(cfg, map[string]any{"dsm_groupname": "engineering", "dsm_usernames": names[:n]})
+	}
+	if r := call(201); r["error_code"] != "BAD_REQUEST" {
+		t.Fatal(r)
+	}
+	if r := call(200); r["success"] != true || r["batch_error"] != nil || len(r["confirmed"].([]string)) != 200 {
+		t.Fatal(r)
+	}
+	delete(policy.Users, "user199")
+	policy.DirectoryUsers = map[string]directoryUserGrant{"user199": {UID: 1225}}
+	if err := saveAccountPolicy(cfg, policy); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(200); r["error_code"] != "SCOPED_GROUP_BATCH_SIZE" {
+		t.Fatal(r)
 	}
 }

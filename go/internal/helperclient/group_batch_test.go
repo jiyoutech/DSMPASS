@@ -25,6 +25,7 @@ func TestSignedGroupBatchValidatesConfirmation(t *testing.T) {
 		{"foreign", map[string]any{"success": true, "confirmed": []string{"root"}}, nil, true, false},
 		{"duplicate", map[string]any{"success": true, "confirmed": []string{"alice", "alice"}}, nil, true, false},
 		{"legacy", map[string]any{"success": false, "error_code": "BAD_REQUEST", "error": "unsupported action"}, nil, true, true},
+		{"scoped", map[string]any{"success": false, "error_code": "SCOPED_GROUP_BATCH_SIZE"}, nil, true, false},
 		{"unsupported", map[string]any{"success": false, "error_code": "GROUP_BATCH_UNSUPPORTED"}, nil, true, true},
 		{"forbidden", map[string]any{"success": false, "error_code": "ACCOUNT_FORBIDDEN"}, nil, true, false},
 	} {
@@ -51,7 +52,7 @@ func TestSignedGroupBatchValidatesConfirmation(t *testing.T) {
 			}()
 			client := UnixSocketClient{SocketPath: path, Secret: "fixture", Timeout: time.Second}
 			got, err := client.AddGroupMembers(context.Background(), "batch", "engineering", []string{"alice", "bob"})
-			if !<-done || (err != nil) != tc.fail || errors.Is(err, ErrGroupBatchUnsupported) != tc.unsupported || !slices.Equal(got, tc.want) {
+			if !<-done || (err != nil) != tc.fail || errors.Is(err, ErrGroupBatchUnsupported) != tc.unsupported || errors.Is(err, ErrScopedGroupBatchSize) != (tc.name == "scoped") || !slices.Equal(got, tc.want) {
 				t.Fatalf("confirmation=%v err=%v", got, err)
 			}
 		})

@@ -43,6 +43,9 @@ func (s *Server) addGroupMembers(cfg config.HelperConfig, payload map[string]any
 		confirmed, err = s.applyGroupMembers(cfg, group, users)
 		return err
 	})
+	if errors.Is(err, helperclient.ErrScopedGroupBatchSize) {
+		return errorResponse("SCOPED_GROUP_BATCH_SIZE", err.Error())
+	}
 	if errors.Is(err, helperclient.ErrGroupBatchUnsupported) {
 		return errorResponse("GROUP_BATCH_UNSUPPORTED", err.Error())
 	}
@@ -55,6 +58,17 @@ func (s *Server) addGroupMembers(cfg config.HelperConfig, payload map[string]any
 
 // Caller holds the existing DSM writer lock. Membership snapshots are scoped to this batch.
 func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users []string) ([]string, error) {
+	if len(users) > helperclient.ScopedGroupMemberBatchSize {
+		policy, err := readAccountPolicy(cfg)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range users {
+			if _, limited := policy.DirectoryUsers[name]; limited {
+				return nil, helperclient.ErrScopedGroupBatchSize
+			}
+		}
+	}
 	before, lookupErr := normalGroup(cfg, group)
 	// normalGroup returns bare ErrNotExist for a missing group; a failure to open
 	// the system account database is a PathError and must never initiate creation.

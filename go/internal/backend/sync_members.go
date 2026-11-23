@@ -22,12 +22,16 @@ type syncMember struct {
 func (s *Server) syncGroupMembers(ctx context.Context, runID, source string, members []syncMember, logs *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
 	batchClient, _ := s.helper.(helperclient.GroupMemberBatchClient)
 	var operations []syncsvc.PlanItem
-	var fallbackGroup string
+	var fallbackGroup, scopedGroup string
 	for len(members) > 0 {
 		group := members[0].groupname
 		useBatch := batchClient != nil && group != fallbackGroup
+		limit := helperclient.GroupMemberBatchSize
+		if group == scopedGroup {
+			limit = helperclient.ScopedGroupMemberBatchSize
+		}
 		n := 1
-		for useBatch && n < len(members) && n < helperclient.GroupMemberBatchSize && members[n].groupname == group {
+		for useBatch && n < len(members) && n < limit && members[n].groupname == group {
 			n++
 		}
 		batch := members[:n]
@@ -39,6 +43,10 @@ func (s *Server) syncGroupMembers(ctx context.Context, runID, source string, mem
 				names[i] = m.username
 			}
 			confirmed, err = batchClient.AddGroupMembers(ctx, "sync_members_"+randomHex(8), group, names)
+			if errors.Is(err, helperclient.ErrScopedGroupBatchSize) && n > helperclient.ScopedGroupMemberBatchSize {
+				scopedGroup = group
+				continue
+			}
 			if errors.Is(err, helperclient.ErrGroupBatchUnsupported) {
 				fallbackGroup = group
 				continue
