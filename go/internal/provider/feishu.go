@@ -155,12 +155,14 @@ func (f Feishu) ListUsersAndGroups() ([]User, []Group, error) {
 
 func (f Feishu) listUsers(token string, departments []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
-	for _, department := range departments {
-		items, err := f.departmentUsers(token, department.Subject)
-		if err != nil {
-			return nil, err
-		}
-		for _, raw := range items {
+	pages, err := readDirectoryItems(departments, func(department Group) ([]map[string]any, error) {
+		return f.departmentUsers(token, department.Subject)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, department := range departments {
+		for _, raw := range pages[i] {
 			subject, subjectType := feishuUserSubject(raw)
 			if subject == "" {
 				continue
@@ -452,7 +454,7 @@ func decodeResponse(response *http.Response, out any) error {
 		return err
 	}
 	if response.StatusCode >= 400 {
-		return formatFeishuHTTPError(response.StatusCode, body)
+		return directoryHTTPError(response, formatFeishuHTTPError(response.StatusCode, body))
 	}
 	if err := feishuAPIError(response.StatusCode, body); err != nil {
 		return err
