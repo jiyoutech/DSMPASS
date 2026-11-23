@@ -2,6 +2,7 @@ package helperserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,6 +31,9 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 				return err
 			}
 			grant, err := userEnrollment(cfg, username)
+			if errors.Is(err, errUserNotEnrolled) && !info.Expired {
+				grant, err = s.linkDingTalkDirectoryUser(cfg, username)
+			}
 			if err != nil {
 				return err
 			}

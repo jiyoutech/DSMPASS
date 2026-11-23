@@ -100,8 +100,18 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 		for name, email := range snapshot.RetryUsers {
 			enrollMappedUser(cfg, policy, users, groups, name, email, true, snapshot.Departments[name], &result)
 		}
+		for name, binding := range snapshot.DingTalkUsers {
+			grant, exists := policy.DirectoryUsers[name]
+			if !exists || grant.DingTalk != nil || grant.UID != users[name].id {
+				continue
+			}
+			grant.DingTalk = &binding
+			policy.DirectoryUsers[name] = grant
+			result.UpdatedDirectoryUsers++
+		}
+		scopeChanged := captureDingTalkDirectory(cfg, &policy, snapshot.DingTalkSources, users, groups)
 		if policy.LegacyMigrationComplete {
-			if result.Users == 0 && result.DirectoryUsers == 0 && result.UpdatedDirectoryUsers == 0 && result.ReviewedGroupCount == nil {
+			if result.Users == 0 && result.DirectoryUsers == 0 && result.UpdatedDirectoryUsers == 0 && result.ReviewedGroupCount == nil && !scopeChanged {
 				return nil
 			}
 			return saveAccountPolicy(cfg, policy)
@@ -153,6 +163,12 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 			skip(fmt.Errorf("原 UID %d，当前 UID %d", id, account.id))
 		}
 		return
+	}
+	if policy.DingTalkScope != nil {
+		if pinned, found := policy.DingTalkScope.Users[name]; found && pinned != account.id {
+			skip(fmt.Errorf("原 UID %d，当前 UID %d", pinned, account.id))
+			return
+		}
 	}
 	if !ordinaryInstallUser(account, groups) {
 		skip(errors.New("不属于可自动登记的普通本地用户"))

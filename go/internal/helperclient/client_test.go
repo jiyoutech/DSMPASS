@@ -136,6 +136,41 @@ func TestUnixSocketClientIncludesHelperErrorMessage(t *testing.T) {
 	}
 }
 
+func TestDingTalkMembershipOnlyAppliesToPasswordResetResponse(t *testing.T) {
+	for _, tc := range []struct {
+		action, code string
+		skipped      bool
+	}{
+		{"scoped_reset_synced_user_password", "DINGTALK_MEMBERSHIP_ONLY", true},
+		{"scoped_reset_synced_user_password", "ACCOUNT_FORBIDDEN", false},
+		{"scoped_add_group_member", "DINGTALK_MEMBERSHIP_ONLY", false},
+	} {
+		t.Run(tc.action+"/"+tc.code, func(t *testing.T) {
+			socket := shortSocketPath(t)
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				if _, err := bufio.NewReader(conn).ReadBytes('\n'); err == nil {
+					_ = json.NewEncoder(conn).Encode(map[string]any{"success": false, "error_code": tc.code})
+				}
+			}()
+			client := UnixSocketClient{SocketPath: socket, Secret: "test-secret", Timeout: time.Second}
+			_, err = client.send(context.Background(), map[string]any{"action": tc.action, "request_id": "request"})
+			if err == nil || errors.Is(err, ErrDingTalkMembershipOnly) != tc.skipped {
+				t.Fatalf("unexpected helper error: %v", err)
+			}
+		})
+	}
+}
+
 func TestUnixSocketClientDiagnosticsRedactsRawResponse(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	listener, err := net.Listen("unix", socketPath)

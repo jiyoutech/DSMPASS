@@ -87,4 +87,20 @@ INSERT INTO dsm_mapping_entries (id,mapping_type,provider_slug,external_account_
 	if snapshot.Error != "" || snapshot.Allowed || snapshot.Enrollment == nil || snapshot.Enrollment.Users == nil || snapshot.Enrollment.Groups == nil || len(snapshot.Enrollment.Users) != 0 {
 		t.Fatalf("pending unmapped identity granted in migration snapshot: %+v", snapshot)
 	}
+	if _, err := database.Exec(`INSERT INTO identity_sources(slug,provider_type,display_name) VALUES('source','dingtalk','Directory');
+	INSERT INTO external_accounts(id,provider_slug,subject,subject_norm,subject_type,app_identity_id,display_name) VALUES('external','source','contact1','contact1','user','identity','alice')`); err != nil {
+		t.Fatal(err)
+	}
+	request, err = json.Marshal(db.HelperAuthorizationQuery{DatabasePath: path, Action: "dingtalk_binding", Username: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := runAccountQuery(bytes.NewReader(request), &output); err != nil {
+		t.Fatal(err)
+	}
+	var result db.HelperAuthorizationResult
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || result.Error != "" || result.DingTalkBinding == nil || *result.DingTalkBinding != (db.DingTalkUserBinding{SourceSlug: "source", Subject: "contact1"}) {
+		t.Fatalf("directory binding: %+v %v", result, err)
+	}
 }

@@ -283,6 +283,9 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return map[string]any{"success": true}
 	case "scoped_reset_synced_user_password":
 		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+			if errors.Is(err, errDingTalkMembershipOnly) {
+				return errorResponse("DINGTALK_MEMBERSHIP_ONLY", err.Error())
+			}
 			if errors.Is(err, errPasswordResetUnknown) {
 				return errorResponse("SYNC_PASSWORD_RESET_UNCONFIRMED", err.Error())
 			}

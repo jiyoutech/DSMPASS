@@ -9,16 +9,18 @@ import (
 	"testing"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 	"github.com/gin-gonic/gin"
 )
 
 type syncPasswordHelper struct {
 	existingUserHelper
-	resets    []string
-	passwords []string
-	fail      bool
-	failUser  string
-	busyUser  string
+	resets            []string
+	passwords         []string
+	fail              bool
+	failUser          string
+	busyUser          string
+	directoryOnlyUser string
 }
 
 type oldSyncHelper struct{ testHelper }
@@ -54,6 +56,9 @@ func TestFullSyncRejectsOldHelperBeforeReadingOrChangingDirectory(t *testing.T) 
 func (h *syncPasswordHelper) ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error {
 	h.resets = append(h.resets, sourceSlug+":"+username)
 	h.passwords = append(h.passwords, password)
+	if h.directoryOnlyUser == username {
+		return helperclient.ErrDingTalkMembershipOnly
+	}
 	if h.fail || h.failUser == username {
 		return errors.New("test reset failed")
 	}
@@ -279,6 +284,33 @@ func TestSyncModeEndpointsRejectInvalidModeAndRequireAdmin(t *testing.T) {
 			if auth && w.Code != http.StatusUnauthorized {
 				t.Fatalf("unauthorized reset: %d", w.Code)
 			}
+		}
+	}
+}
+
+func TestFullSyncRecordsDirectoryOnlyPasswordAsSkipped(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &syncPasswordHelper{directoryOnlyUser: "alice"}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, helper, database, q)
+	if _, err = database.Exec("INSERT INTO identity_sources(slug,provider_type,display_name) VALUES('a','dingtalk','A')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alice", "bob"} {
+		seedSyncedAccount(t, ctx, database, "a", name, "ext-"+name, name, name, "2999-01-01")
+	}
+	_, err = s.syncSourceToDSM(ctx, "dir-only", "a", "2000-01-01", sourceSyncPolicy{FullSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"alice": "skipped", "bob": "success"} {
+		var status string
+		if err := database.QueryRow("SELECT status FROM sync_operation_logs WHERE sync_run_id='dir-only' AND action='reset_password' AND dsm_name=?", name).Scan(&status); err != nil || status != want {
+			t.Fatalf("%s: %s %v", name, status, err)
 		}
 	}
 }
