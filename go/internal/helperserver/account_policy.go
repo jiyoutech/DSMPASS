@@ -229,6 +229,9 @@ func checkGroupEnrollment(cfg config.HelperConfig, name string, mapped func() (b
 		var captured bool
 		id, captured = p.ReusableGroups[name]
 		if !captured || mapped == nil {
+			if mapped != nil && p.LegacyMigrationComplete && p.ReusableGroups == nil && isLocalDirectoryGroup(name, a.id) {
+				return fmt.Errorf("DSM 群组 %q 未登记为可同步群组。旧安装尚未确认自动复用范围，请管理员在终端运行 setup-helper-sudo.sh 确认一次，或在部门群组页面授权此组", name)
+			}
 			return fmt.Errorf("DSM 群组 %q 未登记为可同步群组，可到部门群组页面办理网页授权", name)
 		}
 	}

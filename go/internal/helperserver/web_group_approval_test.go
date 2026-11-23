@@ -149,7 +149,7 @@ func TestWebGroupApprovalRechecksMappingGIDExpiryAndRevocation(t *testing.T) {
 
 func TestWebGroupApprovalSkipsAutomaticGroupsAndRejectsOtherTargets(t *testing.T) {
 	cfg, _, s := webApprovalFixture(t)
-	if _, err := migrateAccountPolicy(cfg, false, emptyDirectorySnapshot); err != nil {
+	if _, err := migrateAccountPolicy(cfg, nil, emptyDirectorySnapshot); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"", "administrators", "users", "finance", "missing"} {

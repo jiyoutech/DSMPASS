@@ -16,11 +16,19 @@ func main() {
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "install-helper" {
-		reuseExisting := len(os.Args) == 3 && os.Args[2] == "--reuse-local-groups"
-		if len(os.Args) != 2 && !reuseExisting {
-			log.Fatal("usage: install-helper [--reuse-local-groups]")
+		var review helperserver.LegacyGroupReview
+		switch {
+		case len(os.Args) == 2:
+		case len(os.Args) == 3 && os.Args[2] == "--review-local-groups":
+			review = func(groups map[string]int) (map[string]int, error) {
+				return reviewLocalGroups(os.Stdin, os.Stdout, groups)
+			}
+		case len(os.Args) == 3 && os.Args[2] == "--reuse-local-groups":
+			review = func(groups map[string]int) (map[string]int, error) { return groups, nil }
+		default:
+			log.Fatal("usage: install-helper [--reuse-local-groups | --review-local-groups]")
 		}
-		if err := helperserver.InstallPrivilegedHelper(reuseExisting); err != nil {
+		if err := helperserver.InstallPrivilegedHelper(review); err != nil {
 			log.Fatal(err)
 		}
 		log.Print("protected Helper and restricted sudo rule installed")

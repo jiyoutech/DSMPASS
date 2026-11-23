@@ -3,6 +3,7 @@ package helperserver
 import (
 	"errors"
 	"log"
+	"maps"
 	"os"
 	"strings"
 
@@ -10,18 +11,23 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+// LegacyGroupReview selects which existing name/GID bindings may be reused.
+// A nil result defers the decision; a non-nil empty map confirms an empty scope.
+type LegacyGroupReview func(map[string]int) (map[string]int, error)
+
 type enrollmentMigrationResult struct {
 	Users, Groups, Skipped int
 	AlreadyComplete        bool
+	ReviewedGroupCount     *int
 }
 
 // Called only by the root installer while the Helper instance lock is held.
 // Neither normal startup nor an authenticated socket request can run migration.
-func migrateInstalledAccounts(cfg config.HelperConfig, reuseExisting bool) (enrollmentMigrationResult, error) {
+func migrateInstalledAccounts(cfg config.HelperConfig, review LegacyGroupReview) (enrollmentMigrationResult, error) {
 	if os.Geteuid() != 0 || !cfg.Privileged {
 		return enrollmentMigrationResult{}, errors.New("account migration requires the root installer")
 	}
-	return migrateAccountPolicy(cfg, reuseExisting, func() (*db.HelperEnrollmentSnapshot, error) {
+	return migrateAccountPolicy(cfg, review, func() (*db.HelperEnrollmentSnapshot, error) {
 		result, err := queryHelperAsPackage(cfg, db.HelperAuthorizationQuery{
 			Action: "enrollment_snapshot", DatabasePath: strings.TrimPrefix(cfg.DatabaseURL, "sqlite://"),
 		})
@@ -29,7 +35,7 @@ func migrateInstalledAccounts(cfg config.HelperConfig, reuseExisting bool) (enro
 	})
 }
 
-func migrateAccountPolicy(cfg config.HelperConfig, reuseExisting bool, candidates func() (*db.HelperEnrollmentSnapshot, error)) (enrollmentMigrationResult, error) {
+func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, candidates func() (*db.HelperEnrollmentSnapshot, error)) (enrollmentMigrationResult, error) {
 	var result enrollmentMigrationResult
 	err := withFileLock(cfg.ShadowLockPath, func() error {
 		policy, err := readAccountPolicy(cfg)
@@ -37,7 +43,7 @@ func migrateAccountPolicy(cfg config.HelperConfig, reuseExisting bool, candidate
 			return err
 		}
 		result.AlreadyComplete = policy.LegacyMigrationComplete
-		if policy.LegacyMigrationComplete && (!reuseExisting || policy.ReusableGroups != nil) {
+		if policy.LegacyMigrationComplete && (review == nil || policy.ReusableGroups != nil) {
 			return nil
 		}
 		groups, err := systemAccounts(cfg.GroupPath, true)
@@ -47,8 +53,36 @@ func migrateAccountPolicy(cfg config.HelperConfig, reuseExisting bool, candidate
 		if _, ok := groups["administrators"]; !ok {
 			return errors.New("cannot determine DSM administrator membership")
 		}
-		policy.ReusableGroups = reusableLocalGroups(groups, policy.Groups)
+		if policy.ReusableGroups == nil {
+			eligible := reusableLocalGroups(groups, policy.Groups)
+			_, err := os.Lstat(cfg.AccountPolicyPath)
+			switch {
+			case os.IsNotExist(err):
+				policy.ReusableGroups = eligible
+			case err != nil:
+				return err
+			case review != nil:
+				approved, err := review(maps.Clone(eligible))
+				if err != nil {
+					return err
+				}
+				for name, gid := range approved {
+					if expected, ok := eligible[name]; !ok || expected != gid {
+						return errors.New("reviewed group is outside the eligible migration scope")
+					}
+					delete(policy.WebApprovals, name)
+				}
+				if approved != nil {
+					count := len(approved)
+					result.ReviewedGroupCount = &count
+				}
+				policy.ReusableGroups = approved
+			}
+		}
 		if policy.LegacyMigrationComplete {
+			if policy.ReusableGroups == nil {
+				return nil
+			}
 			return saveAccountPolicy(cfg, policy)
 		}
 		snapshot, err := candidates()
