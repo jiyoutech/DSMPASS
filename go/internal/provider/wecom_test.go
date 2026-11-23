@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -164,6 +165,7 @@ func TestWeComListUsersFallsBackToVisibleUserIDsWhenDepartmentsEmpty(t *testing.
 		ContactBaseURL: "https://wecom.test/cgi-bin",
 	})
 	var listIDCalled bool
+	var getMu sync.Mutex
 	getCalls := map[string]int{}
 	wecom.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
 		switch r.URL.Path {
@@ -192,7 +194,9 @@ func TestWeComListUsersFallsBackToVisibleUserIDsWhenDepartmentsEmpty(t *testing.
 			}}, http.StatusOK
 		case "/cgi-bin/user/get":
 			userID := r.URL.Query().Get("userid")
+			getMu.Lock()
 			getCalls[userID]++
+			getMu.Unlock()
 			switch userID {
 			case "mas":
 				return map[string]any{"errcode": 0, "userid": "mas", "name": "马少云", "email": "ma@example.com", "status": float64(1)}, http.StatusOK
