@@ -566,7 +566,10 @@ FROM dsm_accounts a JOIN app_identities i ON i.id = a.app_identity_id WHERE a.id
 	if !created {
 		nextStatus = "linked_existing"
 	}
-	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
+	if err := saveObjectState(c.Request.Context(), s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_username": username, "provision_status": nextStatus})
 }
 
@@ -594,7 +597,10 @@ func (s *Server) provisionDSMGroup(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"id": id, "dsm_groupname": groupname, "provision_status": "pending", "detail": "DSM CLI 无法创建空群组；添加第一个成员时会自动创建"})
 		return
 	}
-	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	if err := saveObjectState(c.Request.Context(), s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_groupname": groupname, "provision_status": "created"})
 }
 
@@ -622,6 +628,9 @@ SELECT m.id, g.dsm_groupname, a.dsm_username
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
 		return
 	}
-	_, _ = s.store.DBTX().ExecContext(c.Request.Context(), `UPDATE group_members SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	if err := s.saveGroupMembership(c.Request.Context(), id, groupname+":"+username); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "provision_status": "created"})
 }
