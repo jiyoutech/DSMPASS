@@ -134,8 +134,8 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 	return response
 }
 
-// Accounts linked for directory sync alone can change only the existing
-// departments and local GIDs approved for this user by the root installer.
+// A directory-only account may join its bound DingTalk departments or use
+// individual membership grants recorded by the installer.
 func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, username, groupname string) error {
 	grant, err := userEnrollment(cfg, username)
 	if err != nil || grant == nil {
@@ -144,6 +144,32 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 	group, err := normalGroup(cfg, groupname)
 	if err != nil {
 		return err
+	}
+	if grant.DingTalk != nil && action == "scoped_add_group_member" {
+		if !isLocalDirectoryGroup(groupname, group.id) {
+			return errors.New("仅可同步普通 DSM 部门群组")
+		}
+		if err := requireManagedGroup(cfg, groupname); err != nil {
+			return err
+		}
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_member", Username: username, Groupname: groupname, SourceSlug: grant.DingTalk.SourceSlug, Subject: grant.DingTalk.Subject})
+		if err != nil {
+			return err
+		}
+		if mapped {
+			return nil
+		}
+		// Preserve an independently pinned membership supplied by another provider.
+		if grant.Groups[groupname] == group.id {
+			ok, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "other_directory_member", Username: username, Groupname: groupname})
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+		}
+		return errors.New("未找到与已登记钉钉用户一致的有效部门成员关系")
 	}
 	if gid, allowed := grant.Groups[groupname]; !allowed || gid != group.id || !isLocalDirectoryGroup(groupname, group.id) {
 		return fmt.Errorf("DSM 用户 %q 的通讯录同步授权未包含当前群组 %q", username, groupname)

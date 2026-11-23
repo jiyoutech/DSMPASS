@@ -2,18 +2,45 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 )
 
-// This snapshot is trusted only during the administrator's explicit install
-// migration. Runtime RPC authorization must never use it to grant enrollment.
+type DingTalkUserBinding struct {
+	SourceSlug string `json:"source_slug"`
+	Subject    string `json:"subject"`
+}
+
+// This snapshot is consumed only by the explicit root installer.
 type HelperEnrollmentSnapshot struct {
-	Users  []string `json:"users"`
-	Groups []string `json:"groups"`
+	DingTalkSources []string                       `json:"dingtalk_sources,omitempty"`
+	DingTalkUsers   map[string]DingTalkUserBinding `json:"dingtalk_users,omitempty"`
+	Users           []string                       `json:"users"`
+	Groups          []string                       `json:"groups"`
 	// RetryUsers need additional evidence from DSM before enrollment.
 	RetryUsers  map[string]string   `json:"retry_users,omitempty"`
 	Departments map[string][]string `json:"departments,omitempty"`
 }
+
+// The member writer stores the provider department subject. Older/manual
+// entries can instead contain its internal ID. Both must resolve to the same
+// department as the active group mapping in this source.
+const memberDepartmentMatch = `(pg.subject = mm.provider_group_id OR pg.id = mm.provider_group_id)
+ AND NOT EXISTS (SELECT 1 FROM provider_groups alt WHERE alt.provider_slug=pg.provider_slug
+ AND alt.id<>pg.id AND (alt.id=mm.provider_group_id OR alt.subject=mm.provider_group_id))`
+
+const uniqueDingTalkName = `src.provider_type='dingtalk' AND trim(e.display_name)=a.dsm_username AND e.subject<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=e.provider_slug
+ AND other.active=1 AND other.id<>e.id AND trim(other.display_name)=a.dsm_username)`
+
+const dingTalkBindings = `SELECT a.dsm_username AS name, MIN(src.slug) AS source, MIN(e.subject) AS subject
+FROM dsm_accounts a JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+JOIN dsm_mapping_entries um ON um.mapping_type='user' AND um.active=1 AND um.dsm_account_id=a.id
+JOIN external_accounts e ON e.id=um.external_account_id AND e.app_identity_id=i.id AND e.active=1 AND e.provider_slug=um.provider_slug
+JOIN identity_sources src ON src.slug=um.provider_slug AND src.enabled=1 AND src.directory_sync_enabled=1
+WHERE a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
+AND ` + uniqueDingTalkName + `
+GROUP BY a.id, a.dsm_username HAVING COUNT(DISTINCT e.id)=1`
 
 const directoryMembershipScope = `
 FROM group_members m
@@ -25,7 +52,7 @@ JOIN identity_sources src ON src.slug = mm.provider_slug AND src.enabled = 1 AND
 JOIN dsm_mapping_entries um ON um.mapping_type = 'user' AND um.active = 1 AND um.dsm_account_id = a.id AND um.provider_slug = mm.provider_slug
 JOIN external_accounts e ON e.id = um.external_account_id AND e.provider_slug = src.slug AND e.app_identity_id = a.app_identity_id AND e.active = 1 AND e.id = mm.external_account_id
 JOIN dsm_mapping_entries gm ON gm.mapping_type = 'group' AND gm.active = 1 AND gm.dsm_group_id = g.id AND gm.provider_slug = mm.provider_slug
-JOIN provider_groups pg ON pg.id = gm.provider_group_id AND pg.provider_slug = src.slug AND pg.active = 1 AND pg.id = mm.provider_group_id
+JOIN provider_groups pg ON pg.id = gm.provider_group_id AND pg.provider_slug = src.slug AND pg.active = 1 AND ` + memberDepartmentMatch + `
 WHERE m.active = 1 AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason, '') = '' AND g.provision_status IN ('pending','failed','created','linked_existing')`
 
 func HelperEnrollmentCandidates(ctx context.Context, q *Queries) (*HelperEnrollmentSnapshot, error) {
@@ -46,9 +73,12 @@ WITH successful AS (
  WHERE active = 1 AND email_norm <> '' AND app_identity_id IS NOT NULL
  GROUP BY email_norm HAVING COUNT(DISTINCT app_identity_id) = 1
 )
-SELECT CASE WHEN MAX(a.provision_status IN ('created', 'linked_existing') OR COALESCE(h.last_success >= me.created_at, 0))
+-- A successful DingTalk reconciliation can be based only on a matching name.
+-- Check the root creation receipt or verified email before granting credentials.
+SELECT CASE WHEN MAX(src.provider_type <> 'dingtalk' AND
+            (a.provision_status IN ('created', 'linked_existing') OR COALESCE(h.last_success >= me.created_at, 0)))
             THEN 'user' ELSE 'retry_user' END AS kind, a.dsm_username AS name,
-       CASE WHEN COUNT(DISTINCT e.email_norm) = 1 THEN COALESCE(MAX(mail.email_norm), '') ELSE '' END AS email
+       CASE WHEN COUNT(DISTINCT e.email_norm) = 1 THEN COALESCE(MAX(mail.email_norm), '') ELSE '' END AS email, '' AS subject
 FROM dsm_accounts a
 JOIN app_identities i ON i.id = a.app_identity_id
 JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id AND me.mapping_type = 'user' AND me.active = 1
@@ -62,16 +92,19 @@ WHERE i.status = 'active' AND e.active = 1 AND src.enabled = 1
     OR (a.provision_status IN ('pending', 'failed') AND src.directory_sync_enabled = 1))
 GROUP BY a.id, a.dsm_username
 UNION
-SELECT 'group' AS kind, g.dsm_groupname AS name, '' AS email FROM dsm_groups g
+SELECT 'group' AS kind, g.dsm_groupname AS name, '' AS email, '' AS subject FROM dsm_groups g
 JOIN dsm_mapping_entries me ON me.dsm_group_id = g.id AND me.mapping_type = 'group' AND me.active = 1
 JOIN provider_groups pg ON pg.id = me.provider_group_id AND pg.provider_slug = me.provider_slug
 JOIN identity_sources src ON src.slug = me.provider_slug
 WHERE g.provision_status IN ('created', 'linked_existing') AND pg.active = 1
   AND src.enabled = 1 AND src.directory_sync_enabled = 1
 UNION
-SELECT 'member', a.dsm_username, g.dsm_groupname
+SELECT 'member', a.dsm_username, g.dsm_groupname, ''
 `+directoryMembershipScope+`
-ORDER BY kind, name LIMIT 110001`)
+UNION
+SELECT 'dingtalk', name, source, subject FROM (`+dingTalkBindings+`)
+UNION SELECT 'source', slug, '', '' FROM identity_sources WHERE provider_type='dingtalk' AND enabled=1 AND directory_sync_enabled=1
+ORDER BY kind, name LIMIT 121001`)
 	if err != nil {
 		return nil, err
 	}
@@ -79,14 +112,27 @@ ORDER BY kind, name LIMIT 110001`)
 	result := &HelperEnrollmentSnapshot{Users: []string{}, Groups: []string{}}
 	memberCount := 0
 	for rows.Next() {
-		var kind, name, detail string
-		if err := rows.Scan(&kind, &name, &detail); err != nil {
+		var kind, name, detail, subject string
+		if err := rows.Scan(&kind, &name, &detail, &subject); err != nil {
 			return nil, err
 		}
-		if kind != "member" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
+		if kind != "member" && kind != "dingtalk" && kind != "source" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
 			return nil, errors.New("too many enrollment candidates; migration was not applied")
 		}
 		switch kind {
+		case "source":
+			if len(result.DingTalkSources) >= 1000 {
+				return nil, errors.New("too many DingTalk sources")
+			}
+			result.DingTalkSources = append(result.DingTalkSources, name)
+		case "dingtalk":
+			if len(result.DingTalkUsers) >= 10000 {
+				return nil, errors.New("too many DingTalk bindings")
+			}
+			if result.DingTalkUsers == nil {
+				result.DingTalkUsers = make(map[string]DingTalkUserBinding)
+			}
+			result.DingTalkUsers[name] = DingTalkUserBinding{SourceSlug: detail, Subject: subject}
 		case "user":
 			result.Users = append(result.Users, name)
 		case "member":
@@ -108,4 +154,20 @@ ORDER BY kind, name LIMIT 110001`)
 		}
 	}
 	return result, rows.Err()
+}
+
+// A partial or ambiguous match cannot establish a directory-only identity.
+func DingTalkBindingForName(ctx context.Context, q *Queries, name string) (*DingTalkUserBinding, error) {
+	if q == nil || name == "" {
+		return nil, errors.New("DingTalk binding requires a store and username")
+	}
+	var binding DingTalkUserBinding
+	err := q.DBTX().QueryRowContext(ctx, `SELECT source,subject FROM (`+dingTalkBindings+`) WHERE name=?`, name).Scan(&binding.SourceSlug, &binding.Subject)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &binding, nil
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
+var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
+
 type Client interface {
 	HealthCheck(ctx context.Context) (map[string]any, error)
 	RelayLogin(ctx context.Context, requestID, username, identityID, loginSource string) (RelayLoginResult, error)
@@ -347,6 +349,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	if success, _ := response["success"].(bool); !success {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.failure", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 		if code, _ := response["error_code"].(string); code != "" {
+			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
+				return nil, ErrDingTalkMembershipOnly
+			}
 			if message, _ := response["error"].(string); message != "" {
 				return nil, fmt.Errorf("%s: %s", code, message)
 			}

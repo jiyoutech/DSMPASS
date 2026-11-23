@@ -33,6 +33,14 @@ func runAccountQuery(input io.Reader, output io.Writer) error {
 		return errors.New("account database is unavailable")
 	}
 	defer database.Close()
+	if request.Action == "dingtalk_binding" {
+		binding, err := db.DingTalkBindingForName(context.Background(), queries, request.Username)
+		result := db.HelperAuthorizationResult{DingTalkBinding: binding}
+		if err != nil {
+			result.Error = "query_failed"
+		}
+		return json.NewEncoder(output).Encode(result)
+	}
 	if request.Action == "enrollment_snapshot" {
 		snapshot, err := db.HelperEnrollmentCandidates(context.Background(), queries)
 		result := db.HelperAuthorizationResult{Enrollment: snapshot}

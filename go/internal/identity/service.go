@@ -388,12 +388,12 @@ func (s *Service) EnsureDSMGroupMapping(ctx context.Context, providerSlug, provi
 	return s.ensureDSMMapping(ctx, "group", providerSlug, "", providerGroupID, "", dsmGroupID)
 }
 
-func (s *Service) EnsureDSMMemberMapping(ctx context.Context, providerSlug, providerGroupID, memberSubject, dsmGroupID, dsmAccountID string) error {
+func (s *Service) EnsureDSMMemberMapping(ctx context.Context, providerSlug, departmentSubject, memberSubject, dsmGroupID, dsmAccountID string) error {
 	externalID, err := s.externalIDBySubject(ctx, providerSlug, Normalize(memberSubject))
 	if err != nil {
 		return err
 	}
-	return s.ensureDSMMapping(ctx, "member", providerSlug, externalID, providerGroupID, dsmAccountID, dsmGroupID)
+	return s.ensureDSMMapping(ctx, "member", providerSlug, externalID, departmentSubject, dsmAccountID, dsmGroupID)
 }
 
 func (s *Service) ensureDSMMapping(ctx context.Context, mappingType, providerSlug, externalAccountID, providerGroupID, dsmAccountID, dsmGroupID string) error {

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 	"github.com/dsmpass/dsmpass/go/internal/identity"
 	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
@@ -83,7 +84,9 @@ ORDER BY a.id`, sourceSlug)
 				}
 			}
 			err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, initialPassword)
-			if err != nil {
+			if errors.Is(err, helperclient.ErrDingTalkMembershipOnly) {
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", err.Error())
+			} else if err != nil {
 				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")
 				resetErrors = append(resetErrors, fmt.Errorf("全量同步重置 %s 的 DSM/SMB 密码未确认完成；已完成的账号不会回滚，请排查后重新全量同步：%w", username, err))
 			} else {

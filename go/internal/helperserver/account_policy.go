@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/securefs"
 )
 
@@ -19,11 +20,18 @@ import (
 // Existing DSM accounts are enrolled by the root install migration or an
 // explicit root action. The installer can also pin local groups for directory reuse.
 type directoryUserGrant struct {
-	UID    int            `json:"uid"`
-	Groups map[string]int `json:"groups,omitempty"`
+	DingTalk *db.DingTalkUserBinding `json:"dingtalk,omitempty"`
+	UID      int                     `json:"uid"`
+	Groups   map[string]int          `json:"groups,omitempty"`
+}
+
+type dingTalkDirectoryScope struct {
+	Sources []string       `json:"sources"`
+	Users   map[string]int `json:"users"`
 }
 
 type accountPolicy struct {
+	DingTalkScope           *dingTalkDirectoryScope       `json:"dingtalk_scope,omitempty"`
 	DirectoryUsers          map[string]directoryUserGrant `json:"directory_users,omitempty"`
 	Users                   map[string]int                `json:"users"`
 	Groups                  map[string]int                `json:"groups"`
@@ -191,9 +199,16 @@ func readAccountPolicy(cfg config.HelperConfig) (accountPolicy, error) {
 // System UIDs are nonnegative. Older Helpers also deny this binding.
 const revokedUserID = -1
 
+var errUserNotEnrolled = errors.New("尚未登记")
+
+var errDingTalkMembershipOnly = errors.New("钉钉同名用户仅获通讯录同步授权，保留 DSM/SMB 密码和账号状态")
+
 func requireManagedUser(cfg config.HelperConfig, username string) error {
 	grant, err := userEnrollment(cfg, username)
 	if err == nil && grant != nil {
+		if grant.DingTalk != nil {
+			return fmt.Errorf("DSM 用户 %q: %w", username, errDingTalkMembershipOnly)
+		}
 		return fmt.Errorf("DSM 用户 %q 已获通讯录同步授权，登录、改密和停用需独立核实账号归属", username)
 	}
 	return err
@@ -217,9 +232,18 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 			if grant.UID != a.id {
 				return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d", username, grant.UID, a.id)
 			}
+			if grant.DingTalk != nil {
+				groups, err := systemAccounts(cfg.GroupPath, true)
+				if err != nil {
+					return nil, err
+				}
+				if !ordinaryInstallUser(a, groups) {
+					return nil, errors.New("仅普通本地用户可按钉钉姓名关联")
+				}
+			}
 			return &grant, nil
 		}
-		return nil, fmt.Errorf("DSM 用户 %q 尚未登记（当前 UID %d），请管理员运行 setup-helper-sudo.sh 批量核对当前映射", username, a.id)
+		return nil, fmt.Errorf("DSM 用户 %q %w（当前 UID %d），请管理员运行 setup-helper-sudo.sh 批量核对当前映射", username, errUserNotEnrolled, a.id)
 	}
 	if id == revokedUserID {
 		return nil, fmt.Errorf("DSM 用户 %q 的授权已撤销", username)
@@ -405,7 +429,11 @@ func verifyAccountAbsent(cfg config.HelperConfig, name string) error {
 		return err
 	}
 	_, limited := p.DirectoryUsers[name]
-	if _, bound := p.Users[name]; bound || limited {
+	captured := false
+	if p.DingTalkScope != nil {
+		_, captured = p.DingTalkScope.Users[name]
+	}
+	if _, bound := p.Users[name]; bound || limited || captured {
 		return fmt.Errorf("DSM 用户 %q 已有授权或撤销记录，请管理员核实后再重建", name)
 	}
 	return nil

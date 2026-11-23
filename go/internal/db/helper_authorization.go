@@ -10,6 +10,7 @@ import (
 type HelperAuthorizationQuery struct {
 	DatabasePath string `json:"database_path"`
 	Action       string `json:"action"`
+	Subject      string `json:"subject,omitempty"`
 	Username     string `json:"username"`
 	Groupname    string `json:"groupname,omitempty"`
 	IdentityID   string `json:"identity_id,omitempty"`
@@ -18,15 +19,23 @@ type HelperAuthorizationQuery struct {
 }
 
 type HelperAuthorizationResult struct {
-	Allowed    bool                      `json:"allowed"`
-	Error      string                    `json:"error,omitempty"`
-	Enrollment *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
+	DingTalkBinding *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
+	Allowed         bool                      `json:"allowed"`
+	Error           string                    `json:"error,omitempty"`
+	Enrollment      *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
-	if q != nil && request.Action == "directory_member" && request.Username != "" && request.Groupname != "" {
+	if q != nil && request.Action == "dingtalk_member" {
+		var allowed bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+`
+		 AND `+uniqueDingTalkName+` AND a.dsm_username=? AND g.dsm_groupname=? AND src.slug=? AND e.subject=?)`,
+			request.Username, request.Groupname, request.SourceSlug, request.Subject).Scan(&allowed)
+		return allowed, err
+	}
+	if q != nil && (request.Action == "directory_member" || request.Action == "other_directory_member") && request.Username != "" && request.Groupname != "" {
 		var mapped bool
-		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+` AND a.dsm_username = ? AND g.dsm_groupname = ?)`, request.Username, request.Groupname).Scan(&mapped)
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+` AND a.dsm_username = ? AND g.dsm_groupname = ? AND (src.provider_type<>'dingtalk' OR (? AND `+uniqueDingTalkName+`)))`, request.Username, request.Groupname, request.Action == "directory_member").Scan(&mapped)
 		return mapped, err
 	}
 	if q != nil && request.Action == "directory_group" && request.Groupname != "" {
