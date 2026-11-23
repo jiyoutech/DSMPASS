@@ -3055,3 +3055,28 @@ func TestSyncPreservesManualLoginPreference(t *testing.T) {
 		}
 	}
 }
+
+func TestOffboardingRunsBeforeGroupConflicts(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	s := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, q)
+	seedSyncedAccount(t, ctx, database, "source", "i", "e", "u", "demo", "2000-01-01")
+	seedSyncedAccount(t, ctx, database, "source", "other", "external", "u2", "shared", "2000-01-01")
+	seedGroupMember(t, ctx, database, "source", "g", "dg", "m", "dept", "groupname", "i", 1, "created")
+	_, err = database.Exec(`UPDATE dsm_accounts SET allow_login=0;
+ UPDATE dsm_mapping_entries SET active=0 WHERE mapping_type='user';
+ INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_id,dsm_account_id) VALUES('another','user','source2','e2','account-other');
+ UPDATE dsm_groups SET provision_status='conflict'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.syncSourceToDSM(ctx, "run", "source", "2000-01-01", sourceSyncPolicy{DisableMissingUsers: true})
+	if err == nil || !strings.Contains(err.Error(), "冲突") || fmt.Sprint(helper.disabled) != "[demo]" {
+		t.Fatalf("disabled=%v err=%v", helper.disabled, err)
+	}
+}

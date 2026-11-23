@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -255,6 +256,16 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
 		}
 	}
+	var disableErr error
+	if policy.DisableMissingUsers {
+		operations, disableErr = s.disableMissingAccounts(ctx, runID, sourceSlug, logBuffer, progress)
+	}
+	provisioned, err := s.provisionSourceToDSM(ctx, runID, sourceSlug, policy, logBuffer, progress)
+	return append(operations, provisioned...), errors.Join(disableErr, err)
+}
+
+func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+	var operations []syncsvc.PlanItem
 	var groupConflicts, accountConflicts int
 	if err := s.store.DBTX().QueryRowContext(ctx, `
 	SELECT COUNT(*)
@@ -529,13 +540,16 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		}
 	}
 
-	if !policy.DisableMissingUsers {
-		return operations, errors.Join(accountErrors...)
-	}
+	return operations, errors.Join(accountErrors...)
+}
+
+func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug string, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+	var operations []syncsvc.PlanItem
+	var accountErrors []error
 	disableRows, err := s.store.DBTX().QueryContext(ctx, `
 		SELECT DISTINCT a.id, a.dsm_username
 		FROM dsm_accounts a
-		WHERE a.allow_login = 1
+		WHERE a.provision_status <> 'disabled' AND a.provision_status <> 'conflict'
 		  AND EXISTS (
 			SELECT 1
 			FROM dsm_mapping_entries stale
@@ -579,7 +593,8 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		accountID, username := item.accountID, item.username
 		if _, err := s.helper.DisableUser(ctx, "sync_disable_"+randomHex(8), username); err != nil {
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "failed", "active", "active", err.Error())
-			return operations, errors.Join(append(accountErrors, err)...)
+			accountErrors = append(accountErrors, fmt.Errorf("停用 %s: %w", username, err))
+			continue
 		}
 		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET allow_login = 0, provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, accountID)
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "success", "active", "disabled", "")
