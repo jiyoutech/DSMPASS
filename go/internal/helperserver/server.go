@@ -298,6 +298,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return s.disableAccount(cfg, payload)
 	case "scoped_web_group_approval":
 		return s.webGroupApproval(cfg, payload)
+	case "scoped_add_group_members":
+		return s.addGroupMembers(cfg, payload)
 	case "scoped_provision_group", "scoped_add_group_member", "scoped_remove_group_member":
 		return s.mutateGroup(cfg, action, payload)
 	default:

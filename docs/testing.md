@@ -133,6 +133,20 @@ DSMPASS_DSM_INTEGRATION=1 /volume1/@tmp/dsmpass-helper.test \
 - 永久改密先记录执行中状态，命令失败或进程中断保留待确认状态；重复同一请求不会再次执行未知结果的命令。只有新的显式全量请求可重新尝试。原生命令返回成功记为命令完成，不等同于已验证客户端重新登录。
 - 上述 DSM 实机集成测试还会在隔离账号上复现旧版密码不一致，调用全量同步使用的 Helper 改密操作，验证 DSM 和全新 SMB 连接均接受统一密码；之后再次临时登录仍保留该密码，另一账号不受改密影响。
 
+## DSM 群组批量写入测试
+
+在测试 NAS 的私有可执行目录使用上面编译的 Helper 测试程序。小样本会创建 4 个停用的临时账号和 2 个组，分别验证批量写入、逐人写入和重复核对。
+
+```bash
+DSMPASS_DSM_GROUP_BATCH_INTEGRATION=1 ./dsmpass-helper.test -test.run '^TestDSMRealGroupMemberBatch$' -test.v
+```
+
+规模测试会在真实 DSM 创建 700 个停用账号和 100 个组。每组先加入 2 人，再追加 5 人，最后再次核对全部 700 条成员关系。输出分别记录创建用户、建组、追加、重复核对和清理的耗时。两个测试都使用随机名称和独立授权文件，清理时按记录的 UID、GID 核验并删除测试对象。
+
+```bash
+DSMPASS_DSM_GROUP_SCALE=100x7 ./dsmpass-helper.test -test.run '^TestDSMRealGroupMemberScale$' -test.v -test.timeout=0
+```
+
 ## 前端构建检查
 
 前端检查命令：

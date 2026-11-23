@@ -490,19 +490,13 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 			  AND me.dsm_group_id = m.dsm_group_id
 			  AND me.dsm_account_id = m.dsm_account_id
 		  )
-		ORDER BY m.created_at`, sourceSlug)
+		ORDER BY g.dsm_groupname, m.created_at, m.id`, sourceSlug)
 	if err != nil {
 		return operations, errors.Join(append(accountErrors, err)...)
 	}
-	type pendingMemberProvision struct {
-		id        string
-		groupname string
-		username  string
-		status    string
-	}
-	var pendingMembers []pendingMemberProvision
+	var pendingMembers []syncMember
 	for memberRows.Next() {
-		var item pendingMemberProvision
+		var item syncMember
 		if err := memberRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
 			memberRows.Close()
 			return operations, errors.Join(append(accountErrors, err)...)
@@ -517,21 +511,10 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 	if progress != nil {
 		progress.setTotal(ctx, "同步 DSM 成员", "正在同步 DSM 成员", len(pendingMembers))
 	}
-	for _, item := range pendingMembers {
-		id, groupname, username, status := item.id, item.groupname, item.username, item.status
-		if _, err := s.helper.AddGroupMember(ctx, "sync_member_"+randomHex(8), groupname, username); err != nil {
-			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname+":"+username, `UPDATE group_members SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, errors.Join(append(accountErrors, err)...)
-		}
-		if err := s.saveGroupMembership(ctx, id, groupname+":"+username); err != nil {
-			return operations, errors.Join(append(accountErrors, err)...)
-		}
-		s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "success", status, "created", "")
-		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group_member", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, DSMGroupname: groupname, ProvisionStatus: "created"})
-		if progress != nil {
-			progress.step(ctx, "同步 DSM 成员", groupname+":"+username)
-		}
+	memberOps, err := s.syncGroupMembers(ctx, runID, sourceSlug, pendingMembers, logBuffer, progress)
+	operations = append(operations, memberOps...)
+	if err != nil {
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 
 	if policy.DeactivateMissingData {

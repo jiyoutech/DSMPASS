@@ -1,0 +1,146 @@
+package helperserver
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+)
+
+func enrollBatchUsers(t *testing.T, cfg config.HelperConfig) {
+	t.Helper()
+	for _, name := range []string{"alice", "bob", "engineering"} {
+		if err := updateAccountPolicy(cfg, name, name == "engineering", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestGroupBatchCreationAndSelectiveAppend(t *testing.T) {
+	cfg := policyTestConfig(t)
+	enrollBatchUsers(t, cfg)
+	t.Setenv("FIXTURE_GROUP", cfg.GroupPath)
+	cfg.SynoGroupPath = filepath.Join(t.TempDir(), "synogroup")
+	create := "#!/bin/sh\n[ \"$#\" = 4 ] && [ \"$1:$2:$3:$4\" = '--add:testing:alice:bob' ] || exit 1\necho 'testing:x:65538:alice,bob' >> \"$FIXTURE_GROUP\"\n"
+	if err := os.WriteFile(cfg.SynoGroupPath, []byte(create), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	names := []string{"alice", "bob"}
+	confirmed, err := s.applyGroupMembers(cfg, "testing", names)
+	if err != nil || !slices.Equal(confirmed, names) {
+		t.Fatalf("create %v %v", confirmed, err)
+	}
+	if err := requireManagedGroup(cfg, "testing"); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SynoWebAPIPath = filepath.Join(t.TempDir(), "synowebapi")
+	script := `#!/bin/sh
+[ "$#" = 7 ] && [ "$1" = --exec ] && [ "$2" = api=SYNO.Core.Group.Member ] && [ "$3" = version=1 ] && [ "$4" = method=change ] && [ "$5" = 'group="engineering"' ] && [ "$6" = 'add_member=["bob"]' ] && [ "$7" = 'remove_member=[]' ] || exit 1
+sed 's/^engineering:x:65536:alice$/engineering:x:65536:alice,bob/' "$FIXTURE_GROUP" > "$FIXTURE_GROUP.new" && mv "$FIXTURE_GROUP.new" "$FIXTURE_GROUP"
+echo '{"success":true}'
+`
+	if err := os.WriteFile(cfg.SynoWebAPIPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.applyGroupMembers(cfg, "engineering", names); err != nil || !slices.Equal(got, names) {
+		t.Fatalf("append %v %v", got, err)
+	}
+	cfg.SynoWebAPIPath = "/missing-command"
+	if got, err := s.applyGroupMembers(cfg, "engineering", []string{"bob", "alice"}); err != nil || !slices.Equal(got, []string{"bob", "alice"}) {
+		t.Fatalf("repeat %v %v", got, err)
+	}
+}
+
+func TestGroupBatchPreflightAndPartialReadback(t *testing.T) {
+	cfg := policyTestConfig(t)
+	enrollBatchUsers(t, cfg)
+	s := &Server{}
+	for _, names := range [][]any{nil, {"alice", "alice"}, {1}, {"root"}, make([]any, 33)} {
+		resp := s.addGroupMembers(cfg, map[string]any{"dsm_groupname": "engineering", "dsm_usernames": names})
+		if resp["error_code"] != "BAD_REQUEST" {
+			t.Fatalf("unexpected validation response %v", resp)
+		}
+	}
+	for _, group := range []string{"engineering", "finance", "administrators"} {
+		users := []string{"alice", "operator"}
+		if group != "engineering" {
+			users = []string{"bob"}
+		}
+		if confirmed, err := s.applyGroupMembers(cfg, group, users); err == nil || len(confirmed) > 0 || errors.Is(err, helperclient.ErrGroupBatchUnsupported) {
+			t.Fatalf("invalid batch allowed %s: %v %v", group, confirmed, err)
+		}
+	}
+	cfg.SynoWebAPIPath = filepath.Join(t.TempDir(), "synowebapi")
+	for _, tc := range []struct {
+		response    string
+		unsupported bool
+	}{
+		{`{"success":false,"error":{"code":103}}`, true},
+		{`{"success":false,"error":{"code":105}}`, false},
+		{`{"success":true}`, false},
+		{"broken-json", false},
+	} {
+		if err := os.WriteFile(cfg.SynoWebAPIPath, []byte("#!/bin/sh\necho '"+tc.response+"'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		confirmed, err := s.applyGroupMembers(cfg, "engineering", []string{"bob", "alice"})
+		if err == nil || errors.Is(err, helperclient.ErrGroupBatchUnsupported) != tc.unsupported {
+			t.Fatalf("%s: %v", tc.response, err)
+		}
+		if !tc.unsupported && !slices.Equal(confirmed, []string{"alice"}) {
+			t.Fatalf("incorrect partial confirmation: %v", confirmed)
+		}
+	}
+	noGroupDB := cfg
+	noGroupDB.GroupPath = filepath.Join(t.TempDir(), "missing")
+	if _, err := s.applyGroupMembers(noGroupDB, "engineering", []string{"alice"}); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatal(err)
+	}
+}
+
+func TestGroupBatchRechecksGroupIdentityAfterDSMWrite(t *testing.T) {
+	cfg := policyTestConfig(t)
+	enrollBatchUsers(t, cfg)
+	t.Setenv("FIXTURE_GROUP", cfg.GroupPath)
+	cfg.SynoWebAPIPath = filepath.Join(t.TempDir(), "synowebapi")
+	script := `#!/bin/sh
+sed 's/^engineering:x:65536:alice$/engineering:x:65539:alice,bob/' "$FIXTURE_GROUP" > "$FIXTURE_GROUP.new" && mv "$FIXTURE_GROUP.new" "$FIXTURE_GROUP"
+echo '{"success":true}'
+`
+	if err := os.WriteFile(cfg.SynoWebAPIPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := (&Server{}).applyGroupMembers(cfg, "engineering", []string{"bob"})
+	if err == nil || !strings.Contains(err.Error(), "GID changed") || len(confirmed) != 0 {
+		t.Fatalf("replaced group: %v %v", confirmed, err)
+	}
+}
+
+func TestGroupBatchRestrictedAccountCannotCreateOrClaimGroup(t *testing.T) {
+	cfg := policyTestConfig(t)
+	enrollBatchUsers(t, cfg)
+	policy, err := readAccountPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(policy.Users, "bob")
+	policy.DirectoryUsers = map[string]directoryUserGrant{"bob": {UID: 1027, Groups: map[string]int{"finance": 65537}}}
+	if err := saveAccountPolicy(cfg, policy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Server{}).applyGroupMembers(cfg, "newgroup", []string{"alice", "bob"}); !errors.Is(err, helperclient.ErrGroupBatchUnsupported) {
+		t.Fatalf("mixed grants must follow single-member creation order: %v", err)
+	}
+	if _, err := normalGroup(cfg, "newgroup"); err != os.ErrNotExist {
+		t.Fatal("group created before authorization")
+	}
+	if confirmed, err := (&Server{}).applyGroupMembers(cfg, "engineering", []string{"alice", "bob"}); err == nil || errors.Is(err, helperclient.ErrGroupBatchUnsupported) || len(confirmed) > 0 {
+		t.Fatalf("unauthorized member: %v %v", confirmed, err)
+	}
+}

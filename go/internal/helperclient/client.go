@@ -19,6 +19,15 @@ import (
 
 var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
 
+// GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
+const GroupMemberBatchSize = 32
+
+var ErrGroupBatchUnsupported = errors.New("DSM group member batching is unavailable")
+
+type GroupMemberBatchClient interface {
+	AddGroupMembers(context.Context, string, string, []string) ([]string, error)
+}
+
 type Client interface {
 	HealthCheck(ctx context.Context) (map[string]any, error)
 	RelayLogin(ctx context.Context, requestID, username, identityID, loginSource string) (RelayLoginResult, error)
@@ -268,6 +277,41 @@ func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupna
 	return boolResponse(response, err)
 }
 
+// AddGroupMembers returns only names the Helper confirmed by reading the group.
+func (c UnixSocketClient) AddGroupMembers(ctx context.Context, requestID, groupname string, usernames []string) ([]string, error) {
+	response, err := c.send(ctx, map[string]any{
+		"action": "scoped_add_group_members", "request_id": requestID,
+		"dsm_groupname": groupname, "dsm_usernames": usernames,
+	})
+	if err != nil {
+		return nil, err
+	}
+	values, ok := response["confirmed"].([]any)
+	if !ok {
+		return nil, errors.New("missing confirmed DSM group members")
+	}
+	wanted := make(map[string]bool, len(usernames))
+	for _, name := range usernames {
+		wanted[name] = true
+	}
+	confirmed := make([]string, 0, len(values))
+	for _, value := range values {
+		name, ok := value.(string)
+		if !ok || !wanted[name] {
+			return nil, errors.New("invalid confirmed DSM group members")
+		}
+		delete(wanted, name)
+		confirmed = append(confirmed, name)
+	}
+	if message, _ := response["batch_error"].(string); message != "" {
+		return confirmed, errors.New(message)
+	}
+	if len(wanted) != 0 {
+		return confirmed, errors.New("DSM did not confirm all requested group members")
+	}
+	return confirmed, nil
+}
+
 func (c UnixSocketClient) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	response, err := c.send(ctx, map[string]any{
 		"action":        "scoped_remove_group_member",
@@ -322,6 +366,8 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	// recovery. Health checks and unrelated actions retain their short timeout.
 	timeout := c.Timeout
 	switch action {
+	case "scoped_add_group_members":
+		timeout = max(timeout, 120*time.Second)
 	case "scoped_prepare_browser_login", "complete_browser_login":
 		if timeout < 75*time.Second {
 			timeout = 75 * time.Second
@@ -361,6 +407,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	if success, _ := response["success"].(bool); !success {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.failure", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 		if code, _ := response["error_code"].(string); code != "" {
+			if action == "scoped_add_group_members" && (code == "GROUP_BATCH_UNSUPPORTED" || (code == "BAD_REQUEST" && response["error"] == "unsupported action")) {
+				return nil, ErrGroupBatchUnsupported
+			}
 			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
 				return nil, ErrDingTalkMembershipOnly
 			}
