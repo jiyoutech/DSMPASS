@@ -23,10 +23,6 @@ func (h *batchSyncHelper) AddGroupMembers(_ context.Context, _ string, group str
 		switch h.mode {
 		case "fallback":
 			return nil, helperclient.ErrGroupBatchUnsupported
-		case "scoped":
-			if len(names) > helperclient.ScopedGroupMemberBatchSize {
-				return nil, helperclient.ErrScopedGroupBatchSize
-			}
 		case "partial":
 			return names[1:2], errors.New("partial DSM write")
 		}
@@ -40,7 +36,7 @@ func (h *batchSyncHelper) AddGroupMember(_ context.Context, _ string, group, nam
 }
 
 func TestSyncGroupMembersBatchesReadbackAndFallback(t *testing.T) {
-	for _, mode := range []string{"success", "fallback", "scoped", "partial", "rollback"} {
+	for _, mode := range []string{"success", "fallback", "partial", "rollback"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
@@ -90,11 +86,6 @@ func TestSyncGroupMembersBatchesReadbackAndFallback(t *testing.T) {
 				assertLocalMemberStatus(t, ctx, database, "user000", 1, "failed")
 				assertLocalMemberStatus(t, ctx, database, "user001", 1, "created")
 				assertLocalMemberStatus(t, ctx, database, "user201", 1, "pending")
-			case "scoped":
-				want := []string{"alpha:200", "alpha:32", "alpha:32", "alpha:32", "alpha:32", "alpha:32", "alpha:32", "alpha:9", "beta:1"}
-				if err != nil || len(ops) != 202 || len(helper.singles) != 0 || !slices.Equal(helper.batches, want) {
-					t.Fatalf("scoped batches %v %v", helper.batches, err)
-				}
 			case "rollback":
 				if err == nil || len(ops) != 0 {
 					t.Fatalf("save error %v %v", ops, err)

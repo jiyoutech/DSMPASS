@@ -1,6 +1,8 @@
 package helperserver
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
@@ -167,8 +170,9 @@ func TestGroupBatchSize200And201(t *testing.T) {
 	if err := saveAccountPolicy(cfg, policy); err != nil {
 		t.Fatal(err)
 	}
+	server := &Server{}
 	call := func(n int) map[string]any {
-		return (&Server{}).addGroupMembers(cfg, map[string]any{"dsm_groupname": "engineering", "dsm_usernames": names[:n]})
+		return server.addGroupMembers(cfg, map[string]any{"dsm_groupname": "engineering", "dsm_usernames": names[:n]})
 	}
 	if r := call(201); r["error_code"] != "BAD_REQUEST" {
 		t.Fatal(r)
@@ -181,7 +185,87 @@ func TestGroupBatchSize200And201(t *testing.T) {
 	if err := saveAccountPolicy(cfg, policy); err != nil {
 		t.Fatal(err)
 	}
-	if r := call(200); r["error_code"] != "SCOPED_GROUP_BATCH_SIZE" {
+	if r := call(200); r["batch_error"] == nil || len(r["confirmed"].([]string)) != 0 {
 		t.Fatal(r)
 	}
+
+	var targets []string
+	policy.DirectoryUsers = map[string]directoryUserGrant{}
+	for _, v := range names[:200] {
+		name := v.(string)
+		targets = append(targets, name)
+		policy.DirectoryUsers[name] = directoryUserGrant{UID: 1026 + len(targets) - 1, Groups: map[string]int{"engineering": 65536}}
+		delete(policy.Users, name)
+	}
+	if err := saveAccountPolicy(cfg, policy); err != nil {
+		t.Fatal(err)
+	}
+	q := batchMemberTestStore(t, targets, "engineering")
+	server = NewWithStore(cfg, q)
+	if r := call(200); r["batch_error"] != nil || len(r["confirmed"].([]string)) != 200 {
+		t.Fatal(r)
+	}
+	if _, err := q.DBTX().ExecContext(context.Background(), "UPDATE dsm_mapping_entries SET active=0 WHERE id='member-user199'"); err != nil {
+		t.Fatal(err)
+	}
+	if r := call(200); r["batch_error"] == nil || len(r["confirmed"].([]string)) != 0 {
+		t.Fatal(r)
+	}
+}
+
+func batchMemberTestStore(t *testing.T, names []string, group string) *db.Queries {
+	t.Helper()
+	q := syncedPasswordTestStore(t, "unused-seed")
+	addEngineeringMapping(t, q)
+	ctx := context.Background()
+	if _, err := q.DBTX().ExecContext(ctx, "UPDATE dsm_groups SET dsm_groupname=?,dsm_groupname_norm=? WHERE id='group'", group, group); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO app_identities(id,status) SELECT value,'active' FROM json_each(?)`,
+		`INSERT INTO external_accounts(id,provider_slug,subject,subject_norm,subject_type,app_identity_id,active,display_name) SELECT value,'source',value,value,'directory_subject',value,1,value FROM json_each(?)`,
+		`INSERT INTO dsm_accounts(id,app_identity_id,dsm_username,dsm_username_norm,provision_status) SELECT value,value,value,value,'linked_existing' FROM json_each(?)`,
+		`INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_id,dsm_account_id) SELECT 'user-'||value,'user','source',value,value FROM json_each(?)`,
+		`INSERT INTO group_members(id,dsm_group_id,dsm_account_id) SELECT value,'group',value FROM json_each(?)`,
+		`INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_id,provider_group_id,dsm_group_id,dsm_account_id) SELECT 'member-'||value,'member','source',value,'department','group',value FROM json_each(?)`,
+	} {
+		if _, err := q.DBTX().ExecContext(ctx, stmt, string(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return q
+}
+
+func TestBatchMembershipPreservesPinnedSubjectAndSource(t *testing.T) {
+	q := batchMemberTestStore(t, []string{"alice", "bob"}, "engineering")
+	ctx := context.Background()
+	check := func(scope db.HelperMemberScope, want bool) {
+		t.Helper()
+		ok, err := db.HelperAccountAllowed(ctx, q, db.HelperAuthorizationQuery{Action: "directory_member_batch", Groupname: "engineering", Members: []db.HelperMemberScope{scope}})
+		if err != nil || ok != want {
+			t.Fatalf("scope %+v: %v %v", scope, ok, err)
+		}
+	}
+	scope := db.HelperMemberScope{Username: "alice", DingTalk: &db.DingTalkUserBinding{SourceSlug: "source", Subject: "alice"}}
+	check(scope, false)
+	scope.OtherGroup = true
+	check(scope, true) // independently pinned non-DingTalk department
+	if _, err := q.DBTX().ExecContext(ctx, "UPDATE identity_sources SET provider_type='dingtalk'"); err != nil {
+		t.Fatal(err)
+	}
+	scope.OtherGroup = false
+	check(scope, true)
+	scope.DingTalk.Subject = "other"
+	scope.OtherGroup = true
+	check(scope, false)
+	scope.DingTalk = nil
+	check(scope, true) // existing general department grant still requires an unambiguous identity
+	if _, err := q.DBTX().ExecContext(ctx, "UPDATE external_accounts SET display_name='alice' WHERE id='bob'"); err != nil {
+		t.Fatal(err)
+	}
+	check(scope, false)
 }

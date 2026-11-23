@@ -135,7 +135,7 @@ DSMPASS_DSM_INTEGRATION=1 /volume1/@tmp/dsmpass-helper.test \
 
 ## DSM 群组批量写入测试
 
-在测试 NAS 的私有可执行目录使用上面编译的 Helper 测试程序。普通受管账号的成员追加上限为每组每批 200 人。需逐人独立查询来源授权的组以最多 32 人分批。单元测试覆盖第 201 人另起批及拒绝超限请求。小样本会创建 4 个停用的临时账号和 2 个组，分别验证批量写入、逐人写入和重复核对。
+在测试 NAS 的私有可执行目录使用上面编译的 Helper 测试程序。所有可同步账号统一按同组每批最多 200 人追加。Helper 在同一次只读查询中核对本批需要检查的来源映射。单元测试覆盖第 201 人另起批及拒绝超限请求。小样本会创建 4 个停用的临时账号和 2 个组，分别验证批量写入、逐人写入和重复核对。
 
 ```bash
 DSMPASS_DSM_GROUP_BATCH_INTEGRATION=1 ./dsmpass-helper.test -test.run '^TestDSMRealGroupMemberBatch$' -test.v

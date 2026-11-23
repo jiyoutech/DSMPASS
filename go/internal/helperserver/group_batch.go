@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
@@ -43,9 +44,6 @@ func (s *Server) addGroupMembers(cfg config.HelperConfig, payload map[string]any
 		confirmed, err = s.applyGroupMembers(cfg, group, users)
 		return err
 	})
-	if errors.Is(err, helperclient.ErrScopedGroupBatchSize) {
-		return errorResponse("SCOPED_GROUP_BATCH_SIZE", err.Error())
-	}
 	if errors.Is(err, helperclient.ErrGroupBatchUnsupported) {
 		return errorResponse("GROUP_BATCH_UNSUPPORTED", err.Error())
 	}
@@ -58,17 +56,6 @@ func (s *Server) addGroupMembers(cfg config.HelperConfig, payload map[string]any
 
 // Caller holds the existing DSM writer lock. Membership snapshots are scoped to this batch.
 func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users []string) ([]string, error) {
-	if len(users) > helperclient.ScopedGroupMemberBatchSize {
-		policy, err := readAccountPolicy(cfg)
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range users {
-			if _, limited := policy.DirectoryUsers[name]; limited {
-				return nil, helperclient.ErrScopedGroupBatchSize
-			}
-		}
-	}
 	before, lookupErr := normalGroup(cfg, group)
 	// normalGroup returns bare ErrNotExist for a missing group; a failure to open
 	// the system account database is a PathError and must never initiate creation.
@@ -85,24 +72,43 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 			return nil, err
 		}
 	}
+	localUsers, err := systemAccounts(cfg.PasswdPath, false)
+	if err != nil {
+		return nil, err
+	}
+	localGroups, err := systemAccounts(cfg.GroupPath, true)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := readAccountPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var scopes []db.HelperMemberScope
 	for _, name := range users {
+		grant, err := enrolledLocalUser(policy, name, localUsers, localGroups)
+		if err != nil {
+			return nil, err
+		}
+		if grant == nil {
+			continue
+		}
 		if creating {
-			grant, err := userEnrollment(cfg, name)
-			if err != nil {
-				return nil, err
-			}
-			if grant != nil {
-				// The single-member path can check a restricted grant after an
-				// earlier, fully managed member has created this group.
-				return nil, helperclient.ErrGroupBatchUnsupported
-			}
-		} else if err := s.requireMemberEnrollment(cfg, "scoped_add_group_member", name, group); err != nil {
+			return nil, helperclient.ErrGroupBatchUnsupported
+		}
+		pinned := grant.Groups[group] == before.id
+		if !isLocalDirectoryGroup(group, before.id) || (!pinned && grant.DingTalk == nil) {
+			return nil, errors.New("通讯录成员关系与当前 DSM 群组不符")
+		}
+		scopes = append(scopes, db.HelperMemberScope{Username: name, DingTalk: grant.DingTalk, OtherGroup: pinned})
+	}
+	if len(scopes) != 0 {
+		if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "directory_member_batch", Groupname: group, Members: scopes}); err != nil {
 			return nil, err
 		}
 	}
 	if !creating {
-		// Scoped enrollment can query the directory database for each member.
-		// DSM administrators can change a group independently during those reads.
+		// DSM administrators can change the group while mappings are being verified.
 		current, err := normalGroup(cfg, group)
 		if err != nil {
 			return nil, err
@@ -121,7 +127,6 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 	if len(missing) == 0 {
 		return users, nil
 	}
-	var err error
 	if creating {
 		if err := target.begin(); err != nil {
 			return nil, err

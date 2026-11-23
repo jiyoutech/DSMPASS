@@ -13,6 +13,7 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/diaglog"
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
@@ -20,13 +21,7 @@ import (
 var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
 
 // GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
-const GroupMemberBatchSize = 200
-
-// Directory-only grants can require a separate privileged mapping query per
-// user. Limit their window to fit the Helper deadline and release the writer lock.
-const ScopedGroupMemberBatchSize = 32
-
-var ErrScopedGroupBatchSize = errors.New("retry with a smaller directory authorization batch")
+const GroupMemberBatchSize = db.MaxGroupMembers
 
 var ErrGroupBatchUnsupported = errors.New("DSM group member batching is unavailable")
 
@@ -413,9 +408,6 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	if success, _ := response["success"].(bool); !success {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.failure", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 		if code, _ := response["error_code"].(string); code != "" {
-			if action == "scoped_add_group_members" && code == "SCOPED_GROUP_BATCH_SIZE" {
-				return nil, ErrScopedGroupBatchSize
-			}
 			if action == "scoped_add_group_members" && (code == "GROUP_BATCH_UNSUPPORTED" || (code == "BAD_REQUEST" && response["error"] == "unsupported action")) {
 				return nil, ErrGroupBatchUnsupported
 			}
