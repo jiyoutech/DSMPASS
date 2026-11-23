@@ -11,4 +11,4 @@ fi
 # Bootstrap only from a freshly installed, trusted SPK. The package account is
 # never granted sudo access to this installer or to the Helper executable.
 exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-  /var/packages/DSMPASS/target/bin/dsmpass-helper install-helper
+  /var/packages/DSMPASS/target/bin/dsmpass-helper install-helper "$@"

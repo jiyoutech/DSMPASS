@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
 func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map[string]any) map[string]any {
@@ -60,7 +61,13 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 					return err
 				}
 			}
-			if err := requireManagedGroup(cfg, groupname); err != nil {
+			var mapped func() (bool, error)
+			if action == "scoped_provision_group" {
+				mapped = func() (bool, error) {
+					return s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_group", Groupname: groupname})
+				}
+			}
+			if err := checkGroupEnrollment(cfg, groupname, mapped); err != nil {
 				return err
 			}
 		}

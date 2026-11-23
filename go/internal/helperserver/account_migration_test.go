@@ -43,12 +43,7 @@ INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_i
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := syncedPasswordTestStore(t, "alice")
-			if _, err := q.DBTX().ExecContext(context.Background(), `
-INSERT INTO provider_groups(id,provider_slug,subject,subject_norm,name) VALUES ('department','source','department','department','Engineering');
-INSERT INTO dsm_groups(id,dsm_groupname,dsm_groupname_norm,provision_status) VALUES ('group','engineering','engineering','created');
-INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,provider_group_id,dsm_group_id) VALUES ('group','group','source','department','group');`); err != nil {
-				t.Fatal(err)
-			}
+			addEngineeringMapping(t, q)
 			if tc.change != "" {
 				if _, err := q.DBTX().ExecContext(context.Background(), tc.change); err != nil {
 					t.Fatal(err)
@@ -86,7 +81,7 @@ func TestAccountMigrationPreservesPasswordsAndRejectsPrivilegedTargets(t *testin
 				users[i], users[j] = users[j], users[i]
 			}
 		}
-		result, err := migrateAccountPolicy(cfg, func() (*db.HelperEnrollmentSnapshot, error) {
+		result, err := migrateAccountPolicy(cfg, false, func() (*db.HelperEnrollmentSnapshot, error) {
 			return &db.HelperEnrollmentSnapshot{Users: users, Groups: []string{"engineering", "engineering", "administrators", "users"}}, nil
 		})
 		if err != nil {
@@ -111,7 +106,7 @@ func TestAccountMigrationNeverRepeatsAfterRevocationOrNewMappings(t *testing.T) 
 	first := func() (*db.HelperEnrollmentSnapshot, error) {
 		return &db.HelperEnrollmentSnapshot{Users: []string{"alice"}, Groups: []string{"engineering"}}, nil
 	}
-	if _, err := migrateAccountPolicy(cfg, first); err != nil {
+	if _, err := migrateAccountPolicy(cfg, false, first); err != nil {
 		t.Fatal(err)
 	}
 	if err := updateAccountPolicy(cfg, "alice", false, true); err != nil {
@@ -120,7 +115,7 @@ func TestAccountMigrationNeverRepeatsAfterRevocationOrNewMappings(t *testing.T) 
 	if err := updateAccountPolicy(cfg, "engineering", true, true); err != nil {
 		t.Fatal(err)
 	}
-	result, err := migrateAccountPolicy(cfg, func() (*db.HelperEnrollmentSnapshot, error) {
+	result, err := migrateAccountPolicy(cfg, false, func() (*db.HelperEnrollmentSnapshot, error) {
 		t.Fatal("completed migration queried mutable database again")
 		return nil, nil
 	})
@@ -147,7 +142,7 @@ func TestAccountMigrationKeepsExistingUIDBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, cfg.PasswdPath, strings.Replace(string(data), "alice:x:1026:", "alice:x:1030:", 1))
-	_, err = migrateAccountPolicy(cfg, func() (*db.HelperEnrollmentSnapshot, error) {
+	_, err = migrateAccountPolicy(cfg, false, func() (*db.HelperEnrollmentSnapshot, error) {
 		return &db.HelperEnrollmentSnapshot{Users: []string{"alice", "bob"}, Groups: []string{}}, nil
 	})
 	if err != nil {
@@ -178,7 +173,7 @@ func TestAccountMigrationFailureDoesNotPersistPartialGrants(t *testing.T) {
 			if failure == "missing_admins" {
 				writeFile(t, cfg.GroupPath, "users:x:100:alice\n")
 			}
-			_, err = migrateAccountPolicy(cfg, func() (*db.HelperEnrollmentSnapshot, error) {
+			_, err = migrateAccountPolicy(cfg, false, func() (*db.HelperEnrollmentSnapshot, error) {
 				switch failure {
 				case "query":
 					return nil, errors.New("database unavailable")
@@ -210,7 +205,7 @@ func TestAccountMigrationEmptySnapshotAndConcurrentAttempts(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := migrateAccountPolicy(cfg, func() (*db.HelperEnrollmentSnapshot, error) {
+			_, err := migrateAccountPolicy(cfg, false, func() (*db.HelperEnrollmentSnapshot, error) {
 				queries.Add(1)
 				return &db.HelperEnrollmentSnapshot{Users: []string{}, Groups: []string{}}, nil
 			})
@@ -223,7 +218,17 @@ func TestAccountMigrationEmptySnapshotAndConcurrentAttempts(t *testing.T) {
 	if queries.Load() != 1 {
 		t.Fatalf("migration queried database %d times", queries.Load())
 	}
-	if _, err := migrateInstalledAccounts(cfg); err == nil {
+	if _, err := migrateInstalledAccounts(cfg, false); err == nil {
 		t.Fatal("nonprivileged configuration allowed production migration")
+	}
+}
+
+func addEngineeringMapping(t *testing.T, q *db.Queries) {
+	t.Helper()
+	if _, err := q.DBTX().ExecContext(context.Background(), `
+INSERT INTO provider_groups(id,provider_slug,subject,subject_norm,name) VALUES ('department','source','department','department','Engineering');
+INSERT INTO dsm_groups(id,dsm_groupname,dsm_groupname_norm,provision_status) VALUES ('group','engineering','engineering','created');
+INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,provider_group_id,dsm_group_id) VALUES ('group','group','source','department','group');`); err != nil {
+		t.Fatal(err)
 	}
 }

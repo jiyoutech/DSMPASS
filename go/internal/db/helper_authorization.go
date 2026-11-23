@@ -11,6 +11,7 @@ type HelperAuthorizationQuery struct {
 	DatabasePath string `json:"database_path"`
 	Action       string `json:"action"`
 	Username     string `json:"username"`
+	Groupname    string `json:"groupname,omitempty"`
 	IdentityID   string `json:"identity_id,omitempty"`
 	SourceSlug   string `json:"source_slug,omitempty"`
 	AccountID    string `json:"account_id,omitempty"`
@@ -23,6 +24,19 @@ type HelperAuthorizationResult struct {
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if q != nil && request.Action == "directory_group" && request.Groupname != "" {
+		var mapped bool
+		err := q.DBTX().QueryRowContext(ctx, `
+SELECT EXISTS (
+ SELECT 1 FROM dsm_groups g
+ JOIN dsm_mapping_entries me ON me.dsm_group_id = g.id AND me.mapping_type = 'group' AND me.active = 1
+ JOIN provider_groups pg ON pg.id = me.provider_group_id AND pg.provider_slug = me.provider_slug
+ JOIN identity_sources src ON src.slug = me.provider_slug
+ WHERE g.dsm_groupname = ? AND g.provision_status IN ('pending','failed','created','linked_existing')
+   AND pg.active = 1 AND src.enabled = 1 AND src.directory_sync_enabled = 1
+)`, request.Groupname).Scan(&mapped)
+		return mapped, err
+	}
 	if q == nil || request.Username == "" {
 		return false, errors.New("account authorization requires a database and username")
 	}
