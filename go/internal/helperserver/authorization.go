@@ -17,6 +17,15 @@ import (
 )
 
 func (s *Server) authorizeAccount(cfg config.HelperConfig, request db.HelperAuthorizationQuery) error {
+	if request.Username != "" && cfg.AccountPolicyPath != "" {
+		p, err := readAccountPolicy(cfg)
+		if err != nil {
+			return err
+		}
+		if owner, ok := p.CredentialOwners[request.Username]; ok {
+			request.CredentialOwner = &owner
+		}
+	}
 	allowed, err := s.mappingAllowed(cfg, request)
 	if err != nil {
 		return fmt.Errorf("verify DSM account authorization: %w", err)

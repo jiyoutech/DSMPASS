@@ -30,14 +30,22 @@ type dingTalkDirectoryScope struct {
 	Users   map[string]int `json:"users"`
 }
 
+type verifiedAccountCandidate struct {
+	UID   int                   `json:"uid"`
+	Email string                `json:"email"`
+	Owner db.CredentialIdentity `json:"owner"`
+}
+
 type accountPolicy struct {
-	DingTalkScope           *dingTalkDirectoryScope       `json:"dingtalk_scope,omitempty"`
-	DirectoryUsers          map[string]directoryUserGrant `json:"directory_users,omitempty"`
-	Users                   map[string]int                `json:"users"`
-	Groups                  map[string]int                `json:"groups"`
-	ReusableGroups          map[string]int                `json:"reusable_groups,omitzero"`
-	WebApprovals            map[string]groupWebApproval   `json:"pending_web_group_approvals,omitempty"`
-	LegacyMigrationComplete bool                          `json:"legacy_migration_complete,omitempty"`
+	CredentialCandidates    map[string]verifiedAccountCandidate `json:"credential_candidates,omitempty"`
+	CredentialOwners        map[string]db.CredentialIdentity    `json:"credential_owners,omitempty"`
+	DingTalkScope           *dingTalkDirectoryScope             `json:"dingtalk_scope,omitempty"`
+	DirectoryUsers          map[string]directoryUserGrant       `json:"directory_users,omitempty"`
+	Users                   map[string]int                      `json:"users"`
+	Groups                  map[string]int                      `json:"groups"`
+	ReusableGroups          map[string]int                      `json:"reusable_groups,omitzero"`
+	WebApprovals            map[string]groupWebApproval         `json:"pending_web_group_approvals,omitempty"`
+	LegacyMigrationComplete bool                                `json:"legacy_migration_complete,omitempty"`
 }
 
 type systemAccount struct {
@@ -251,6 +259,15 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 	if id != a.id {
 		return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d，请管理员核实是否为同一账号", username, id, a.id)
 	}
+	if _, bound := p.CredentialOwners[username]; bound {
+		groups, err := systemAccounts(cfg.GroupPath, true)
+		if err != nil {
+			return nil, err
+		}
+		if !ordinaryInstallUser(a, groups) {
+			return nil, errors.New("统一登录和改密仅适用于已核实的普通 DSM 账号")
+		}
+	}
 	return nil, nil
 }
 
@@ -336,6 +353,8 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		delete(p.WebApprovals, name)
 	} else {
 		delete(p.DirectoryUsers, name)
+		delete(p.CredentialOwners, name)
+		delete(p.CredentialCandidates, name)
 	}
 	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
 		return err
@@ -432,6 +451,9 @@ func verifyAccountAbsent(cfg config.HelperConfig, name string) error {
 	captured := false
 	if p.DingTalkScope != nil {
 		_, captured = p.DingTalkScope.Users[name]
+	}
+	if _, ok := p.CredentialCandidates[name]; ok {
+		captured = true
 	}
 	if _, bound := p.Users[name]; bound || limited || captured {
 		return fmt.Errorf("DSM 用户 %q 已有授权或撤销记录，请管理员核实后再重建", name)

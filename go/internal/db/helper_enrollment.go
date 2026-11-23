@@ -11,8 +11,16 @@ type DingTalkUserBinding struct {
 	Subject    string `json:"subject"`
 }
 
+// CredentialIdentity is a stable directory principal captured by the root installer.
+type CredentialIdentity struct {
+	Username   string `json:"username"`
+	SourceSlug string `json:"source_slug"`
+	Subject    string `json:"subject"`
+}
+
 // This snapshot is consumed only by the explicit root installer.
 type HelperEnrollmentSnapshot struct {
+	VerifiedEmails  map[string]CredentialIdentity  `json:"verified_emails,omitempty"`
 	DingTalkSources []string                       `json:"dingtalk_sources,omitempty"`
 	DingTalkUsers   map[string]DingTalkUserBinding `json:"dingtalk_users,omitempty"`
 	Users           []string                       `json:"users"`
@@ -78,7 +86,7 @@ WITH successful AS (
 SELECT CASE WHEN MAX(src.provider_type <> 'dingtalk' AND
             (a.provision_status IN ('created', 'linked_existing') OR COALESCE(h.last_success >= me.created_at, 0)))
             THEN 'user' ELSE 'retry_user' END AS kind, a.dsm_username AS name,
-       CASE WHEN COUNT(DISTINCT e.email_norm) = 1 THEN COALESCE(MAX(mail.email_norm), '') ELSE '' END AS email, '' AS subject
+       CASE WHEN COUNT(DISTINCT e.email_norm) = 1 THEN COALESCE(MAX(mail.email_norm), '') ELSE '' END AS email, '' AS subject, '' AS target
 FROM dsm_accounts a
 JOIN app_identities i ON i.id = a.app_identity_id
 JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id AND me.mapping_type = 'user' AND me.active = 1
@@ -92,19 +100,31 @@ WHERE i.status = 'active' AND e.active = 1 AND src.enabled = 1
     OR (a.provision_status IN ('pending', 'failed') AND src.directory_sync_enabled = 1))
 GROUP BY a.id, a.dsm_username
 UNION
-SELECT 'group' AS kind, g.dsm_groupname AS name, '' AS email, '' AS subject FROM dsm_groups g
+SELECT 'group' AS kind, g.dsm_groupname AS name, '' AS email, '' AS subject, '' AS target FROM dsm_groups g
 JOIN dsm_mapping_entries me ON me.dsm_group_id = g.id AND me.mapping_type = 'group' AND me.active = 1
 JOIN provider_groups pg ON pg.id = me.provider_group_id AND pg.provider_slug = me.provider_slug
 JOIN identity_sources src ON src.slug = me.provider_slug
 WHERE g.provision_status IN ('created', 'linked_existing') AND pg.active = 1
   AND src.enabled = 1 AND src.directory_sync_enabled = 1
 UNION
-SELECT 'member', a.dsm_username, g.dsm_groupname, ''
+SELECT 'member', a.dsm_username, g.dsm_groupname, '', ''
 `+directoryMembershipScope+`
 UNION
-SELECT 'dingtalk', name, source, subject FROM (`+dingTalkBindings+`)
-UNION SELECT 'source', slug, '', '' FROM identity_sources WHERE provider_type='dingtalk' AND enabled=1 AND directory_sync_enabled=1
-ORDER BY kind, name LIMIT 121001`)
+SELECT 'dingtalk', name, source, subject, '' FROM (`+dingTalkBindings+`)
+UNION
+SELECT 'verified_email', e.email_norm, src.slug, e.subject, a.dsm_username FROM external_accounts e
+JOIN app_identities i ON i.id=e.app_identity_id AND i.status='active'
+JOIN identity_sources src ON src.slug=e.provider_slug AND src.enabled=1 AND src.directory_sync_enabled=1
+JOIN dsm_mapping_entries um ON um.mapping_type='user' AND um.active=1 AND um.external_account_id=e.id AND um.provider_slug=src.slug
+JOIN dsm_accounts a ON a.id=um.dsm_account_id AND a.app_identity_id=i.id
+WHERE COALESCE(a.conflict_reason,'')='' AND a.provision_status IN ('created','linked_existing','pending','failed')
+AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other JOIN external_accounts x ON x.id=other.external_account_id AND x.active=1
+ JOIN identity_sources s ON s.slug=other.provider_slug AND s.enabled=1
+ WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>um.id)
+AND e.active=1 AND e.email_verified=1 AND e.email_norm<>'' AND e.subject<>''
+AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.active=1 AND other.email_norm=e.email_norm AND other.id<>e.id)
+UNION SELECT 'source', slug, '', '', '' FROM identity_sources WHERE provider_type='dingtalk' AND enabled=1 AND directory_sync_enabled=1
+ORDER BY kind, name LIMIT 131001`)
 	if err != nil {
 		return nil, err
 	}
@@ -112,14 +132,22 @@ ORDER BY kind, name LIMIT 121001`)
 	result := &HelperEnrollmentSnapshot{Users: []string{}, Groups: []string{}}
 	memberCount := 0
 	for rows.Next() {
-		var kind, name, detail, subject string
-		if err := rows.Scan(&kind, &name, &detail, &subject); err != nil {
+		var kind, name, detail, subject, target string
+		if err := rows.Scan(&kind, &name, &detail, &subject, &target); err != nil {
 			return nil, err
 		}
-		if kind != "member" && kind != "dingtalk" && kind != "source" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
+		if kind != "verified_email" && kind != "member" && kind != "dingtalk" && kind != "source" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
 			return nil, errors.New("too many enrollment candidates; migration was not applied")
 		}
 		switch kind {
+		case "verified_email":
+			if len(result.VerifiedEmails) >= 10000 {
+				return nil, errors.New("too many verified directory identities")
+			}
+			if result.VerifiedEmails == nil {
+				result.VerifiedEmails = map[string]CredentialIdentity{}
+			}
+			result.VerifiedEmails[name] = CredentialIdentity{Username: target, SourceSlug: detail, Subject: subject}
 		case "source":
 			if len(result.DingTalkSources) >= 1000 {
 				return nil, errors.New("too many DingTalk sources")

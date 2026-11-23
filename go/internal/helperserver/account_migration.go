@@ -92,13 +92,26 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 		if policy.DirectoryUsers == nil {
 			policy.DirectoryUsers = make(map[string]directoryUserGrant)
 		}
+		verifiedChanged := captureVerifiedDirectory(cfg, &policy, snapshot.VerifiedEmails, users, groups)
 		// Only this explicit root action may add existing users. Keep the UID
 		// from the system snapshot so a concurrent replacement cannot inherit it.
 		for _, name := range snapshot.Users {
-			enrollMappedUser(cfg, policy, users, groups, name, "", false, snapshot.Departments[name], &result)
+			enrollMappedUser(cfg, policy, users, groups, name, "", false, snapshot, &result)
 		}
 		for name, email := range snapshot.RetryUsers {
-			enrollMappedUser(cfg, policy, users, groups, name, email, true, snapshot.Departments[name], &result)
+			enrollMappedUser(cfg, policy, users, groups, name, email, true, snapshot, &result)
+		}
+		// Accounts enrolled by this trusted installation already passed the legacy
+		// ownership checks. Keep their verified source and subject for later operations.
+		for name, candidate := range policy.CredentialCandidates {
+			if id, ok := policy.Users[name]; ok && id == candidate.UID {
+				if policy.CredentialOwners == nil {
+					policy.CredentialOwners = map[string]db.CredentialIdentity{}
+				}
+				policy.CredentialOwners[name] = candidate.Owner
+				delete(policy.CredentialCandidates, name)
+				verifiedChanged = true
+			}
 		}
 		for name, binding := range snapshot.DingTalkUsers {
 			grant, exists := policy.DirectoryUsers[name]
@@ -110,8 +123,9 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 			result.UpdatedDirectoryUsers++
 		}
 		scopeChanged := captureDingTalkDirectory(cfg, &policy, snapshot.DingTalkSources, users, groups)
+
 		if policy.LegacyMigrationComplete {
-			if result.Users == 0 && result.DirectoryUsers == 0 && result.UpdatedDirectoryUsers == 0 && result.ReviewedGroupCount == nil && !scopeChanged {
+			if !verifiedChanged && result.Users == 0 && result.DirectoryUsers == 0 && result.UpdatedDirectoryUsers == 0 && result.ReviewedGroupCount == nil && !scopeChanged {
 				return nil
 			}
 			return saveAccountPolicy(cfg, policy)
@@ -141,7 +155,7 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 	return result, nil
 }
 
-func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, groups map[string]systemAccount, name, email string, retry bool, departments []string, result *enrollmentMigrationResult) {
+func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, groups map[string]systemAccount, name, email string, retry bool, snapshot *db.HelperEnrollmentSnapshot, result *enrollmentMigrationResult) {
 	skip := func(reason error) {
 		log.Printf("跳过 DSM 用户 %q：%v", name, reason)
 		result.Skipped++
@@ -181,11 +195,20 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 			skip(fmt.Errorf("原 UID %d，当前 UID %d", grant.UID, account.id))
 			return
 		}
-		if pinDirectoryDepartments(&grant, policy, groups, departments) {
+		if pinDirectoryDepartments(&grant, policy, groups, snapshot.Departments[name]) {
 			policy.DirectoryUsers[name] = grant
 			result.UpdatedDirectoryUsers++
 		}
 		return
+	}
+	if candidate, ok := policy.CredentialCandidates[name]; ok {
+		if candidate.UID != account.id || snapshot.VerifiedEmails[candidate.Email] != candidate.Owner {
+			skip(errors.New("原有 DSM UID 或已核实的来源身份已变化"))
+			return
+		}
+		// A previous success may have confirmed membership only. Check native mail
+		// before activating a credential binding for an existing account.
+		retry, email = true, candidate.Email
 	}
 	target := creationTarget{cfg: cfg, name: name}
 	id, found, err := target.receiptID()
@@ -209,7 +232,7 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 		}
 		if mail == "" || email == "" {
 			grant := directoryUserGrant{UID: account.id}
-			pinDirectoryDepartments(&grant, policy, groups, departments)
+			pinDirectoryDepartments(&grant, policy, groups, snapshot.Departments[name])
 			policy.DirectoryUsers[name] = grant
 			result.DirectoryUsers++
 			return
