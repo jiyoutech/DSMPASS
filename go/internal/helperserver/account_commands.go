@@ -29,8 +29,15 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 			if err := target.resume(); err != nil {
 				return err
 			}
-			if err := requireManagedUser(cfg, username); err != nil {
+			grant, err := userEnrollment(cfg, username)
+			if err != nil {
 				return err
+			}
+			if grant != nil {
+				if info.Expired {
+					return fmt.Errorf("DSM 用户 %q 已停用", username)
+				}
+				return nil
 			}
 			if displayName == "" {
 				displayName = info.FullName

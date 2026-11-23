@@ -129,7 +129,7 @@ func TestLegacyGroupPolicyRequiresExplicitInstallerOptIn(t *testing.T) {
 		if optIn {
 			review = func(groups map[string]int) (map[string]int, error) { return groups, nil }
 		}
-		if _, err := migrateAccountPolicy(cfg, review, func() (*db.HelperEnrollmentSnapshot, error) { t.Fatal("re-ran legacy migration"); return nil, nil }); err != nil {
+		if _, err := migrateAccountPolicy(cfg, review, emptyDirectorySnapshot); err != nil {
 			t.Fatal(err)
 		}
 		p, err := readAccountPolicy(cfg)

@@ -2,9 +2,11 @@ package helperserver
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -16,9 +18,9 @@ import (
 type LegacyGroupReview func(map[string]int) (map[string]int, error)
 
 type enrollmentMigrationResult struct {
-	Users, Groups, Skipped int
-	AlreadyComplete        bool
-	ReviewedGroupCount     *int
+	Users, DirectoryUsers, UpdatedDirectoryUsers, Groups, Skipped int
+	AlreadyComplete                                               bool
+	ReviewedGroupCount                                            *int
 }
 
 // Called only by the root installer while the Helper instance lock is held.
@@ -43,9 +45,6 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 			return err
 		}
 		result.AlreadyComplete = policy.LegacyMigrationComplete
-		if policy.LegacyMigrationComplete && (review == nil || policy.ReusableGroups != nil) {
-			return nil
-		}
 		groups, err := systemAccounts(cfg.GroupPath, true)
 		if err != nil {
 			return err
@@ -79,36 +78,33 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 				policy.ReusableGroups = approved
 			}
 		}
-		if policy.LegacyMigrationComplete {
-			if policy.ReusableGroups == nil {
-				return nil
-			}
-			return saveAccountPolicy(cfg, policy)
-		}
 		snapshot, err := candidates()
 		if err != nil {
 			return err
 		}
-		if snapshot == nil || snapshot.Users == nil || snapshot.Groups == nil || len(snapshot.Users)+len(snapshot.Groups) > 10000 {
+		if snapshot == nil || snapshot.Users == nil || snapshot.Groups == nil || len(snapshot.Users)+len(snapshot.RetryUsers)+len(snapshot.Groups) > 10000 {
 			return errors.New("invalid enrollment snapshot")
 		}
-		if _, err := systemAccounts(cfg.PasswdPath, false); err != nil {
+		users, err := systemAccounts(cfg.PasswdPath, false)
+		if err != nil {
 			return err
 		}
+		if policy.DirectoryUsers == nil {
+			policy.DirectoryUsers = make(map[string]directoryUserGrant)
+		}
+		// Only this explicit root action may add existing users. Keep the UID
+		// from the system snapshot so a concurrent replacement cannot inherit it.
 		for _, name := range snapshot.Users {
-			if _, exists := policy.Users[name]; exists {
-				// Preserve prior UID bindings, including a now-stale binding that
-				// intentionally blocks a deleted/recreated account.
-				continue
+			enrollMappedUser(cfg, policy, users, groups, name, "", false, snapshot.Departments[name], &result)
+		}
+		for name, email := range snapshot.RetryUsers {
+			enrollMappedUser(cfg, policy, users, groups, name, email, true, snapshot.Departments[name], &result)
+		}
+		if policy.LegacyMigrationComplete {
+			if result.Users == 0 && result.DirectoryUsers == 0 && result.UpdatedDirectoryUsers == 0 && result.ReviewedGroupCount == nil {
+				return nil
 			}
-			account, err := normalUser(cfg, name)
-			if err != nil {
-				log.Printf("automatic enrollment skipped user %q: %v", name, err)
-				result.Skipped++
-				continue
-			}
-			policy.Users[name] = account.id
-			result.Users++
+			return saveAccountPolicy(cfg, policy)
 		}
 		for _, name := range snapshot.Groups {
 			if _, exists := policy.Groups[name]; exists {
@@ -125,8 +121,7 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 			result.Groups++
 		}
 		// Grants and the completion marker share one atomic replacement. A
-		// failed query/write cannot leave a partially applied migration. Later
-		// reinstalls cannot re-enroll revoked accounts or new database mappings.
+		// failed query/write cannot leave a partially applied migration.
 		policy.LegacyMigrationComplete = true
 		return saveAccountPolicy(cfg, policy)
 	})
@@ -134,6 +129,120 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 		return enrollmentMigrationResult{}, err
 	}
 	return result, nil
+}
+
+func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, groups map[string]systemAccount, name, email string, retry bool, departments []string, result *enrollmentMigrationResult) {
+	skip := func(reason error) {
+		log.Printf("跳过 DSM 用户 %q：%v", name, reason)
+		result.Skipped++
+	}
+	if err := assertAllowed(cfg, name); err != nil {
+		skip(err)
+		return
+	}
+	account, err := normalLocalUser(name, users, groups)
+	if err != nil {
+		skip(err)
+		return
+	}
+	if id, bound := policy.Users[name]; bound {
+		switch {
+		case id == revokedUserID:
+			skip(errors.New("授权已撤销"))
+		case id != account.id:
+			skip(fmt.Errorf("原 UID %d，当前 UID %d", id, account.id))
+		}
+		return
+	}
+	if !ordinaryInstallUser(account, groups) {
+		skip(errors.New("不属于可自动登记的普通本地用户"))
+		return
+	}
+	// A successful directory-only reconciliation also produces a success log.
+	// That log can never promote an existing directory grant to password access.
+	if grant, exists := policy.DirectoryUsers[name]; exists {
+		if grant.UID != account.id {
+			skip(fmt.Errorf("原 UID %d，当前 UID %d", grant.UID, account.id))
+			return
+		}
+		if pinDirectoryDepartments(&grant, policy, groups, departments) {
+			policy.DirectoryUsers[name] = grant
+			result.UpdatedDirectoryUsers++
+		}
+		return
+	}
+	target := creationTarget{cfg: cfg, name: name}
+	id, found, err := target.receiptID()
+	switch {
+	case err != nil:
+		skip(err)
+		return
+	case found && id != account.id:
+		skip(fmt.Errorf("创建凭据 UID %d 与当前 UID %d 不符", id, account.id))
+		return
+	case retry && !found:
+		info, err := getSynoUser(cfg.SynoUserPath, name)
+		if err != nil {
+			skip(fmt.Errorf("读取 DSM 账号资料失败: %w", err))
+			return
+		}
+		mail := strings.TrimSpace(info.Mail)
+		if info.Expired || (mail != "" && email != "" && !strings.EqualFold(mail, email)) {
+			skip(errors.New("DSM 账号已停用或邮箱与通讯录不匹配"))
+			return
+		}
+		if mail == "" || email == "" {
+			grant := directoryUserGrant{UID: account.id}
+			pinDirectoryDepartments(&grant, policy, groups, departments)
+			policy.DirectoryUsers[name] = grant
+			result.DirectoryUsers++
+			return
+		}
+	}
+	policy.Users[name] = account.id
+	result.Users++
+}
+
+func pinDirectoryDepartments(grant *directoryUserGrant, policy accountPolicy, groups map[string]systemAccount, departments []string) bool {
+	changed := false
+	for _, name := range departments {
+		if _, fixed := grant.Groups[name]; fixed {
+			continue
+		}
+		group, exists := groups[name]
+		if !exists || !isLocalDirectoryGroup(name, group.id) || (policy.Groups[name] != group.id && policy.ReusableGroups[name] != group.id) {
+			continue
+		}
+		if grant.Groups == nil {
+			grant.Groups = make(map[string]int)
+		}
+		grant.Groups[name] = group.id
+		changed = true
+	}
+	return changed
+}
+
+func ordinaryInstallUser(account systemAccount, groups map[string]systemAccount) bool {
+	switch strings.ToLower(account.name) {
+	case "guest", "nobody", "dsmpass":
+		return false
+	}
+	local, ok := groups["users"]
+	if !ok || account.gid != local.id || account.id >= 65536 {
+		return false
+	}
+	for _, name := range []string{"docker", "lxd", "incus-admin", "sudo", "wheel", "disk", "libvirt"} {
+		privileged, exists := groups[name]
+		if !exists {
+			continue
+		}
+		for _, group := range groups {
+			if group.id == privileged.id && (group.id == account.gid || slices.Contains(group.members, account.name)) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Only the root installer captures these names and GIDs. Runtime requests cannot

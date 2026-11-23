@@ -5,12 +5,28 @@ import (
 	"errors"
 )
 
-// This snapshot is trusted only during the administrator's one-time install
+// This snapshot is trusted only during the administrator's explicit install
 // migration. Runtime RPC authorization must never use it to grant enrollment.
 type HelperEnrollmentSnapshot struct {
 	Users  []string `json:"users"`
 	Groups []string `json:"groups"`
+	// RetryUsers need additional evidence from DSM before enrollment.
+	RetryUsers  map[string]string   `json:"retry_users,omitempty"`
+	Departments map[string][]string `json:"departments,omitempty"`
 }
+
+const directoryMembershipScope = `
+FROM group_members m
+JOIN dsm_accounts a ON a.id = m.dsm_account_id
+JOIN app_identities i ON i.id = a.app_identity_id AND i.status = 'active'
+JOIN dsm_groups g ON g.id = m.dsm_group_id
+JOIN dsm_mapping_entries mm ON mm.mapping_type = 'member' AND mm.active = 1 AND mm.dsm_account_id = a.id AND mm.dsm_group_id = g.id
+JOIN identity_sources src ON src.slug = mm.provider_slug AND src.enabled = 1 AND src.directory_sync_enabled = 1
+JOIN dsm_mapping_entries um ON um.mapping_type = 'user' AND um.active = 1 AND um.dsm_account_id = a.id AND um.provider_slug = mm.provider_slug
+JOIN external_accounts e ON e.id = um.external_account_id AND e.provider_slug = src.slug AND e.app_identity_id = a.app_identity_id AND e.active = 1 AND e.id = mm.external_account_id
+JOIN dsm_mapping_entries gm ON gm.mapping_type = 'group' AND gm.active = 1 AND gm.dsm_group_id = g.id AND gm.provider_slug = mm.provider_slug
+JOIN provider_groups pg ON pg.id = gm.provider_group_id AND pg.provider_slug = src.slug AND pg.active = 1 AND pg.id = mm.provider_group_id
+WHERE m.active = 1 AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason, '') = '' AND g.provision_status IN ('pending','failed','created','linked_existing')`
 
 func HelperEnrollmentCandidates(ctx context.Context, q *Queries) (*HelperEnrollmentSnapshot, error) {
 	if q == nil {
@@ -19,37 +35,75 @@ func HelperEnrollmentCandidates(ctx context.Context, q *Queries) (*HelperEnrollm
 	// A single statement gives both lists the same SQLite read snapshot. UNION
 	// also deduplicates accounts mapped through more than one identity source.
 	rows, err := q.DBTX().QueryContext(ctx, `
-SELECT 'user' AS kind, a.dsm_username AS name FROM dsm_accounts a
+WITH successful AS (
+ SELECT l.source_slug, l.object_key, l.dsm_name, MAX(l.created_at) AS last_success
+ FROM sync_operation_logs l JOIN sync_runs r ON r.id = l.sync_run_id AND r.source_slug = l.source_slug
+ WHERE r.dry_run = 0 AND l.object_type = 'user' AND l.action = 'create_or_update'
+   AND l.status = 'success' AND l.after_state IN ('created', 'linked_existing')
+ GROUP BY l.source_slug, l.object_key, l.dsm_name
+), unique_mail AS (
+ SELECT email_norm, MIN(app_identity_id) AS identity_id FROM external_accounts
+ WHERE active = 1 AND email_norm <> '' AND app_identity_id IS NOT NULL
+ GROUP BY email_norm HAVING COUNT(DISTINCT app_identity_id) = 1
+)
+SELECT CASE WHEN MAX(a.provision_status IN ('created', 'linked_existing') OR COALESCE(h.last_success >= me.created_at, 0))
+            THEN 'user' ELSE 'retry_user' END AS kind, a.dsm_username AS name,
+       CASE WHEN COUNT(DISTINCT e.email_norm) = 1 THEN COALESCE(MAX(mail.email_norm), '') ELSE '' END AS email
+FROM dsm_accounts a
 JOIN app_identities i ON i.id = a.app_identity_id
 JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id AND me.mapping_type = 'user' AND me.active = 1
 JOIN external_accounts e ON e.id = me.external_account_id AND e.app_identity_id = i.id AND e.provider_slug = me.provider_slug
 JOIN identity_sources src ON src.slug = me.provider_slug
-WHERE a.provision_status IN ('created', 'linked_existing') AND i.status = 'active' AND e.active = 1
-  AND src.enabled = 1 AND (src.login_enabled = 1 OR src.directory_sync_enabled = 1)
+LEFT JOIN successful h ON h.object_key = a.id AND h.dsm_name = a.dsm_username AND h.source_slug = me.provider_slug
+LEFT JOIN unique_mail mail ON mail.identity_id = i.id AND mail.email_norm = e.email_norm AND e.email_verified = 1
+WHERE i.status = 'active' AND e.active = 1 AND src.enabled = 1
+  AND COALESCE(a.conflict_reason, '') = ''
+  AND ((a.provision_status IN ('created', 'linked_existing') AND (src.login_enabled = 1 OR src.directory_sync_enabled = 1))
+    OR (a.provision_status IN ('pending', 'failed') AND src.directory_sync_enabled = 1))
+GROUP BY a.id, a.dsm_username
 UNION
-SELECT 'group' AS kind, g.dsm_groupname AS name FROM dsm_groups g
+SELECT 'group' AS kind, g.dsm_groupname AS name, '' AS email FROM dsm_groups g
 JOIN dsm_mapping_entries me ON me.dsm_group_id = g.id AND me.mapping_type = 'group' AND me.active = 1
 JOIN provider_groups pg ON pg.id = me.provider_group_id AND pg.provider_slug = me.provider_slug
 JOIN identity_sources src ON src.slug = me.provider_slug
 WHERE g.provision_status IN ('created', 'linked_existing') AND pg.active = 1
   AND src.enabled = 1 AND src.directory_sync_enabled = 1
-ORDER BY kind, name LIMIT 10001`)
+UNION
+SELECT 'member', a.dsm_username, g.dsm_groupname
+`+directoryMembershipScope+`
+ORDER BY kind, name LIMIT 110001`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := &HelperEnrollmentSnapshot{Users: []string{}, Groups: []string{}}
+	memberCount := 0
 	for rows.Next() {
-		var kind, name string
-		if err := rows.Scan(&kind, &name); err != nil {
+		var kind, name, detail string
+		if err := rows.Scan(&kind, &name, &detail); err != nil {
 			return nil, err
 		}
-		if len(result.Users)+len(result.Groups) >= 10000 {
+		if kind != "member" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
 			return nil, errors.New("too many enrollment candidates; migration was not applied")
 		}
-		if kind == "user" {
+		switch kind {
+		case "user":
 			result.Users = append(result.Users, name)
-		} else {
+		case "member":
+			memberCount++
+			if memberCount > 100000 {
+				return nil, errors.New("too many enrollment memberships")
+			}
+			if result.Departments == nil {
+				result.Departments = make(map[string][]string)
+			}
+			result.Departments[name] = append(result.Departments[name], detail)
+		case "retry_user":
+			if result.RetryUsers == nil {
+				result.RetryUsers = make(map[string]string)
+			}
+			result.RetryUsers[name] = detail
+		default:
 			result.Groups = append(result.Groups, name)
 		}
 	}

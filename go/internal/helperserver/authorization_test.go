@@ -60,7 +60,7 @@ func TestAccountPolicyRequiresIndependentEnrollment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := policy.Users["alice"]; ok {
+	if policy.Users["alice"] != revokedUserID {
 		t.Fatal("revocation failed")
 	}
 }
@@ -361,8 +361,19 @@ func TestCreationReceiptsAcrossRetries(t *testing.T) {
 			t.Fatal(err)
 		}
 		p, err := readAccountPolicy(cfg)
-		if err != nil || len(p.Users)+len(p.Groups) != 0 {
+		if err != nil || len(p.Groups) != 0 || (!group && p.Users[name] != revokedUserID) {
 			t.Fatal("revocation did not persist", err)
+		}
+		if !group {
+			if err := target.write(1026); err != nil {
+				t.Fatal(err)
+			}
+			if err := target.resume(); err == nil {
+				t.Fatal("receipt restored a revoked user")
+			}
+			if err := requireManagedUser(cfg, name); err == nil {
+				t.Fatal("revoked user allowed")
+			}
 		}
 	}
 }

@@ -68,17 +68,19 @@ func queryHelperAsPackage(cfg config.HelperConfig, request db.HelperAuthorizatio
 	if err != nil {
 		return result, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	timeout := 3 * time.Second
+	var output limitedAuthorizationOutput
+	if request.Action == "enrollment_snapshot" {
+		timeout = 30 * time.Second
+		output.limit = 8 << 20
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, config.HelperBinaryPath, "query-account")
 	cmd.Dir = "/"
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(cfg.PackageUID), Gid: uint32(cfg.PackageGID), Groups: []uint32{}}}
 	cmd.Stdin = bytes.NewReader(data)
-	var output limitedAuthorizationOutput
-	if request.Action == "enrollment_snapshot" {
-		output.limit = 1 << 20
-	}
 	cmd.Stdout, cmd.Stderr = &output, io.Discard
 	if err := cmd.Run(); err != nil {
 		return result, errors.New("unprivileged account query failed")

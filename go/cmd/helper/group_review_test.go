@@ -47,3 +47,22 @@ func TestReviewLocalGroups(t *testing.T) {
 		t.Fatalf("approved without displaying scope: %v, %v", got, err)
 	}
 }
+
+func TestInstallDefaultsToAllEligibleGroups(t *testing.T) {
+	groups := map[string]int{"engineering": 65536, "finance": 65537}
+	for _, args := range [][]string{nil, {"--reuse-local-groups"}} {
+		review, err := installGroupReview(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err := review(groups)
+		if err != nil || !reflect.DeepEqual(approved, groups) {
+			t.Fatalf("args %v: %v, %v", args, approved, err)
+		}
+	}
+	for _, args := range [][]string{{"--unknown"}, {"--review-local-groups", "all"}} {
+		if _, err := installGroupReview(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
