@@ -102,7 +102,7 @@ func InstallPrivilegedHelper(review LegacyGroupReview) error {
 		if result.ReviewedGroupCount != nil {
 			log.Printf("已保存自动复用范围，共 %d 个本地群组。部门映射和 GID 匹配后会在同步时自动登记。", *result.ReviewedGroupCount)
 		}
-		log.Printf("account enrollment migration: users=%d groups=%d skipped=%d already_complete=%t", result.Users, result.Groups, result.Skipped, result.AlreadyComplete)
+		log.Printf("本次自动登记：新增完整授权用户=%d，新增通讯录同步用户=%d，更新用户部门范围=%d，新增群组=%d，跳过=%d，旧版迁移此前已完成=%t", result.Users, result.DirectoryUsers, result.UpdatedDirectoryUsers, result.Groups, result.Skipped, result.AlreadyComplete)
 		return nil
 	})
 }

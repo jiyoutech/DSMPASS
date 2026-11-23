@@ -18,12 +18,18 @@ import (
 // This authority is independent of the package database and HMAC secret.
 // Existing DSM accounts are enrolled by the root install migration or an
 // explicit root action. The installer can also pin local groups for directory reuse.
+type directoryUserGrant struct {
+	UID    int            `json:"uid"`
+	Groups map[string]int `json:"groups,omitempty"`
+}
+
 type accountPolicy struct {
-	Users                   map[string]int              `json:"users"`
-	Groups                  map[string]int              `json:"groups"`
-	ReusableGroups          map[string]int              `json:"reusable_groups,omitzero"`
-	WebApprovals            map[string]groupWebApproval `json:"pending_web_group_approvals,omitempty"`
-	LegacyMigrationComplete bool                        `json:"legacy_migration_complete,omitempty"`
+	DirectoryUsers          map[string]directoryUserGrant `json:"directory_users,omitempty"`
+	Users                   map[string]int                `json:"users"`
+	Groups                  map[string]int                `json:"groups"`
+	ReusableGroups          map[string]int                `json:"reusable_groups,omitzero"`
+	WebApprovals            map[string]groupWebApproval   `json:"pending_web_group_approvals,omitempty"`
+	LegacyMigrationComplete bool                          `json:"legacy_migration_complete,omitempty"`
 }
 
 type systemAccount struct {
@@ -79,6 +85,14 @@ func normalUser(cfg config.HelperConfig, username string) (systemAccount, error)
 	if err != nil {
 		return systemAccount{}, err
 	}
+	groups, err := systemAccounts(cfg.GroupPath, true)
+	if err != nil {
+		return systemAccount{}, err
+	}
+	return normalLocalUser(username, users, groups)
+}
+
+func normalLocalUser(username string, users, groups map[string]systemAccount) (systemAccount, error) {
 	a, ok := users[username]
 	if !ok {
 		return a, os.ErrNotExist
@@ -90,10 +104,6 @@ func normalUser(cfg config.HelperConfig, username string) (systemAccount, error)
 		if name != username && other.id == a.id {
 			return a, errors.New("ambiguous target account UID")
 		}
-	}
-	groups, err := systemAccounts(cfg.GroupPath, true)
-	if err != nil {
-		return a, err
 	}
 	admins, ok := groups["administrators"]
 	if !ok {
@@ -178,22 +188,46 @@ func readAccountPolicy(cfg config.HelperConfig) (accountPolicy, error) {
 	return policy, nil
 }
 
+// System UIDs are nonnegative. Older Helpers also deny this binding.
+const revokedUserID = -1
+
 func requireManagedUser(cfg config.HelperConfig, username string) error {
+	grant, err := userEnrollment(cfg, username)
+	if err == nil && grant != nil {
+		return fmt.Errorf("DSM 用户 %q 已获通讯录同步授权，登录、改密和停用需独立核实账号归属", username)
+	}
+	return err
+}
+
+func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGrant, error) {
 	if cfg.AccountPolicyPath == "" && !cfg.Privileged {
-		return nil
+		return nil, nil
 	} // Isolated legacy tests only; production configuration always sets a policy.
 	a, err := normalUser(cfg, username)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p, err := readAccountPolicy(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if id, ok := p.Users[username]; !ok || id != a.id {
-		return errors.New("DSM account requires root authorization or its UID has changed")
+	id, ok := p.Users[username]
+	if !ok {
+		if grant, found := p.DirectoryUsers[username]; found {
+			if grant.UID != a.id {
+				return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d", username, grant.UID, a.id)
+			}
+			return &grant, nil
+		}
+		return nil, fmt.Errorf("DSM 用户 %q 尚未登记（当前 UID %d），请管理员运行 setup-helper-sudo.sh 批量核对当前映射", username, a.id)
 	}
-	return nil
+	if id == revokedUserID {
+		return nil, fmt.Errorf("DSM 用户 %q 的授权已撤销", username)
+	}
+	if id != a.id {
+		return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d，请管理员核实是否为同一账号", username, id, a.id)
+	}
+	return nil, nil
 }
 
 func requireManagedGroup(cfg config.HelperConfig, name string) error {
@@ -230,7 +264,7 @@ func checkGroupEnrollment(cfg config.HelperConfig, name string, mapped func() (b
 		id, captured = p.ReusableGroups[name]
 		if !captured || mapped == nil {
 			if mapped != nil && p.LegacyMigrationComplete && p.ReusableGroups == nil && isLocalDirectoryGroup(name, a.id) {
-				return fmt.Errorf("DSM 群组 %q 未登记为可同步群组。旧安装尚未确认自动复用范围，请管理员在终端运行 setup-helper-sudo.sh 确认一次，或在部门群组页面授权此组", name)
+				return fmt.Errorf("DSM 群组 %q 未登记为可同步群组。旧安装尚未确认自动复用范围，请管理员运行 setup-helper-sudo.sh 自动登记，或在部门群组页面授权此组", name)
 			}
 			return fmt.Errorf("DSM 群组 %q 未登记为可同步群组，可到部门群组页面办理网页授权", name)
 		}
@@ -276,12 +310,18 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		entries = p.Groups
 		delete(p.ReusableGroups, name)
 		delete(p.WebApprovals, name)
+	} else {
+		delete(p.DirectoryUsers, name)
 	}
 	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
 		return err
 	}
 	if revoke {
-		delete(entries, name)
+		if group {
+			delete(entries, name)
+		} else {
+			entries[name] = revokedUserID
+		}
 	} else {
 		var a systemAccount
 		if group {
@@ -359,6 +399,14 @@ func verifyAccountAbsent(cfg config.HelperConfig, name string) error {
 	}
 	if _, exists := accounts[name]; exists {
 		return fmt.Errorf("existing DSM account %q cannot be adopted automatically", name)
+	}
+	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		return err
+	}
+	_, limited := p.DirectoryUsers[name]
+	if _, bound := p.Users[name]; bound || limited {
+		return fmt.Errorf("DSM 用户 %q 已有授权或撤销记录，请管理员核实后再重建", name)
 	}
 	return nil
 }

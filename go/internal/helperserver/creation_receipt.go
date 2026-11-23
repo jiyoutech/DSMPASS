@@ -76,29 +76,9 @@ func (t creationTarget) resume() error {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
 		return nil
 	}
-	path := t.path()
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	id, found, err := t.receiptID()
+	if err != nil || !found {
 		return err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return errors.New("invalid creation receipt permissions")
-	}
-	if t.cfg.Privileged {
-		if err := securefs.CheckRootPath(path); err != nil {
-			return err
-		}
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	id, err := strconv.Atoi(string(raw))
-	if err != nil || id < 0 {
-		return fmt.Errorf("DSM 对象 %q 创建结果待核实，请管理员确认名称与系统编号后授权", t.name)
 	}
 	a, err := t.account()
 	if err != nil {
@@ -112,6 +92,12 @@ func (t creationTarget) resume() error {
 		return err
 	}
 	entries := p.Users
+	if _, limited := p.DirectoryUsers[t.name]; !t.group && limited {
+		return fmt.Errorf("DSM 用户 %q 已登记为通讯录同步账号，请核实创建凭据", t.name)
+	}
+	if previous, exists := entries[t.name]; !t.group && exists && previous != id {
+		return fmt.Errorf("DSM 用户 %q 的创建凭据与当前授权记录不符", t.name)
+	}
 	if t.group {
 		entries = p.Groups
 	}
@@ -120,4 +106,32 @@ func (t creationTarget) resume() error {
 		return fmt.Errorf("DSM 已创建 %q，保存授权失败，可重试同步: %w", t.name, err)
 	}
 	return t.clear()
+}
+
+func (t creationTarget) receiptID() (int, bool, error) {
+	path := t.path()
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return 0, false, errors.New("invalid creation receipt permissions")
+	}
+	if t.cfg.Privileged {
+		if err := securefs.CheckRootPath(path); err != nil {
+			return 0, false, err
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false, err
+	}
+	id, err := strconv.Atoi(string(raw))
+	if err != nil || id < 0 {
+		return 0, false, fmt.Errorf("DSM 对象 %q 创建结果待核实，请管理员确认名称与系统编号后授权", t.name)
+	}
+	return id, true, nil
 }

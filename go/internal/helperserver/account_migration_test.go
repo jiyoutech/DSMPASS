@@ -57,6 +57,9 @@ INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_i
 			if tc.users {
 				want.Users = []string{"alice"}
 			}
+			if tc.name == "pending_user" {
+				want.RetryUsers = map[string]string{"alice": ""}
+			}
 			if tc.groups {
 				want.Groups = []string{"engineering"}
 			}
@@ -101,7 +104,7 @@ func TestAccountMigrationPreservesPasswordsAndRejectsPrivilegedTargets(t *testin
 	}
 }
 
-func TestAccountMigrationNeverRepeatsAfterRevocationOrNewMappings(t *testing.T) {
+func TestInstallerPreservesRevocationOnRepeat(t *testing.T) {
 	cfg := policyTestConfig(t)
 	first := func() (*db.HelperEnrollmentSnapshot, error) {
 		return &db.HelperEnrollmentSnapshot{Users: []string{"alice"}, Groups: []string{"engineering"}}, nil
@@ -115,10 +118,7 @@ func TestAccountMigrationNeverRepeatsAfterRevocationOrNewMappings(t *testing.T) 
 	if err := updateAccountPolicy(cfg, "engineering", true, true); err != nil {
 		t.Fatal(err)
 	}
-	result, err := migrateAccountPolicy(cfg, nil, func() (*db.HelperEnrollmentSnapshot, error) {
-		t.Fatal("completed migration queried mutable database again")
-		return nil, nil
-	})
+	result, err := migrateAccountPolicy(cfg, nil, first)
 	if err != nil || !result.AlreadyComplete {
 		t.Fatalf("migration repeated: %+v %v", result, err)
 	}
@@ -215,7 +215,7 @@ func TestAccountMigrationEmptySnapshotAndConcurrentAttempts(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if queries.Load() != 1 {
+	if queries.Load() != 8 {
 		t.Fatalf("migration queried database %d times", queries.Load())
 	}
 	if _, err := migrateInstalledAccounts(cfg, nil); err == nil {

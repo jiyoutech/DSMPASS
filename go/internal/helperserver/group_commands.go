@@ -30,7 +30,7 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 		if err := assertAllowed(cfg, username); err != nil {
 			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 		}
-		if err := requireManagedUser(cfg, username); err != nil {
+		if err := s.requireMemberEnrollment(cfg, action, username, groupname); err != nil {
 			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 		}
 		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
@@ -41,7 +41,7 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 	response := map[string]any{"success": true, "created": false}
 	err = withFileLock(cfg.ShadowLockPath, func() error {
 		if username != "" {
-			if err := requireManagedUser(cfg, username); err != nil {
+			if err := s.requireMemberEnrollment(cfg, action, username, groupname); err != nil {
 				return err
 			}
 		}
@@ -94,6 +94,13 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 			response["created"] = true
 		case "scoped_add_group_member":
 			if !exists {
+				grant, err := userEnrollment(cfg, username)
+				if err != nil {
+					return err
+				}
+				if grant != nil {
+					return fmt.Errorf("无法为当前用户创建 DSM 群组 %q", groupname)
+				}
 				if err := target.begin(); err != nil {
 					return err
 				}
@@ -125,6 +132,32 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 		return errorResponse("SYNOGROUP_FAILED", err.Error())
 	}
 	return response
+}
+
+// Accounts linked for directory sync alone can change only the existing
+// departments and local GIDs approved for this user by the root installer.
+func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, username, groupname string) error {
+	grant, err := userEnrollment(cfg, username)
+	if err != nil || grant == nil {
+		return err
+	}
+	group, err := normalGroup(cfg, groupname)
+	if err != nil {
+		return err
+	}
+	if gid, allowed := grant.Groups[groupname]; !allowed || gid != group.id || !isLocalDirectoryGroup(groupname, group.id) {
+		return fmt.Errorf("DSM 用户 %q 的通讯录同步授权未包含当前群组 %q", username, groupname)
+	}
+	if action == "scoped_add_group_member" || action == "scoped_remove_group_member" {
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_member", Username: username, Groupname: groupname})
+		if err != nil {
+			return err
+		}
+		if mapped != (action == "scoped_add_group_member") {
+			return errors.New("当前通讯录成员关系与请求不符")
+		}
+	}
+	return nil
 }
 
 // DSM synogroup has no --memberdel. Use the native single-member API instead

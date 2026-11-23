@@ -24,6 +24,11 @@ type HelperAuthorizationResult struct {
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if q != nil && request.Action == "directory_member" && request.Username != "" && request.Groupname != "" {
+		var mapped bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+` AND a.dsm_username = ? AND g.dsm_groupname = ?)`, request.Username, request.Groupname).Scan(&mapped)
+		return mapped, err
+	}
 	if q != nil && request.Action == "directory_group" && request.Groupname != "" {
 		var mapped bool
 		err := q.DBTX().QueryRowContext(ctx, `

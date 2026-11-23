@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 
@@ -16,17 +17,9 @@ func main() {
 		return
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "install-helper" {
-		var review helperserver.LegacyGroupReview
-		switch {
-		case len(os.Args) == 2:
-		case len(os.Args) == 3 && os.Args[2] == "--review-local-groups":
-			review = func(groups map[string]int) (map[string]int, error) {
-				return reviewLocalGroups(os.Stdin, os.Stdout, groups)
-			}
-		case len(os.Args) == 3 && os.Args[2] == "--reuse-local-groups":
-			review = func(groups map[string]int) (map[string]int, error) { return groups, nil }
-		default:
-			log.Fatal("usage: install-helper [--reuse-local-groups | --review-local-groups]")
+		review, err := installGroupReview(os.Args[2:])
+		if err != nil {
+			log.Fatal(err)
 		}
 		if err := helperserver.InstallPrivilegedHelper(review); err != nil {
 			log.Fatal(err)
@@ -65,5 +58,18 @@ func main() {
 	server := helperserver.New(cfg)
 	if err := server.Serve(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func installGroupReview(args []string) (helperserver.LegacyGroupReview, error) {
+	switch {
+	case len(args) == 0, len(args) == 1 && args[0] == "--reuse-local-groups":
+		return func(groups map[string]int) (map[string]int, error) { return groups, nil }, nil
+	case len(args) == 1 && args[0] == "--review-local-groups":
+		return func(groups map[string]int) (map[string]int, error) {
+			return reviewLocalGroups(os.Stdin, os.Stdout, groups)
+		}, nil
+	default:
+		return nil, errors.New("usage: install-helper [--reuse-local-groups | --review-local-groups]")
 	}
 }
