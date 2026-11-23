@@ -18,16 +18,18 @@ type HelperMemberScope struct {
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
-	Members      []HelperMemberScope `json:"members,omitempty"`
-	DatabasePath string              `json:"database_path"`
-	Action       string              `json:"action"`
-	RunID        string              `json:"run_id,omitempty"`
-	Subject      string              `json:"subject,omitempty"`
-	Username     string              `json:"username"`
-	Groupname    string              `json:"groupname,omitempty"`
-	IdentityID   string              `json:"identity_id,omitempty"`
-	SourceSlug   string              `json:"source_slug,omitempty"`
-	AccountID    string              `json:"account_id,omitempty"`
+	Members         []HelperMemberScope `json:"members,omitempty"`
+	CredentialOwner *CredentialIdentity `json:"credential_owner,omitempty"`
+	VerifiedEmail   string              `json:"verified_email,omitempty"`
+	DatabasePath    string              `json:"database_path"`
+	Action          string              `json:"action"`
+	RunID           string              `json:"run_id,omitempty"`
+	Subject         string              `json:"subject,omitempty"`
+	Username        string              `json:"username"`
+	Groupname       string              `json:"groupname,omitempty"`
+	IdentityID      string              `json:"identity_id,omitempty"`
+	SourceSlug      string              `json:"source_slug,omitempty"`
+	AccountID       string              `json:"account_id,omitempty"`
 }
 
 type HelperAuthorizationResult struct {
@@ -66,6 +68,29 @@ SELECT NOT EXISTS (
  )
 )`, string(members), request.Groupname).Scan(&allowed)
 		return allowed, err
+	}
+	if owner := request.CredentialOwner; owner != nil {
+		if q == nil || request.Username != owner.Username || owner.Username == "" || owner.SourceSlug == "" || owner.Subject == "" || (request.SourceSlug != "" && request.SourceSlug != owner.SourceSlug) || (request.Subject != "" && request.Subject != owner.Subject) {
+			return false, nil
+		}
+		switch request.Action {
+		case "login", "password_reset":
+			if request.SourceSlug != owner.SourceSlug {
+				return false, nil
+			}
+			return verifiedOwnerAllowed(ctx, q, request, *owner)
+		case "verify_existing_owner":
+			if request.VerifiedEmail == "" {
+				return false, nil
+			}
+			return verifiedOwnerAllowed(ctx, q, request, *owner)
+		case "provision", "mapped":
+			valid, err := verifiedOwnerAllowed(ctx, q, request, *owner)
+			if err != nil || !valid {
+				return false, err
+			}
+		}
+		// Offboarding separately checks the historical source/subject and completed directory evidence.
 	}
 
 	if q != nil && request.Action == "dingtalk_offboard" {
@@ -156,4 +181,24 @@ SELECT EXISTS (
  WHERE a.dsm_username = ?
 )`, request.Username).Scan(&allowed)
 	return allowed, err
+}
+
+func verifiedOwnerAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery, owner CredentialIdentity) (bool, error) {
+	var valid bool
+	err := q.DBTX().QueryRowContext(ctx, `
+SELECT EXISTS (
+ SELECT 1 FROM dsm_accounts a JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+ JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
+ JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=i.id AND e.provider_slug=m.provider_slug AND e.active=1
+ JOIN identity_sources s ON s.slug=m.provider_slug AND s.enabled=1
+ WHERE a.dsm_username=? AND COALESCE(a.conflict_reason,'')='' AND a.provision_status IN ('created','linked_existing','pending','failed')
+ AND m.provider_slug=? AND e.subject=? AND (?='' OR (s.directory_sync_enabled=1 AND e.email_verified=1 AND e.email_norm=?
+ AND NOT EXISTS (SELECT 1 FROM external_accounts x WHERE x.active=1 AND x.email_norm=e.email_norm AND x.id<>e.id)))
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other JOIN external_accounts x ON x.id=other.external_account_id AND x.active=1
+ JOIN identity_sources src ON src.slug=other.provider_slug AND src.enabled=1
+ WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>m.id)
+  AND (? <> 'login' OR (s.login_enabled=1 AND i.id=? AND a.allow_login=1 AND a.provision_status IN ('created','linked_existing')))
+ AND (? <> 'password_reset' OR (s.directory_sync_enabled=1 AND a.id=? AND a.provision_status IN ('created','linked_existing')))
+ )`, request.Username, owner.SourceSlug, owner.Subject, request.VerifiedEmail, request.VerifiedEmail, request.Action, request.IdentityID, request.Action, request.AccountID).Scan(&valid)
+	return valid, err
 }

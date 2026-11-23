@@ -25,9 +25,6 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 		return errors.New("invalid synced account password request")
 	}
 	return withFileLock(lockPath(cfg.LockDir, username), func() error {
-		if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "password_reset", Username: username, SourceSlug: values["source_slug"], AccountID: values["account_id"]}); err != nil {
-			return err
-		}
 		if _, found, err := browserLeaseForUser(cfg, username); err != nil {
 			return err
 		} else if found {
@@ -35,6 +32,9 @@ func (s *Server) resetSyncedUserPassword(cfg config.HelperConfig, payload map[st
 		}
 		return withFileLock(cfg.ShadowLockPath, func() error {
 			if err := requireManagedUser(cfg, username); err != nil {
+				return err
+			}
+			if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "password_reset", Username: username, SourceSlug: values["source_slug"], AccountID: values["account_id"]}); err != nil {
 				return err
 			}
 			return applyPermanentPassword(cfg, values)

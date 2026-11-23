@@ -31,6 +31,15 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 				return err
 			}
 			grant, err := userEnrollment(cfg, username)
+			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired && info.Mail != "" {
+				linked, linkErr := s.linkVerifiedDirectoryUser(cfg, username, info.Mail, grant)
+				if linkErr != nil {
+					return linkErr
+				}
+				if linked {
+					return nil
+				}
+			}
 			if errors.Is(err, errUserNotEnrolled) && !info.Expired {
 				grant, err = s.linkDingTalkDirectoryUser(cfg, username)
 			}
