@@ -26,6 +26,7 @@ type Client interface {
 	ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error
 	DisableUser(ctx context.Context, requestID, username string) (bool, error)
 	ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error)
+	WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error)
 	AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
 	RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
 }
@@ -234,6 +235,13 @@ func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupna
 		"dsm_groupname": groupname,
 	})
 	return boolResponse(response, err)
+}
+
+func (c UnixSocketClient) WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error) {
+	if c.Timeout < 15*time.Second {
+		c.Timeout = 15 * time.Second
+	}
+	return c.send(ctx, map[string]any{"action": "scoped_web_group_approval", "request_id": requestID, "dsm_groupname": groupname, "verify": verify})
 }
 
 func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {

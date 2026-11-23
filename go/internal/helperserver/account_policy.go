@@ -19,10 +19,11 @@ import (
 // Existing DSM accounts are enrolled by the root install migration or an
 // explicit root action. The installer can also pin local groups for directory reuse.
 type accountPolicy struct {
-	Users                   map[string]int `json:"users"`
-	Groups                  map[string]int `json:"groups"`
-	ReusableGroups          map[string]int `json:"reusable_groups,omitzero"`
-	LegacyMigrationComplete bool           `json:"legacy_migration_complete,omitempty"`
+	Users                   map[string]int              `json:"users"`
+	Groups                  map[string]int              `json:"groups"`
+	ReusableGroups          map[string]int              `json:"reusable_groups,omitzero"`
+	WebApprovals            map[string]groupWebApproval `json:"pending_web_group_approvals,omitempty"`
+	LegacyMigrationComplete bool                        `json:"legacy_migration_complete,omitempty"`
 }
 
 type systemAccount struct {
@@ -214,15 +215,25 @@ func checkGroupEnrollment(cfg config.HelperConfig, name string, mapped func() (b
 		return err
 	}
 	id, enrolled := p.Groups[name]
+	if _, pending := p.WebApprovals[name]; pending && mapped != nil && (!enrolled || id != a.id) {
+		ok, err := mapped()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("DSM 群组 %q 没有有效的通讯录部门映射", name)
+		}
+		return acceptDSMGroupApproval(cfg, p, a)
+	}
 	if !enrolled {
 		var captured bool
 		id, captured = p.ReusableGroups[name]
 		if !captured || mapped == nil {
-			return fmt.Errorf("DSM 群组 %q 未登记为可同步群组", name)
+			return fmt.Errorf("DSM 群组 %q 未登记为可同步群组，可到部门群组页面办理网页授权", name)
 		}
 	}
 	if id != a.id {
-		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组", name, id, a.id)
+		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组后在部门群组页面办理网页授权", name, id, a.id)
 	}
 	if enrolled {
 		return nil
@@ -240,7 +251,7 @@ func checkGroupEnrollment(cfg config.HelperConfig, name string, mapped func() (b
 		return err
 	}
 	if current.id != id {
-		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组", name, id, current.id)
+		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组后在部门群组页面办理网页授权", name, id, current.id)
 	}
 	p.Groups[name] = id
 	delete(p.ReusableGroups, name)
@@ -261,6 +272,7 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 	if group {
 		entries = p.Groups
 		delete(p.ReusableGroups, name)
+		delete(p.WebApprovals, name)
 	}
 	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
 		return err

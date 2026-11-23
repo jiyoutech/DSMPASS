@@ -76,6 +76,7 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.GET("/dsm-groups", s.dsmGroups)
 		admin.PUT("/dsm-groups/:id/name", s.setDSMGroupName)
 		admin.POST("/dsm-groups/:id/provision", s.provisionDSMGroup)
+		admin.POST("/dsm-groups/:id/web-approval", s.webGroupApproval)
 		admin.GET("/group-members", s.groupMembers)
 		admin.POST("/group-members/:id/provision", s.provisionGroupMember)
 		admin.GET("/security/check", s.securityCheck)
