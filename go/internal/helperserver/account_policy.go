@@ -218,11 +218,26 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 	if cfg.AccountPolicyPath == "" && !cfg.Privileged {
 		return nil, nil
 	} // Isolated legacy tests only; production configuration always sets a policy.
-	a, err := normalUser(cfg, username)
+	if err := assertAllowed(cfg, username); err != nil {
+		return nil, err
+	}
+	users, err := systemAccounts(cfg.PasswdPath, false)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := systemAccounts(cfg.GroupPath, true)
 	if err != nil {
 		return nil, err
 	}
 	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return enrolledLocalUser(p, username, users, groups)
+}
+
+func enrolledLocalUser(p accountPolicy, username string, users, groups map[string]systemAccount) (*directoryUserGrant, error) {
+	a, err := normalLocalUser(username, users, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -233,10 +248,6 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 				return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d", username, grant.UID, a.id)
 			}
 			if grant.DingTalk != nil {
-				groups, err := systemAccounts(cfg.GroupPath, true)
-				if err != nil {
-					return nil, err
-				}
 				if !ordinaryInstallUser(a, groups) {
 					return nil, errors.New("仅普通本地用户可按钉钉姓名关联")
 				}

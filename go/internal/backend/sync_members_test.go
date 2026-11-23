@@ -47,14 +47,14 @@ func TestSyncGroupMembersBatchesReadbackAndFallback(t *testing.T) {
 			helper := &batchSyncHelper{mode: mode}
 			server := NewWithDB(config.BackendConfig{}, helper, database, queries)
 			var members []syncMember
-			for i := range 35 {
+			for i := range 202 {
 				group := "alpha"
-				if i == 34 {
+				if i == 201 {
 					group = "beta"
 				}
-				name := fmt.Sprintf("user%02d", i)
+				name := fmt.Sprintf("user%03d", i)
 				seedSyncedAccount(t, ctx, database, "source", name, "external-"+name, "sub-"+name, name, "2026-10-01")
-				if i == 0 || i == 34 {
+				if i == 0 || i == 201 {
 					seedGroupMember(t, ctx, database, "source", "provider-"+group, group, name, group, group, name, 1, "pending")
 				} else if _, err := database.Exec(`INSERT INTO group_members (id,dsm_group_id,dsm_account_id,active,provision_status) VALUES (?,?,?,1,'pending')`, name, group, "account-"+name); err != nil {
 					t.Fatal(err)
@@ -71,26 +71,26 @@ func TestSyncGroupMembersBatchesReadbackAndFallback(t *testing.T) {
 			ops, err := server.syncGroupMembers(ctx, "run", "source", members, logs, nil)
 			switch mode {
 			case "success":
-				if err != nil || len(ops) != 35 || !slices.Equal(helper.batches, []string{"alpha:32", "alpha:2", "beta:1"}) || len(helper.singles) != 0 {
+				if err != nil || len(ops) != 202 || !slices.Equal(helper.batches, []string{"alpha:200", "alpha:1", "beta:1"}) || len(helper.singles) != 0 {
 					t.Fatalf("success %v %v", helper, err)
 				}
-				assertLocalMemberStatus(t, ctx, database, "user34", 1, "created")
+				assertLocalMemberStatus(t, ctx, database, "user201", 1, "created")
 			case "fallback":
-				if err != nil || len(ops) != 35 || len(helper.singles) != 34 || !slices.Equal(helper.batches, []string{"alpha:32", "beta:1"}) {
+				if err != nil || len(ops) != 202 || len(helper.singles) != 201 || !slices.Equal(helper.batches, []string{"alpha:200", "beta:1"}) {
 					t.Fatalf("fallback %v %v", helper, err)
 				}
 			case "partial":
 				if err == nil || len(ops) != 1 || len(helper.singles) != 0 {
 					t.Fatalf("unexpected partial result %v %v", ops, err)
 				}
-				assertLocalMemberStatus(t, ctx, database, "user00", 1, "failed")
-				assertLocalMemberStatus(t, ctx, database, "user01", 1, "created")
-				assertLocalMemberStatus(t, ctx, database, "user34", 1, "pending")
+				assertLocalMemberStatus(t, ctx, database, "user000", 1, "failed")
+				assertLocalMemberStatus(t, ctx, database, "user001", 1, "created")
+				assertLocalMemberStatus(t, ctx, database, "user201", 1, "pending")
 			case "rollback":
 				if err == nil || len(ops) != 0 {
 					t.Fatalf("save error %v %v", ops, err)
 				}
-				assertLocalMemberStatus(t, ctx, database, "user00", 1, "pending")
+				assertLocalMemberStatus(t, ctx, database, "user000", 1, "pending")
 			}
 		})
 	}

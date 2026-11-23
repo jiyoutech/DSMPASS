@@ -2,21 +2,32 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
+
+const MaxGroupMembers = 200
+
+// These constraints are populated from the Helper's local UID/GID policy.
+type HelperMemberScope struct {
+	Username   string               `json:"username"`
+	DingTalk   *DingTalkUserBinding `json:"dingtalk,omitempty"`
+	OtherGroup bool                 `json:"other_group,omitempty"`
+}
 
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
-	DatabasePath string `json:"database_path"`
-	Action       string `json:"action"`
-	RunID        string `json:"run_id,omitempty"`
-	Subject      string `json:"subject,omitempty"`
-	Username     string `json:"username"`
-	Groupname    string `json:"groupname,omitempty"`
-	IdentityID   string `json:"identity_id,omitempty"`
-	SourceSlug   string `json:"source_slug,omitempty"`
-	AccountID    string `json:"account_id,omitempty"`
+	Members      []HelperMemberScope `json:"members,omitempty"`
+	DatabasePath string              `json:"database_path"`
+	Action       string              `json:"action"`
+	RunID        string              `json:"run_id,omitempty"`
+	Subject      string              `json:"subject,omitempty"`
+	Username     string              `json:"username"`
+	Groupname    string              `json:"groupname,omitempty"`
+	IdentityID   string              `json:"identity_id,omitempty"`
+	SourceSlug   string              `json:"source_slug,omitempty"`
+	AccountID    string              `json:"account_id,omitempty"`
 }
 
 type HelperAuthorizationResult struct {
@@ -27,6 +38,36 @@ type HelperAuthorizationResult struct {
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if request.Action == "directory_member_batch" {
+		if q == nil || request.Groupname == "" || len(request.Members) == 0 || len(request.Members) > MaxGroupMembers {
+			return false, errors.New("invalid directory membership query")
+		}
+		for _, m := range request.Members {
+			if m.Username == "" || (m.DingTalk == nil && !m.OtherGroup) || (m.DingTalk != nil && (m.DingTalk.SourceSlug == "" || m.DingTalk.Subject == "")) {
+				return false, errors.New("invalid directory membership constraint")
+			}
+		}
+		members, err := json.Marshal(request.Members)
+		if err != nil {
+			return false, err
+		}
+		var allowed bool
+		err = q.DBTX().QueryRowContext(ctx, `
+WITH wanted AS (
+ SELECT json_extract(value,'$.username') AS username, json_extract(value,'$.dingtalk.source_slug') AS slug,
+        json_extract(value,'$.dingtalk.subject') AS subject, json_extract(value,'$.other_group') AS other_group
+ FROM json_each(?)
+)
+SELECT NOT EXISTS (
+ SELECT 1 FROM wanted w WHERE NOT EXISTS (
+   SELECT 1 `+directoryMembershipScope+` AND a.dsm_username=w.username AND g.dsm_groupname=?
+   AND ((src.provider_type <> 'dingtalk' AND w.other_group=1)
+     OR ((`+uniqueDingTalkName+`) AND (w.slug IS NULL OR (src.slug=w.slug AND e.subject=w.subject))))
+ )
+)`, string(members), request.Groupname).Scan(&allowed)
+		return allowed, err
+	}
+
 	if q != nil && request.Action == "dingtalk_offboard" {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+dingTalkOffboardingScope+`

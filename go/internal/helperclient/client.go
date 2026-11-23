@@ -13,6 +13,7 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/diaglog"
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
@@ -20,7 +21,7 @@ import (
 var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
 
 // GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
-const GroupMemberBatchSize = 32
+const GroupMemberBatchSize = db.MaxGroupMembers
 
 var ErrGroupBatchUnsupported = errors.New("DSM group member batching is unavailable")
 
