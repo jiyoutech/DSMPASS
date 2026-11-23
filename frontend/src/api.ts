@@ -119,6 +119,10 @@ export const api = {
   provisionGroup: (id: string) => request<DSMGroup>(`/api/admin/dsm-groups/${id}/provision`, { method: "POST" }),
   setDSMGroupName: (id: string, dsm_groupname: string) =>
     request<DSMGroup>(`/api/admin/dsm-groups/${id}/name`, { method: "PUT", body: JSON.stringify({ dsm_groupname }) }),
+  webGroupApproval: (id: string, groupname: string, verify: boolean) =>
+    request<{ approved: boolean; groupname: string; gid: number; code?: string; expires_at?: string }>(`/api/admin/dsm-groups/${encodeURIComponent(id)}/web-approval`, {
+      method: "POST", body: JSON.stringify({ groupname, verify })
+    }),
   provisionMember: (id: string) =>
     request<{ id: string; provision_status: string }>(`/api/admin/group-members/${id}/provision`, { method: "POST" }),
   listProviders: () => request<{ items: ProviderItem[] }>("/api/admin/providers"),

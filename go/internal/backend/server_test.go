@@ -85,6 +85,10 @@ func (testHelper) ProvisionGroup(ctx context.Context, requestID, groupname strin
 	return true, nil
 }
 
+func (testHelper) WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error) {
+	return map[string]any{"approved": verify, "groupname": groupname}, nil
+}
+
 func (testHelper) AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
 	return true, nil
 }
@@ -3111,5 +3115,48 @@ func TestSyncReportsLocalStateWriteFailure(t *testing.T) {
 	}
 	if _, err := s.syncSourceToDSM(ctx, "r", "source", "2000-01-01", sourceSyncPolicy{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWebGroupApprovalAdminRoute(t *testing.T) {
+	database, queries, err := OpenDatabase(context.Background(), "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("INSERT INTO dsm_groups (id,dsm_groupname,dsm_groupname_norm) VALUES ('grp','engineering','engineering')"); err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithDB(config.BackendConfig{AdminAuthEnabled: true, AdminUsername: "admin", AdminPassword: "fixture"}, testHelper{}, database, queries)
+	router := server.Router()
+	token, _, err := server.issueAdminJWT()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id, body string
+		session  bool
+		want     int
+	}{
+		{"grp", `{"groupname":"engineering","verify":false}`, false, http.StatusUnauthorized},
+		{"grp", `{}`, true, http.StatusBadRequest},
+		{"missing", `{"groupname":"engineering","verify":false}`, true, http.StatusNotFound},
+		{"grp", `{"groupname":"old","verify":true}`, true, http.StatusConflict},
+		{"grp", `{"groupname":"engineering","verify":false}`, true, http.StatusOK},
+		{"grp", `{"groupname":"engineering","verify":true}`, true, http.StatusOK},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/dsm-groups/"+tc.id+"/web-approval", strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		if tc.session {
+			req.AddCookie(&http.Cookie{Name: server.adminSessionCookieName(), Value: token})
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("%s %s: %d %s", tc.id, tc.body, w.Code, w.Body)
+		}
+		if tc.want == http.StatusOK && w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("approval response can be cached")
+		}
 	}
 }

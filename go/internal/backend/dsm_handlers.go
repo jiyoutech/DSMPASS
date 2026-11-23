@@ -604,6 +604,42 @@ func (s *Server) provisionDSMGroup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id, "dsm_groupname": groupname, "provision_status": "created"})
 }
 
+func (s *Server) webGroupApproval(c *gin.Context) {
+	if c.ContentType() != "application/json" {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"detail": "群组授权需要 JSON 请求"})
+		return
+	}
+	var request struct {
+		Groupname string `json:"groupname"`
+		Verify    *bool  `json:"verify"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil || request.Verify == nil || request.Groupname == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "授权请求格式无效"})
+		return
+	}
+	var name string
+	err := s.store.DBTX().QueryRowContext(c.Request.Context(), `SELECT dsm_groupname FROM dsm_groups WHERE id = ?`, c.Param("id")).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "找不到该 DSM 群组"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
+	if request.Groupname != name {
+		c.JSON(http.StatusConflict, gin.H{"detail": "部门映射已更名，请刷新群组列表"})
+		return
+	}
+	result, err := s.helper.WebGroupApproval(c.Request.Context(), "web_group_"+randomHex(8), name, *request.Verify)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, result)
+}
+
 func (s *Server) provisionGroupMember(c *gin.Context) {
 	if err := s.ensureRealDSMProvisioning(c.Request.Context()); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"detail": err.Error()})

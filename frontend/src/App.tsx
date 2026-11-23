@@ -38,6 +38,7 @@ import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { GroupApprovalDialog } from "./components/GroupApprovalDialog";
 import { EntityList, HelpLabel, IdentityCell, LogBlock, MetricStrip, PageTitle, RelationCount, SourceTable } from "./components/common";
 import { useAsyncData } from "./hooks/useAsyncData";
 import { SystemSettings as SystemSettingsPage, SystemSettingsFields } from "./pages/SystemSettings";
@@ -1140,6 +1141,7 @@ function SourceDetail({
   const [sourceSyncLoading, setSourceSyncLoading] = useState(false);
   const [resettingSyncData, setResettingSyncData] = useState(false);
   const [deletingSource, setDeletingSource] = useState(false);
+  const [approvalGroup, setApprovalGroup] = useState<DSMGroup | null>(null);
   const [syncApplying, setSyncApplying] = useState(false);
   const [accountLoginAction, setAccountLoginAction] = useState<string | null>(null);
   const [activeOperation, setActiveOperation] = useState<{ run: OperationRun; events: OperationEvent[] } | null>(null);
@@ -1359,24 +1361,31 @@ function SourceDetail({
     return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。定时同步和冲突处理后的自动同步也使用增量模式。";
   }
 
+  async function runDirectorySync(mode: SyncMode) {
+    setOperationStarted(true);
+    setSyncApplying(true);
+    setSyncError(null);
+    let started = false;
+    try {
+      const { run_id } = await api.startSyncRun(source.slug, mode);
+      started = true;
+      await waitOperation(run_id);
+      showLatestSyncLogs();
+      await refreshAll();
+      message.success(mode === "full" ? "全量同步完成，已统一同步账号的 DSM/SMB 密码" : "增量同步完成");
+    } catch (err) {
+      if (!started) setOperationModalOpen(false);
+      setSyncError(err instanceof Error ? err.message : "同步失败");
+      showLatestSyncLogs();
+      await refreshAfterSyncFailure();
+    } finally {
+      setSyncApplying(false);
+    }
+  }
+
   async function startOperationFromModal() {
     if (operationModalAction === "sync") {
-      setOperationStarted(true);
-      setSyncApplying(true);
-      setSyncError(null);
-      try {
-        const { run_id } = await api.startSyncRun(source.slug, syncMode);
-        await waitOperation(run_id);
-        showLatestSyncLogs();
-        await refreshAll();
-        message.success(syncMode === "full" ? "全量同步完成，已统一同步账号的 DSM/SMB 密码" : "增量同步完成");
-      } catch (err) {
-        setSyncError(err instanceof Error ? err.message : "同步失败");
-        showLatestSyncLogs();
-        await refreshAfterSyncFailure();
-      } finally {
-        setSyncApplying(false);
-      }
+      await runDirectorySync(syncMode);
       return;
     }
     if (operationModalAction === "cleanup") {
@@ -1655,6 +1664,13 @@ function SourceDetail({
     });
   };
 
+  async function syncAfterGroupApproval() {
+    setApprovalGroup(null);
+    setSyncMode("incremental");
+    openOperationModal("群组授权后增量同步");
+    await runDirectorySync("incremental");
+  }
+
   const editGroupName = (record: DSMGroup) => {
     let nextGroupname = record.dsm_groupname;
     modal.confirm({
@@ -1884,6 +1900,7 @@ function SourceDetail({
       />
       <Alert type="info" showIcon message="旧版本导致 DSM 与 SMB 密码不一致时，请执行一次全量同步。符合条件的同步账号将重置为本身份源的 DSM 初始密码，可在身份源配置中查看；日常使用增量同步保留已有密码。" />
       {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      {approvalGroup && <GroupApprovalDialog key={approvalGroup.id} group={approvalGroup} onClose={() => setApprovalGroup(null)} onApproved={syncAfterGroupApproval} />}
       <Modal
         title={operationModalTitle}
         open={operationModalOpen}
@@ -2254,6 +2271,7 @@ function SourceDetail({
                       options={[
                         { label: "全部", value: "all" },
                         { label: "待处理", value: "pending" },
+                        { label: "失败", value: "failed" },
                         { label: "已创建", value: "created" },
                         { label: "冲突", value: "conflict" }
                       ]}
@@ -2304,6 +2322,7 @@ function SourceDetail({
                         <Space>
                           {record.provision_status === "conflict" && <Button size="small" onClick={() => editGroupName(record)}>修改组名</Button>}
                           {record.provision_status === "pending" && <Button size="small" onClick={() => provisionGroup(record)}>开通</Button>}
+                          {record.provision_status !== "conflict" && <Button size="small" disabled={syncApplying} onClick={() => setApprovalGroup(record)}>网页授权</Button>}
                         </Space>
                       ) }
                     ]}

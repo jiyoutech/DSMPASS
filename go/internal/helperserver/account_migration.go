@@ -111,17 +111,24 @@ func reusableLocalGroups(groups map[string]systemAccount, enrolled map[string]in
 	}
 	reusable := make(map[string]int)
 	for name, group := range groups {
-		if group.id < 65536 || group.id > 95536 || counts[group.id] != 1 || assertAllowedGroup(name) != nil {
+		if counts[group.id] != 1 || !isLocalDirectoryGroup(name, group.id) {
 			continue
 		}
 		if _, exists := enrolled[name]; exists {
 			continue
 		}
-		switch strings.ToLower(name) {
-		case "users", "http", "docker", "lxd", "incus-admin", "sudo", "wheel", "disk", "libvirt":
-			continue
-		}
 		reusable[name] = group.id
 	}
 	return reusable
+}
+
+func isLocalDirectoryGroup(name string, gid int) bool {
+	if gid < 65536 || gid > 95536 || assertAllowedGroup(name) != nil {
+		return false
+	}
+	switch strings.ToLower(name) {
+	case "users", "http", "docker", "lxd", "incus-admin", "sudo", "wheel", "disk", "libvirt":
+		return false
+	}
+	return true
 }
