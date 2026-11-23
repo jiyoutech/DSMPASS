@@ -20,11 +20,15 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 	if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "provision", Username: username}); err != nil {
 		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 	}
+	target := creationTarget{cfg: cfg, name: username}
 	created := false
 	err = withAccountMutation(cfg, username, false, func() error {
 		displayName, _ := optionalString(payload, "display_name")
 		email, _ := optionalString(payload, "email")
 		if info, err := getSynoUser(cfg.SynoUserPath, username); err == nil {
+			if err := target.resume(); err != nil {
+				return err
+			}
 			if err := requireManagedUser(cfg, username); err != nil {
 				return err
 			}
@@ -48,13 +52,16 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		if err := target.begin(); err != nil {
+			return err
+		}
 		if err := runAccountCommand(ctx, cfg.SynoUserPath, synouserAddArgs(username, password, displayName, email)...); err != nil {
 			return err
 		}
 		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
 			return fmt.Errorf("DSM 用户创建命令已返回成功，但随后无法查询到该用户: %w", err)
 		}
-		if err := updateAccountPolicy(cfg, username, false, false); err != nil {
+		if err := target.confirm(); err != nil {
 			return err
 		}
 		created = true

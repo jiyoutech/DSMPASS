@@ -226,6 +226,9 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 	if group {
 		entries = p.Groups
 	}
+	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
+		return err
+	}
 	if revoke {
 		delete(entries, name)
 	} else {
