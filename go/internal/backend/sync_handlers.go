@@ -404,7 +404,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			nextStatus = "linked_existing"
 			action = "link_existing_dsm_user"
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
+		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, nextStatus, "")
 		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
 		if progress != nil {

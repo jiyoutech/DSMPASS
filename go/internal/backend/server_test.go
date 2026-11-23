@@ -3032,3 +3032,26 @@ func assertStatus(t *testing.T, handler http.Handler, method, path string, want 
 		t.Fatalf("%s %s got %d want %d", method, path, response.Code, want)
 	}
 }
+
+func TestSyncPreservesManualLoginPreference(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	s := NewWithDB(config.BackendConfig{RelayMode: "socket"}, &recordingHelper{}, database, q)
+	seedSyncedAccount(t, ctx, database, "feishu-main", "i", "e", "u", "demo", "2999-01-01")
+	for _, allow := range []bool{false, false, true} {
+		if _, err := s.runDSMAccountsLogin(ctx, []string{"account-i"}, allow, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.syncSourceToDSM(ctx, "r", "feishu-main", "2000-01-01", sourceSyncPolicy{}); err != nil {
+			t.Fatal(err)
+		}
+		var actual bool
+		if err := database.QueryRow("SELECT allow_login FROM dsm_accounts WHERE id='account-i'").Scan(&actual); err != nil || actual != allow {
+			t.Fatalf("allow=%v want=%v err=%v", actual, allow, err)
+		}
+	}
+}
