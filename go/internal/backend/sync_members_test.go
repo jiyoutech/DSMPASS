@@ -95,3 +95,67 @@ func TestSyncGroupMembersBatchesReadbackAndFallback(t *testing.T) {
 		})
 	}
 }
+
+type firstSyncGroupHelper struct {
+	testHelper
+	calls    []string
+	existing bool
+}
+
+func (h *firstSyncGroupHelper) ProvisionUser(_ context.Context, _, name, _, _, _ string) (bool, error) {
+	h.calls = append(h.calls, "user:"+name)
+	return !h.existing, nil
+}
+func (h *firstSyncGroupHelper) PrepareGroupForMembers(_ context.Context, _, group string) (bool, error) {
+	h.calls = append(h.calls, "prepare:"+group)
+	return false, nil
+}
+func (h *firstSyncGroupHelper) ProvisionGroup(_ context.Context, _, group string) (bool, error) {
+	h.calls = append(h.calls, "group:"+group)
+	return true, nil
+}
+func (h *firstSyncGroupHelper) AddGroupMembers(_ context.Context, _, group string, names []string) ([]string, error) {
+	h.calls = append(h.calls, fmt.Sprintf("members:%s:%d", group, len(names)))
+	return names, nil
+}
+
+func TestFirstSyncCreatesNonemptyGroupWithUsers(t *testing.T) {
+	ctx := context.Background()
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &firstSyncGroupHelper{}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, helper, database, queries)
+	if _, err := database.Exec("INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')"); err != nil {
+		t.Fatal(err)
+	}
+	seedSyncedAccount(t, ctx, database, "a", "alice", "external-alice", "alice", "alice", "2999-01-01")
+	seedGroupMember(t, ctx, database, "a", "provider-team", "team", "membership", "team", "team", "alice", 1, "pending")
+	for _, tc := range []struct {
+		existing    bool
+		preparation string
+	}{{false, "prepare:team"}, {true, "group:team"}} {
+		helper.calls = nil
+		helper.existing = tc.existing
+		if _, err := s.syncSourceToDSM(ctx, "sync", "a", "2000-01-01", sourceSyncPolicy{}); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"user:alice", tc.preparation, "members:team:1"}; !slices.Equal(helper.calls, want) {
+			t.Fatalf("got %v want %v", helper.calls, want)
+		}
+		assertLocalMemberStatus(t, ctx, database, "membership", 1, "created")
+	}
+	if _, err := database.Exec("UPDATE group_members SET active=0"); err != nil {
+		t.Fatal(err)
+	}
+	helper.existing = false
+	helper.calls = nil
+	if _, err := s.syncSourceToDSM(ctx, "empty", "a", "2000-01-01", sourceSyncPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(helper.calls, []string{"user:alice", "group:team"}) {
+		t.Fatal(helper.calls)
+	}
+}

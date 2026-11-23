@@ -151,12 +151,27 @@ func (s *Server) handle(conn net.Conn) {
 		_ = json.NewEncoder(conn).Encode(errorResponse("BAD_REQUEST", "invalid json"))
 		return
 	}
-	response := s.handlePayload(payload)
+	ctx := context.Background()
+	if payload["action"] == "scoped_provision_users" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+		go func() {
+			var b [1]byte
+			_, _ = conn.Read(b[:])
+			cancel()
+		}()
+	}
+	response := s.handlePayloadContext(ctx, payload)
 	_ = json.NewEncoder(conn).Encode(response)
 }
 
 func (s *Server) handlePayload(payload map[string]any) map[string]any {
-	cfg := settings.ApplyHelperRuntime(context.Background(), s.cfg, s.store)
+	return s.handlePayloadContext(context.Background(), payload)
+}
+
+func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]any) map[string]any {
+	cfg := settings.ApplyHelperRuntime(ctx, s.cfg, s.store)
 	requestID, _ := payload["request_id"].(string)
 	action, _ := payload["action"].(string)
 	diaglog.Append(cfg.DataDir, requestID, "helper.socket.request.received", cfg.LoginDiagnosticsEnabled, diaglog.Event{
@@ -292,6 +307,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
 		}
 		return map[string]any{"success": true}
+	case "scoped_provision_users":
+		return s.provisionAccounts(ctx, cfg, payload)
 	case "scoped_provision_user":
 		return s.provisionAccount(cfg, payload)
 	case "scoped_disable_dingtalk_user", "scoped_disable_user":

@@ -80,8 +80,12 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 		if err := runAccountCommand(ctx, cfg.SynoUserPath, synouserAddArgs(username, password, displayName, email)...); err != nil {
 			return err
 		}
-		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
-			return fmt.Errorf("DSM 用户创建命令已返回成功，但随后无法查询到该用户: %w", err)
+		// confirm reads the actual local UID and checks privileged group membership.
+		// Setups without a policy file still need the native existence check.
+		if cfg.AccountPolicyPath == "" && !cfg.Privileged {
+			if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
+				return fmt.Errorf("DSM 用户创建命令已返回成功，但随后无法查询到该用户: %w", err)
+			}
 		}
 		if err := target.confirm(); err != nil {
 			return err

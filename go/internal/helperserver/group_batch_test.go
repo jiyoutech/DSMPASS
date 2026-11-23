@@ -269,3 +269,26 @@ func TestBatchMembershipPreservesPinnedSubjectAndSource(t *testing.T) {
 	}
 	check(scope, false)
 }
+
+func TestPrepareMissingGroupDefersOnlyUntilMemberBatch(t *testing.T) {
+	cfg := policyTestConfig(t)
+	enrollBatchUsers(t, cfg)
+	cfg.SynoGroupPath = filepath.Join(t.TempDir(), "no-native-command")
+	s := &Server{}
+	prepare := func(name string) map[string]any {
+		return s.mutateGroup(cfg, "scoped_provision_group", map[string]any{"dsm_groupname": name, "defer_if_missing": true})
+	}
+	if got := prepare("testing"); got["success"] != true || got["deferred"] != true || got["created"] != false {
+		t.Fatal(got)
+	}
+	target := creationTarget{cfg: cfg, name: "testing", group: true}
+	if _, err := os.Stat(target.path()); !os.IsNotExist(err) {
+		t.Fatalf("unexpected write for missing group: %v", err)
+	}
+	if got := prepare("engineering"); got["success"] != true || got["created"] != true {
+		t.Fatal(got)
+	}
+	if got := prepare("administrators"); got["success"] != false {
+		t.Fatal(got)
+	}
+}

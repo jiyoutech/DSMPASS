@@ -7,6 +7,7 @@ import (
 )
 
 const MaxGroupMembers = 200
+const MaxProvisionUsers = 200
 
 // These constraints are populated from the Helper's local UID/GID policy.
 type HelperMemberScope struct {
@@ -18,6 +19,7 @@ type HelperMemberScope struct {
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
+	Usernames       []string            `json:"usernames,omitempty"`
 	Members         []HelperMemberScope `json:"members,omitempty"`
 	CredentialOwner *CredentialIdentity `json:"credential_owner,omitempty"`
 	VerifiedEmail   string              `json:"verified_email,omitempty"`
@@ -39,7 +41,30 @@ type HelperAuthorizationResult struct {
 	Enrollment      *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
 }
 
+const provisionIdentityScope = `
+ FROM dsm_accounts a
+ JOIN app_identities i ON i.id=a.app_identity_id
+ JOIN external_accounts e ON e.app_identity_id=i.id
+ JOIN identity_sources src ON src.slug=e.provider_slug
+ WHERE i.status='active' AND e.active=1 AND src.enabled=1 AND src.directory_sync_enabled=1`
+
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if request.Action == "provision_users" {
+		if q == nil || len(request.Usernames) == 0 || len(request.Usernames) > MaxProvisionUsers {
+			return false, errors.New("invalid account provisioning authorization batch")
+		}
+		names, err := json.Marshal(request.Usernames)
+		if err != nil {
+			return false, err
+		}
+		// All candidates were checked against the root-owned policy under the
+		// writer lock. Apply the same live identity scope as individual provisioning.
+		var allowed bool
+		err = q.DBTX().QueryRowContext(ctx, `SELECT NOT EXISTS (
+ SELECT 1 FROM json_each(?) AS requested WHERE NOT EXISTS (
+ SELECT 1 `+provisionIdentityScope+` AND a.dsm_username=requested.value))`, string(names)).Scan(&allowed)
+		return allowed, err
+	}
 	if request.Action == "directory_member_batch" {
 		if q == nil || request.Groupname == "" || len(request.Members) == 0 || len(request.Members) > MaxGroupMembers {
 			return false, errors.New("invalid directory membership query")
@@ -165,12 +190,7 @@ SELECT EXISTS (
 	if request.Action == "provision" {
 		err := q.DBTX().QueryRowContext(ctx, `
 SELECT EXISTS (
- SELECT 1 FROM dsm_accounts a
- JOIN app_identities i ON i.id = a.app_identity_id
- JOIN external_accounts e ON e.app_identity_id = i.id
- JOIN identity_sources src ON src.slug = e.provider_slug
- WHERE a.dsm_username = ? AND i.status = 'active' AND e.active = 1
-   AND src.enabled = 1 AND src.directory_sync_enabled = 1
+ SELECT 1 `+provisionIdentityScope+` AND a.dsm_username=?
 )`, request.Username).Scan(&allowed)
 		return allowed, err
 	}

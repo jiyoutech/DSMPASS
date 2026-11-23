@@ -78,7 +78,7 @@ func queryHelperAsPackage(cfg config.HelperConfig, request db.HelperAuthorizatio
 		return result, err
 	}
 	timeout := 3 * time.Second
-	if request.Action == "directory_member_batch" {
+	if request.Action == "directory_member_batch" || request.Action == "provision_users" {
 		timeout = 20 * time.Second
 	}
 	var output limitedAuthorizationOutput

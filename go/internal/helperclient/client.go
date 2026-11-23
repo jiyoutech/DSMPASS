@@ -29,6 +29,12 @@ type GroupMemberBatchClient interface {
 	AddGroupMembers(context.Context, string, string, []string) ([]string, error)
 }
 
+// GroupWithMembersClient can leave a missing group for its first member batch.
+type GroupWithMembersClient interface {
+	PrepareGroupForMembers(context.Context, string, string) (bool, error)
+	GroupMemberBatchClient
+}
+
 // ProvisionUserResult distinguishes a fresh native creation with an explicitly
 // supplied password from a reconciliation of an existing DSM account.
 type ProvisionUserResult struct {
@@ -284,6 +290,14 @@ func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupna
 	return boolResponse(response, err)
 }
 
+func (c UnixSocketClient) PrepareGroupForMembers(ctx context.Context, requestID, groupname string) (bool, error) {
+	response, err := c.send(ctx, map[string]any{
+		"action": "scoped_provision_group", "request_id": requestID,
+		"dsm_groupname": groupname, "defer_if_missing": true,
+	})
+	return boolResponse(response, err)
+}
+
 func (c UnixSocketClient) WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error) {
 	if c.Timeout < 15*time.Second {
 		c.Timeout = 15 * time.Second
@@ -390,6 +404,8 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	// recovery. Health checks and unrelated actions retain their short timeout.
 	timeout := c.Timeout
 	switch action {
+	case "scoped_provision_users":
+		timeout = max(timeout, 16*time.Minute)
 	case "scoped_add_group_members":
 		timeout = max(timeout, 120*time.Second)
 	case "scoped_prepare_browser_login", "complete_browser_login":
@@ -431,6 +447,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	if success, _ := response["success"].(bool); !success {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.failure", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 		if code, _ := response["error_code"].(string); code != "" {
+			if action == "scoped_provision_users" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
+				return nil, ErrUserBatchUnsupported
+			}
 			if action == "scoped_add_group_members" && (code == "GROUP_BATCH_UNSUPPORTED" || (code == "BAD_REQUEST" && response["error"] == "unsupported action")) {
 				return nil, ErrGroupBatchUnsupported
 			}
