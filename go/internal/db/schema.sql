@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS dingtalk_offboarding (
+    source_slug TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (reason IN ('disabled','departed')),
+    PRIMARY KEY (source_slug, account_id)
+);
 CREATE TABLE IF NOT EXISTS source_initial_password_secrets (
     id TEXT PRIMARY KEY,
     source_slug TEXT NOT NULL UNIQUE,

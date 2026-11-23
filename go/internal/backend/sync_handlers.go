@@ -123,6 +123,19 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return result, err
 	}
 	policy.FullSync = mode == syncFull
+	var scopeCheck func() (bool, error)
+	if policy.DingTalk && policy.FullSync && policy.DisableMissingUsers && policy.DeactivateMissingData {
+		if directoryScope, ok := directory.(interface{ WholeDirectoryVisible() (bool, error) }); ok {
+			scopeCheck = directoryScope.WholeDirectoryVisible
+		}
+	}
+	visibleBefore := false
+	if scopeCheck != nil {
+		visibleBefore, err = scopeCheck()
+		if err != nil {
+			return result, err
+		}
+	}
 	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "sync_mode", "success", "", string(mode), "")
 	if progress != nil {
 		progress.message(ctx, "读取身份源", "正在读取身份源通讯录")
@@ -138,8 +151,9 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		q = db.New(tx)
 	}
 	result, err = syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
-		DeactivateMissingData: policy.DeactivateMissingData,
-		SyncStart:             syncStart,
+		TrackAccountSuspensions: policy.DingTalk && policy.DisableMissingUsers,
+		DeactivateMissingData:   policy.DeactivateMissingData,
+		SyncStart:               syncStart,
 		Progress: func(phase string, current, total int, message string) {
 			if progress == nil {
 				return
@@ -164,6 +178,18 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 	s.logDirectoryLinkPlanWithBuffer(logBuffer, runID, directory.Slug(), result.Items)
 	if syncResultHasDirectoryWarning(result) {
 		policy.PreserveMissingGroups = true
+	}
+	if policy.DingTalk && policy.DisableMissingUsers {
+		policy.dingTalkUsers = result.AccountSuspensions
+		if visibleBefore && !policy.PreserveMissingGroups {
+			policy.confirmDingTalkAbsence, err = scopeCheck()
+			if err != nil {
+				return result, err
+			}
+		}
+		if policy.FullSync && !policy.confirmDingTalkAbsence {
+			logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "offboarding_scope", "skipped", "", "", "未确认完整组织通讯录，仅处理企业账号明确停用状态")
+		}
 	}
 	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
 	result.Items = append(result.Items, operations...)
@@ -230,10 +256,13 @@ func (s *Server) endSourceSync(slug string) {
 }
 
 type sourceSyncPolicy struct {
-	FullSync              bool
-	DisableMissingUsers   bool
-	DeactivateMissingData bool
-	PreserveMissingGroups bool
+	DingTalk               bool
+	dingTalkUsers          map[string]bool
+	confirmDingTalkAbsence bool
+	FullSync               bool
+	DisableMissingUsers    bool
+	DeactivateMissingData  bool
+	PreserveMissingGroups  bool
 }
 
 func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) (sourceSyncPolicy, error) {
@@ -246,6 +275,7 @@ func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) (sourc
 	}
 	cfg := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	return sourceSyncPolicy{
+		DingTalk:              source.ProviderType == "dingtalk",
 		DisableMissingUsers:   boolValue(cfg.DisableMissingUsers, false),
 		DeactivateMissingData: boolValue(cfg.DeactivateMissingData, true),
 	}, nil
@@ -266,7 +296,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		}
 	}
 	var disableErr error
-	if policy.DisableMissingUsers {
+	if policy.DisableMissingUsers && policy.DingTalk {
+		operations, disableErr = s.disableDingTalkAccounts(ctx, runID, sourceSlug, policy, logBuffer)
+	} else if policy.DisableMissingUsers {
 		operations, disableErr = s.disableMissingAccounts(ctx, runID, sourceSlug, logBuffer, progress)
 	}
 	provisioned, err := s.provisionSourceToDSM(ctx, runID, sourceSlug, policy, logBuffer, progress)
@@ -372,7 +404,8 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		JOIN app_identities i ON i.id = a.app_identity_id
 		JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id
 		WHERE me.provider_slug = ? AND me.mapping_type = 'user' AND me.active = 1 AND a.provision_status IN ('pending', 'failed', 'created', 'linked_existing', 'disabled')
-		ORDER BY a.created_at`, sourceSlug)
+		AND (NOT ? OR EXISTS (SELECT 1 FROM external_accounts e WHERE e.id=me.external_account_id AND e.provider_slug=me.provider_slug AND e.app_identity_id=i.id AND e.active=1))
+        ORDER BY a.created_at`, sourceSlug, policy.DingTalk)
 	if err != nil {
 		return operations, err
 	}

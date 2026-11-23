@@ -201,7 +201,7 @@ const revokedUserID = -1
 
 var errUserNotEnrolled = errors.New("尚未登记")
 
-var errDingTalkMembershipOnly = errors.New("钉钉同名用户仅获通讯录同步授权，保留 DSM/SMB 密码和账号状态")
+var errDingTalkMembershipOnly = errors.New("钉钉同名用户保留 DSM/SMB 密码，停用需有同步确认记录")
 
 func requireManagedUser(cfg config.HelperConfig, username string) error {
 	grant, err := userEnrollment(cfg, username)
