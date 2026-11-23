@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
 
@@ -434,16 +435,27 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		progress.setTotal(ctx, "同步 DSM 用户", "正在同步 DSM 用户", len(pendingAccounts))
 	}
 	var accountErrors []error
+	var createdPasswords syncCreatedPasswords
+	var initialPassword string
+	resultClient, _ := s.helper.(helperclient.UserProvisionResultClient)
 	for _, item := range pendingAccounts {
 		id, username, displayName, email, status := item.id, item.username, item.displayName, item.email, item.status
-		err := error(nil)
-		password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
+		var err error
+		if initialPassword == "" {
+			initialPassword, err = s.provisionUserInitialPassword(ctx, sourceSlug)
+		}
 		if err != nil {
 			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, errors.Join(append(accountErrors, err)...)
 		}
-		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
+		requestID := "sync_user_" + randomHex(8)
+		var result helperclient.ProvisionUserResult
+		if policy.FullSync && resultClient != nil {
+			result, err = resultClient.ProvisionUserWithResult(ctx, requestID, username, displayName, email, initialPassword)
+		} else {
+			result.Created, err = s.helper.ProvisionUser(ctx, requestID, username, displayName, email, initialPassword)
+		}
 		if err != nil {
 			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
@@ -455,12 +467,19 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		}
 		nextStatus := "created"
 		action := "sync_dsm_user"
-		if !created {
+		if !result.Created {
 			nextStatus = "linked_existing"
 			action = "link_existing_dsm_user"
 		}
 		if err := saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id); err != nil {
 			return operations, errors.Join(append(accountErrors, err)...)
+		}
+		if result.Created && result.InitialPasswordApplied {
+			if createdPasswords.accounts == nil {
+				createdPasswords.accounts = map[string]string{}
+				createdPasswords.password = initialPassword
+			}
+			createdPasswords.accounts[id] = username
 		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, nextStatus, "")
 		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
@@ -469,7 +488,7 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		}
 	}
 	if policy.FullSync {
-		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress)
+		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress, createdPasswords)
 		operations = append(operations, passwordOperations...)
 		if err != nil {
 			accountErrors = append(accountErrors, err)

@@ -23,6 +23,7 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 	}
 	target := creationTarget{cfg: cfg, name: username}
 	created := false
+	initialPasswordApplied := false
 	err = withAccountMutation(cfg, username, false, func() error {
 		displayName, _ := optionalString(payload, "display_name")
 		email, _ := optionalString(payload, "email")
@@ -67,6 +68,7 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 			return err
 		}
 		password, _ := optionalString(payload, "initial_password")
+		suppliedPassword := password != ""
 		if password == "" {
 			password = randomPassword(cfg.InitialPasswordLength)
 		}
@@ -85,12 +87,15 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 			return err
 		}
 		created = true
+		// An unresolved permanent reset still needs its normal coordinated repair.
+		// Only acknowledge a supplied password after native creation and UID enrollment.
+		initialPasswordApplied = suppliedPassword && cfg.AccountPolicyPath != "" && cfg.JournalDir != "" && checkPasswordResetPending(cfg, username) == nil
 		return nil
 	})
 	if err != nil {
 		return errorResponse("SYNOUSER_FAILED", err.Error())
 	}
-	return map[string]any{"success": true, "created": created}
+	return map[string]any{"success": true, "created": created, "initial_password_applied": initialPasswordApplied}
 }
 
 func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any) map[string]any {

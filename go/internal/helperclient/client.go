@@ -29,6 +29,17 @@ type GroupMemberBatchClient interface {
 	AddGroupMembers(context.Context, string, string, []string) ([]string, error)
 }
 
+// ProvisionUserResult distinguishes a fresh native creation with an explicitly
+// supplied password from a reconciliation of an existing DSM account.
+type ProvisionUserResult struct {
+	Created                bool
+	InitialPasswordApplied bool
+}
+
+type UserProvisionResultClient interface {
+	ProvisionUserWithResult(ctx context.Context, requestID, username, displayName, email, initialPassword string) (ProvisionUserResult, error)
+}
+
 type Client interface {
 	HealthCheck(ctx context.Context) (map[string]any, error)
 	RelayLogin(ctx context.Context, requestID, username, identityID, loginSource string) (RelayLoginResult, error)
@@ -207,6 +218,11 @@ func relayCookiesFromResponse(response map[string]any) []RelayCookie {
 }
 
 func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	result, err := c.ProvisionUserWithResult(ctx, requestID, username, displayName, email, initialPassword)
+	return result.Created, err
+}
+
+func (c UnixSocketClient) ProvisionUserWithResult(ctx context.Context, requestID, username, displayName, email, initialPassword string) (ProvisionUserResult, error) {
 	response, err := c.send(ctx, map[string]any{
 		"action":           "scoped_provision_user",
 		"request_id":       requestID,
@@ -215,7 +231,14 @@ func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username
 		"email":            email,
 		"initial_password": initialPassword,
 	})
-	return boolResponse(response, err)
+	return provisionUserResult(response, initialPassword, err)
+}
+
+func provisionUserResult(response map[string]any, initialPassword string, err error) (ProvisionUserResult, error) {
+	created, err := boolResponse(response, err)
+	explicit, _ := response["created"].(bool)
+	applied, _ := response["initial_password_applied"].(bool)
+	return ProvisionUserResult{Created: created, InitialPasswordApplied: err == nil && explicit && applied && initialPassword != ""}, err
 }
 
 func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {

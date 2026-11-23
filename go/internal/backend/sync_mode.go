@@ -47,7 +47,13 @@ func readSyncMode(c *gin.Context) (syncMode, bool) {
 	return payload.Mode, true
 }
 
-func (s *Server) resetFullSyncPasswords(ctx context.Context, runID, sourceSlug string, buffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+// A later run must reconcile passwords again, including accounts created in an earlier run.
+type syncCreatedPasswords struct {
+	accounts map[string]string
+	password string
+}
+
+func (s *Server) resetFullSyncPasswords(ctx context.Context, runID, sourceSlug string, buffer *syncLogBuffer, progress *operationProgress, created syncCreatedPasswords) ([]syncsvc.PlanItem, error) {
 	rows, err := queryJSON(ctx, s.store, `
 SELECT DISTINCT a.id, a.dsm_username FROM dsm_accounts a
 JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id
@@ -83,8 +89,10 @@ ORDER BY a.id`, sourceSlug)
 					return operations, errors.Join(append(resetErrors, err)...)
 				}
 			}
-			err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, initialPassword)
-			if errors.Is(err, helperclient.ErrDingTalkMembershipOnly) {
+			if name, ok := created.accounts[id]; ok && name == username && created.password == initialPassword {
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "initialize_password", "success", "", "source_initial_password", "")
+				operations = append(operations, syncsvc.PlanItem{Action: "initialize_password", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "success"})
+			} else if err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, initialPassword); errors.Is(err, helperclient.ErrDingTalkMembershipOnly) {
 				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", err.Error())
 			} else if err != nil {
 				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")
