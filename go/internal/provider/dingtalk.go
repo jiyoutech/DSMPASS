@@ -22,14 +22,15 @@ const (
 )
 
 type DingTalkConfig struct {
-	AppKey            string
-	AppSecret         string
-	AuthorizeURL      string
-	UserTokenURL      string
-	UserInfoURL       string
-	AppTokenURL       string
-	ContactBaseURL    string
-	DirectoryPageSize int
+	CheckAccountStatus bool
+	AppKey             string
+	AppSecret          string
+	AuthorizeURL       string
+	UserTokenURL       string
+	UserInfoURL        string
+	AppTokenURL        string
+	ContactBaseURL     string
+	DirectoryPageSize  int
 }
 
 type dingTalkErrorBody struct {
@@ -172,6 +173,7 @@ func (d DingTalk) ListUsersAndGroups() ([]User, []Group, error) {
 
 func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
+	disabledByID := make(map[string]bool)
 	loadUser := d.cachedUserGetter(token)
 	for _, group := range groups {
 		items, err := d.departmentUsers(token, group.Subject)
@@ -181,18 +183,58 @@ func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
 		for _, raw := range items {
 			userID := firstStringish(raw, "userid", "userId", "user_id")
 			if userID == "" {
+				if d.cfg.CheckAccountStatus {
+					return nil, errors.New("钉钉部门成员缺少 userid，无法确认通讯录完整")
+				}
 				continue
 			}
 			detail, err := loadUser(userID)
 			if err != nil {
 				return nil, err
 			}
-			if err := d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject}); err != nil {
+			disabled, known := disabledByID[userID]
+			if exclusive, _ := detail["exclusive_account"].(bool); d.cfg.CheckAccountStatus && exclusive && !known {
+				disabled, err = d.enterpriseAccountDisabled(token, userID)
+				if err != nil {
+					return nil, err
+				}
+				disabledByID[userID] = disabled
+			}
+			if err := d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject}, disabled); err != nil {
 				return nil, err
 			}
 		}
 	}
 	return usersFromMap(usersBySubject), nil
+}
+
+// WholeDirectoryVisible checks the application's actual department scope. A
+// partial visible directory cannot establish that an absent employee has left.
+func (d DingTalk) WholeDirectoryVisible() (bool, error) {
+	token, err := d.appAccessToken()
+	if err != nil {
+		return false, err
+	}
+	endpoint, err := url.Parse(d.cfg.ContactBaseURL)
+	if err != nil {
+		return false, err
+	}
+	endpoint.Path = "/auth/scopes"
+	endpoint.RawQuery = url.Values{"access_token": {token}}.Encode()
+	var scope struct {
+		Org struct {
+			Departments []int64 `json:"authed_dept"`
+		} `json:"auth_org_scopes"`
+	}
+	if err := d.getJSON(endpoint.String(), "", &scope); err != nil {
+		return false, errors.New("读取钉钉通讯录授权范围失败")
+	}
+	for _, dept := range scope.Org.Departments {
+		if dept == 1 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (d DingTalk) ListGroups() ([]Group, error) {
@@ -228,6 +270,9 @@ func (d DingTalk) listGroups(token string) ([]Group, error) {
 		for _, raw := range children {
 			subject := dingTalkDepartmentID(raw)
 			if subject == "" {
+				if d.cfg.CheckAccountStatus {
+					return nil, errors.New("钉钉部门缺少标识，无法确认通讯录完整")
+				}
 				continue
 			}
 			name := departmentName(raw, subject)
@@ -301,7 +346,11 @@ func (d DingTalk) departmentChildren(token, departmentID string) ([]map[string]a
 	if err := d.postJSON(endpoint, map[string]any{"dept_id": dingTalkIDValue(departmentID)}, "", &out); err != nil {
 		return nil, err
 	}
-	return mapItems(out, "result"), nil
+	items := mapItems(out, "result")
+	if raw, ok := out["result"].([]any); d.cfg.CheckAccountStatus && (!ok || len(items) != len(raw)) {
+		return nil, errors.New("钉钉部门列表不完整")
+	}
+	return items, nil
 }
 
 func (d DingTalk) departmentUsers(token, departmentID string) ([]map[string]any, error) {
@@ -322,8 +371,12 @@ func (d DingTalk) departmentUsers(token, departmentID string) ([]map[string]any,
 			return nil, err
 		}
 		result, _ := out["result"].(map[string]any)
-		all = append(all, mapItems(result, "list")...)
-		hasMore, _ := result["has_more"].(bool)
+		items := mapItems(result, "list")
+		all = append(all, items...)
+		hasMore, moreOK := result["has_more"].(bool)
+		if raw, listOK := result["list"].([]any); d.cfg.CheckAccountStatus && (!moreOK || !listOK || len(raw) != len(items)) {
+			return nil, errors.New("钉钉成员分页结果不完整")
+		}
 		if !hasMore {
 			return all, nil
 		}
@@ -363,7 +416,9 @@ func (d DingTalk) cachedUserGetter(token string) func(string) (map[string]any, e
 		if err != nil {
 			return nil, err
 		}
-		if firstStringish(detail, "userid", "userId", "user_id") == "" {
+		if returnedID := firstStringish(detail, "userid", "userId", "user_id"); d.cfg.CheckAccountStatus && returnedID != "" && returnedID != userID {
+			return nil, errors.New("钉钉用户详情标识与请求不一致")
+		} else if returnedID == "" {
 			detail["userid"] = userID
 		}
 		cache[userID] = detail
@@ -371,7 +426,30 @@ func (d DingTalk) cachedUserGetter(token string) func(string) (map[string]any, e
 	}
 }
 
-func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string) error {
+func (d DingTalk) enterpriseAccountDisabled(token, userID string) (bool, error) {
+	endpoint, err := url.Parse(d.cfg.ContactBaseURL)
+	if err != nil {
+		return false, err
+	}
+	// Only send the app token to its configured directory host or DingTalk's modern API.
+	if endpoint.Host == "oapi.dingtalk.com" {
+		endpoint.Scheme, endpoint.Host = "https", "api.dingtalk.com"
+	}
+	endpoint.Path = "/v1.0/contact/orgAccounts/status"
+	endpoint.RawQuery = url.Values{"userId": {userID}}.Encode()
+	var status struct {
+		Disable *bool `json:"disable"`
+	}
+	if err := d.getJSON(endpoint.String(), token, &status); err != nil {
+		return false, fmt.Errorf("读取钉钉企业账号停用状态: %w", err)
+	}
+	if status.Disable == nil {
+		return false, errors.New("钉钉企业账号状态缺少 disable")
+	}
+	return *status.Disable, nil
+}
+
+func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[string]any, fallbackDepartments []string, disabled bool) error {
 	subject, subjectType, err := dingTalkDirectoryUserSubject(raw)
 	if err != nil {
 		return err
@@ -395,7 +473,8 @@ func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[stri
 		DisplayName:  displayName,
 		Email:        firstString(raw, "email", "org_email"),
 		Mobile:       firstString(raw, "mobile"),
-		Active:       dingTalkUserActive(raw),
+		Disabled:     disabled,
+		Active:       !disabled && dingTalkUserActive(raw),
 	}
 	if existing.Subject != "" {
 		user.DepartmentSubjects = uniqueStrings(append(existing.DepartmentSubjects, departmentSubjects...))

@@ -77,6 +77,15 @@ func (existingUserHelper) ProvisionUser(ctx context.Context, requestID, username
 	return false, nil
 }
 
+func (testHelper) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
+	return nil
+}
+
+func (h *recordingHelper) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
+	h.disabled = append(h.disabled, username)
+	return nil
+}
+
 func (testHelper) DisableUser(ctx context.Context, requestID, username string) (bool, error) {
 	return true, nil
 }

@@ -8,6 +8,7 @@ type User struct {
 	Email              string
 	Mobile             string
 	DepartmentSubjects []string
+	Disabled           bool // Authoritative organization-account suspension reported by the provider.
 	Active             bool
 }
 

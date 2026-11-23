@@ -294,7 +294,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return map[string]any{"success": true}
 	case "scoped_provision_user":
 		return s.provisionAccount(cfg, payload)
-	case "scoped_disable_user":
+	case "scoped_disable_dingtalk_user", "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
 	case "scoped_web_group_approval":
 		return s.webGroupApproval(cfg, payload)

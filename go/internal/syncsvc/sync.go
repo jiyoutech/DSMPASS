@@ -23,8 +23,11 @@ type PlanItem struct {
 }
 
 type Result struct {
-	ProviderSlug string     `json:"provider_slug"`
-	Items        []PlanItem `json:"items"`
+	// Every subject observed in this snapshot, including present but unactivated employees.
+	// A true value means the provider explicitly confirmed account suspension.
+	AccountSuspensions map[string]bool `json:"-"`
+	ProviderSlug       string          `json:"provider_slug"`
+	Items              []PlanItem      `json:"items"`
 }
 
 type Engine struct {
@@ -34,9 +37,10 @@ type Engine struct {
 }
 
 type Options struct {
-	DeactivateMissingData bool
-	SyncStart             string
-	Progress              func(phase string, current, total int, message string)
+	TrackAccountSuspensions bool
+	DeactivateMissingData   bool
+	SyncStart               string
+	Progress                func(phase string, current, total int, message string)
 }
 
 func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
@@ -64,8 +68,17 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	}
 	inactiveUserOnlyDirectory := len(users) > 0 && len(groups) == 0
 	e.report("写入用户映射", 0, len(users), "正在写入用户映射")
+	if e.options.TrackAccountSuspensions {
+		result.AccountSuspensions = make(map[string]bool, len(users))
+	}
 	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
 	for index, user := range users {
+		if e.options.TrackAccountSuspensions {
+			if user.Subject == "" || user.ProviderSlug != directory.Slug() {
+				return result, fmt.Errorf("%s通讯录用户缺少有效来源或身份标识", providerName)
+			}
+			result.AccountSuspensions[user.Subject] = user.Disabled
+		}
 		verified := true
 		active := user.Active
 		subjectType := strings.TrimSpace(user.SubjectType)
@@ -86,12 +99,19 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			return result, err
 		}
 		if !user.Active {
+			state := "inactive"
+			if user.Disabled {
+				state = "disabled"
+				if _, err := e.q.DBTX().ExecContext(ctx, "UPDATE dsm_mapping_entries SET active=0, updated_at=CURRENT_TIMESTAMP WHERE mapping_type='user' AND provider_slug=? AND external_account_id=?", user.ProviderSlug, external.ID); err != nil {
+					return result, err
+				}
+			}
 			result.Items = append(result.Items, PlanItem{
 				Action:          "skip_inactive_user",
 				ProviderSlug:    user.ProviderSlug,
 				Subject:         user.Subject,
 				DisplayName:     user.DisplayName,
-				ProvisionStatus: "inactive",
+				ProvisionStatus: state,
 			})
 			e.report("写入用户映射", index+1, len(users), user.DisplayName)
 			continue

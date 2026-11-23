@@ -27,6 +27,7 @@ type Client interface {
 	ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error)
 	ResetSyncedUserPassword(ctx context.Context, requestID, sourceSlug, accountID, username, password string) error
 	DisableUser(ctx context.Context, requestID, username string) (bool, error)
+	DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error
 	ProvisionGroup(ctx context.Context, requestID, groupname string) (bool, error)
 	WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error)
 	AddGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error)
@@ -205,6 +206,17 @@ func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username
 		"initial_password": initialPassword,
 	})
 	return boolResponse(response, err)
+}
+
+func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
+	response, err := c.send(ctx, map[string]any{"action": "scoped_disable_dingtalk_user", "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
+	if err != nil {
+		return err
+	}
+	if confirmed, _ := response["disabled"].(bool); !confirmed {
+		return errors.New("Helper 未确认 DSM 账号已停用")
+	}
+	return nil
 }
 
 func (c UnixSocketClient) DisableUser(ctx context.Context, requestID, username string) (bool, error) {

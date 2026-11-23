@@ -10,6 +10,7 @@ import (
 type HelperAuthorizationQuery struct {
 	DatabasePath string `json:"database_path"`
 	Action       string `json:"action"`
+	RunID        string `json:"run_id,omitempty"`
 	Subject      string `json:"subject,omitempty"`
 	Username     string `json:"username"`
 	Groupname    string `json:"groupname,omitempty"`
@@ -26,6 +27,16 @@ type HelperAuthorizationResult struct {
 }
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if q != nil && request.Action == "dingtalk_offboard" {
+		var allowed bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+dingTalkOffboardingScope+`
+        JOIN dingtalk_offboarding d ON d.source_slug=s.slug AND d.account_id=a.id AND d.subject=e.subject
+        JOIN sync_runs r ON r.id=d.run_id AND r.source_slug=s.slug AND r.dry_run=0 AND r.status='running'
+        AND r.rowid=(SELECT MAX(latest.rowid) FROM sync_runs latest WHERE latest.source_slug=s.slug AND latest.dry_run=0)
+        WHERE `+dingTalkOffboardingEligible+` AND d.run_id=? AND s.slug=? AND a.id=? AND a.dsm_username=? AND e.subject=?)`,
+			request.RunID, request.SourceSlug, request.AccountID, request.Username, request.Subject).Scan(&allowed)
+		return allowed, err
+	}
 	if q != nil && request.Action == "dingtalk_member" {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+`

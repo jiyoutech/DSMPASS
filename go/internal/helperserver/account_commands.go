@@ -92,23 +92,55 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	if err := assertAllowed(cfg, username); err != nil {
 		return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 	}
-	if err := requireManagedUser(cfg, username); err != nil {
-		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+	dingTalk := payload["action"] == "scoped_disable_dingtalk_user"
+	authorize := func() error {
+		if !dingTalk {
+			if err := requireManagedUser(cfg, username); err != nil {
+				return err
+			}
+			return s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "mapped", Username: username})
+		}
+		source, _ := payload["source_slug"].(string)
+		subject, _ := payload["subject"].(string)
+		accountID, _ := payload["account_id"].(string)
+		runID, _ := payload["run_id"].(string)
+		if source == "" || subject == "" || accountID == "" || runID == "" {
+			return errors.New("钉钉停用请求缺少身份或同步记录")
+		}
+		grant, err := userEnrollment(cfg, username)
+		if err != nil {
+			return err
+		}
+		if grant != nil && (grant.DingTalk == nil || grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject) {
+			return errors.New("DSM 用户缺少对应的钉钉身份绑定")
+		}
+		return s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_offboard", SourceSlug: source, Subject: subject, AccountID: accountID, Username: username, RunID: runID})
 	}
-	if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "mapped", Username: username}); err != nil {
+	if err := authorize(); err != nil {
 		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 	}
 	disabled := false
 	err = withAccountMutation(cfg, username, true, func() error {
-		if err := requireManagedUser(cfg, username); err != nil {
+		if err := authorize(); err != nil {
 			return err
 		}
 		info, err := getSynoUser(cfg.SynoUserPath, username)
 		if err != nil {
 			return err
 		}
-		if err := modifySynoUser(cfg.SynoUserPath, username, info.FullName, true, info.Mail); err != nil {
-			return err
+		if !info.Expired {
+			if err := modifySynoUser(cfg.SynoUserPath, username, info.FullName, true, info.Mail); err != nil {
+				return err
+			}
+			if dingTalk {
+				verified, err := getSynoUser(cfg.SynoUserPath, username)
+				if err != nil {
+					return fmt.Errorf("读取停用后的 DSM 账号状态: %w", err)
+				}
+				if !verified.Expired {
+					return errors.New("DSM 未确认账号已停用")
+				}
+			}
 		}
 		disabled = true
 		return nil

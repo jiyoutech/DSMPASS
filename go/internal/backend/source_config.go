@@ -132,14 +132,15 @@ func (s *Server) weComConfigForSource(source db.IdentitySource) provider.WeComCo
 func (s *Server) dingTalkConfigForSource(source db.IdentitySource) provider.DingTalkConfig {
 	sourceConfig := decodeSourceConfigForType("dingtalk", source.ConfigJSON)
 	return provider.DingTalkConfig{
-		AppKey:            sourceConfig.ClientID,
-		AppSecret:         sourceConfig.ClientSecret,
-		AuthorizeURL:      sourceConfig.AuthorizeURL,
-		UserTokenURL:      sourceConfig.TokenURL,
-		UserInfoURL:       sourceConfig.UserInfoURL,
-		AppTokenURL:       sourceConfig.TenantTokenURL,
-		ContactBaseURL:    sourceConfig.ContactBaseURL,
-		DirectoryPageSize: sourceConfig.DirectoryPageSize,
+		CheckAccountStatus: boolValue(sourceConfig.DisableMissingUsers, true),
+		AppKey:             sourceConfig.ClientID,
+		AppSecret:          sourceConfig.ClientSecret,
+		AuthorizeURL:       sourceConfig.AuthorizeURL,
+		UserTokenURL:       sourceConfig.TokenURL,
+		UserInfoURL:        sourceConfig.UserInfoURL,
+		AppTokenURL:        sourceConfig.TenantTokenURL,
+		ContactBaseURL:     sourceConfig.ContactBaseURL,
+		DirectoryPageSize:  sourceConfig.DirectoryPageSize,
 	}
 }
 
@@ -306,7 +307,7 @@ func withSourceDefaultsForType(providerType string, config identitySourceConfig)
 		config.DirectoryPageSize = 50
 	}
 	if config.DisableMissingUsers == nil {
-		config.DisableMissingUsers = boolPointer(false)
+		config.DisableMissingUsers = boolPointer(providerType == "dingtalk")
 	}
 	if config.DeactivateMissingData == nil {
 		config.DeactivateMissingData = boolPointer(true)

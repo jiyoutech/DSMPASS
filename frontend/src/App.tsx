@@ -2128,7 +2128,7 @@ function SourceDetail({
                       <Form.Item name="login_enabled" label={helpLabel("登录", sourceFieldHelp.loginEnabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name="directory_sync_enabled" label={helpLabel("同步", sourceFieldHelp.syncEnabled)} valuePropName="checked"><Switch /></Form.Item>
                       <Form.Item name={["config", "sync_interval_minutes"]} label={helpLabel("定期同步(分钟)", sourceFieldHelp.syncInterval)}><InputNumber min={0} step={5} /></Form.Item>
-                      <Form.Item name={["config", "disable_missing_users"]} label={helpLabel("禁用缺失用户", sourceFieldHelp.disableMissingUsers)} valuePropName="checked"><Switch /></Form.Item>
+                      <Form.Item name={["config", "disable_missing_users"]} label={helpLabel("禁用缺失用户", source.provider_type === "dingtalk" ? "钉钉企业账号明确停用，或全量同步确认已离开整个通讯录时，停用 NAS 账号。正常调部门只更新群组。" : sourceFieldHelp.disableMissingUsers)} valuePropName="checked"><Switch /></Form.Item>
                     </div>
                     <Flex justify="end"><Button type="primary" htmlType="submit" loading={saving}>保存</Button></Flex>
                   </Form>
