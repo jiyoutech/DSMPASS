@@ -200,6 +200,8 @@ sudo -i
 ls -l /run/dsmpass/helper.sock
 ```
 
+旧安装首次在交互终端运行安装脚本时，若尚未确认群组复用范围，脚本会列出候选组及 GID。管理员一次选择后，符合该范围的通讯录部门会在同步时自动登记。[群组复用与授权说明](helper-account-authorization.md)
+
 `ls` 用来确认 Helper 的 Unix Socket 是否已经创建。正常结果应显示 `helper.sock`，并且权限列以 `s` 开头，例如：
 
 ```text

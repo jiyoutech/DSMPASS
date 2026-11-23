@@ -2,6 +2,7 @@ package helperserver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,7 +35,10 @@ func TestDirectoryGroupReuseAfterCleanReinstall(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := policyTestConfig(t)
-			if _, err := migrateAccountPolicy(cfg, false, emptyDirectorySnapshot); err != nil {
+			if _, err := migrateAccountPolicy(cfg, func(map[string]int) (map[string]int, error) {
+				t.Fatal("clean install requested legacy group review")
+				return nil, nil
+			}, emptyDirectorySnapshot); err != nil {
 				t.Fatal(err)
 			}
 			q := syncedPasswordTestStore(t, "alice")
@@ -82,7 +86,7 @@ func TestDirectoryGroupReuseAfterCleanReinstall(t *testing.T) {
 func TestDirectoryReuseBoundToInstalledGroupsAndRevocation(t *testing.T) {
 	cfg := policyTestConfig(t)
 	writeFile(t, cfg.GroupPath, "administrators:x:101:\nusers:x:100:\n财务部:x:65536:\nlast:x:95536:\nsystem:x:65535:\nafter:x:95537:\npackage:x:200000:\nldap:x:1000000:\ndocker:x:65540:\nalias1:x:65542:\nalias2:x:65542:\n")
-	if _, err := migrateAccountPolicy(cfg, false, emptyDirectorySnapshot); err != nil {
+	if _, err := migrateAccountPolicy(cfg, nil, emptyDirectorySnapshot); err != nil {
 		t.Fatal(err)
 	}
 	p, err := readAccountPolicy(cfg)
@@ -102,7 +106,10 @@ func TestDirectoryReuseBoundToInstalledGroupsAndRevocation(t *testing.T) {
 	if err := updateAccountPolicy(cfg, "last", true, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrateAccountPolicy(cfg, true, emptyDirectorySnapshot); err != nil {
+	if _, err := migrateAccountPolicy(cfg, func(map[string]int) (map[string]int, error) {
+		t.Fatal("review repeated")
+		return nil, nil
+	}, emptyDirectorySnapshot); err != nil {
 		t.Fatal(err)
 	}
 	p, err = readAccountPolicy(cfg)
@@ -118,7 +125,11 @@ func TestLegacyGroupPolicyRequiresExplicitInstallerOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, optIn := range []bool{false, true} {
-		if _, err := migrateAccountPolicy(cfg, optIn, func() (*db.HelperEnrollmentSnapshot, error) { t.Fatal("re-ran legacy migration"); return nil, nil }); err != nil {
+		var review LegacyGroupReview
+		if optIn {
+			review = func(groups map[string]int) (map[string]int, error) { return groups, nil }
+		}
+		if _, err := migrateAccountPolicy(cfg, review, func() (*db.HelperEnrollmentSnapshot, error) { t.Fatal("re-ran legacy migration"); return nil, nil }); err != nil {
 			t.Fatal(err)
 		}
 		p, err := readAccountPolicy(cfg)
@@ -134,7 +145,7 @@ func TestLegacyGroupPolicyRequiresExplicitInstallerOptIn(t *testing.T) {
 
 func TestDirectoryReuseRechecksGIDAfterMappingLookup(t *testing.T) {
 	cfg := policyTestConfig(t)
-	if _, err := migrateAccountPolicy(cfg, false, emptyDirectorySnapshot); err != nil {
+	if _, err := migrateAccountPolicy(cfg, nil, emptyDirectorySnapshot); err != nil {
 		t.Fatal(err)
 	}
 	groupFile, err := os.ReadFile(cfg.GroupPath)
@@ -151,5 +162,86 @@ func TestDirectoryReuseRechecksGIDAfterMappingLookup(t *testing.T) {
 	p, err := readAccountPolicy(cfg)
 	if err != nil || p.ReusableGroups["engineering"] != 65536 || len(p.Groups) != 0 {
 		t.Fatalf("unexpected enrollment: %+v %v", p, err)
+	}
+}
+
+func TestLegacyGroupScopeReview(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		cfg := policyTestConfig(t)
+		p, err := readAccountPolicy(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.LegacyMigrationComplete = complete
+		p.WebApprovals = map[string]groupWebApproval{"engineering": {GID: 65536}, "finance": {GID: 65537}}
+		if err := saveAccountPolicy(cfg, p); err != nil {
+			t.Fatal(err)
+		}
+		for _, review := range []LegacyGroupReview{
+			nil, func(map[string]int) (map[string]int, error) { return nil, nil },
+		} {
+			if _, err := migrateAccountPolicy(cfg, review, emptyDirectorySnapshot); err != nil {
+				t.Fatal(err)
+			}
+			p, err = readAccountPolicy(cfg)
+			if err != nil || p.ReusableGroups != nil || len(p.Groups) != 0 {
+				t.Fatalf("changed deferred scope: %+v, %v", p, err)
+			}
+		}
+		selectGroup := func(eligible map[string]int) (map[string]int, error) {
+			if !reflect.DeepEqual(eligible, map[string]int{"engineering": 65536, "finance": 65537}) {
+				t.Fatalf("unexpected scope: %v", eligible)
+			}
+			return map[string]int{"engineering": eligible["engineering"]}, nil
+		}
+		result, err := migrateAccountPolicy(cfg, selectGroup, emptyDirectorySnapshot)
+		if err != nil || result.ReviewedGroupCount == nil || *result.ReviewedGroupCount != 1 {
+			t.Fatalf("review result: %+v, %v", result, err)
+		}
+		p, err = readAccountPolicy(cfg)
+		if err != nil || len(p.WebApprovals) != 1 || p.WebApprovals["finance"].GID != 65537 || len(p.Groups) != 0 {
+			t.Fatalf("unexpected policy after review: %+v, %v", p, err)
+		}
+		if err := checkGroupEnrollment(cfg, "engineering", func() (bool, error) { return false, nil }); err == nil {
+			t.Fatal("enrolled without a directory mapping")
+		}
+		if err := checkGroupEnrollment(cfg, "engineering", func() (bool, error) { return true, nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateAccountPolicy(cfg, "engineering", true, true); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := migrateAccountPolicy(cfg, func(map[string]int) (map[string]int, error) {
+			t.Fatal("asked again after completed review")
+			return nil, nil
+		}, emptyDirectorySnapshot); err != nil {
+			t.Fatal(err)
+		}
+		if err := requireManagedGroup(cfg, "engineering"); err == nil {
+			t.Fatal("restored revoked group")
+		}
+	}
+}
+
+func TestLegacyGroupReviewFailureIsAtomic(t *testing.T) {
+	cfg := policyTestConfig(t)
+	if err := updateAccountPolicy(cfg, "alice", false, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, review := range []LegacyGroupReview{
+		func(map[string]int) (map[string]int, error) { return nil, errors.New("input failure") },
+		func(groups map[string]int) (map[string]int, error) {
+			groups["users"] = 100
+			return groups, nil
+		},
+		func(map[string]int) (map[string]int, error) { return map[string]int{"engineering": 65537}, nil },
+	} {
+		if _, err := migrateAccountPolicy(cfg, review, emptyDirectorySnapshot); err == nil {
+			t.Fatal("accepted invalid review")
+		}
+		p, err := readAccountPolicy(cfg)
+		if err != nil || p.LegacyMigrationComplete || p.ReusableGroups != nil || len(p.Users) != 1 {
+			t.Fatalf("partially saved failed review: %+v, %v", p, err)
+		}
 	}
 }

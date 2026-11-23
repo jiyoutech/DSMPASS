@@ -19,7 +19,7 @@ const installedPackageDir = "/var/packages/DSMPASS/target"
 const installedPackageVar = "/var/packages/DSMPASS/var"
 const helperSudoersPath = "/etc/sudoers.d/DSMPASS-helper"
 
-func InstallPrivilegedHelper(reuseExisting bool) error {
+func InstallPrivilegedHelper(review LegacyGroupReview) error {
 	if os.Geteuid() != 0 {
 		return errors.New("Helper installation requires a root administrator")
 	}
@@ -95,9 +95,12 @@ func InstallPrivilegedHelper(reuseExisting bool) error {
 		if err != nil {
 			return err
 		}
-		result, err := migrateInstalledAccounts(cfg, reuseExisting)
+		result, err := migrateInstalledAccounts(cfg, review)
 		if err != nil {
 			return fmt.Errorf("automatic account enrollment failed; start the backend to initialize its database and retry setup: %w", err)
+		}
+		if result.ReviewedGroupCount != nil {
+			log.Printf("已保存自动复用范围，共 %d 个本地群组。部门映射和 GID 匹配后会在同步时自动登记。", *result.ReviewedGroupCount)
 		}
 		log.Printf("account enrollment migration: users=%d groups=%d skipped=%d already_complete=%t", result.Users, result.Groups, result.Skipped, result.AlreadyComplete)
 		return nil
