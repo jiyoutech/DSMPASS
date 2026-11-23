@@ -12,6 +12,7 @@ esac
 [ "$#" -eq 1 ] || exit 1
 
 if [ "$(id -u)" != "0" ]; then
+  case "$1" in uninstall-*) echo "Helper removal requires a root administrator" >&2; exit 1 ;; esac
   exec /usr/bin/sudo -n -- /usr/local/libexec/dsmpass/helper-control.sh "$1"
 fi
 

@@ -310,3 +310,59 @@ func TestSystemAliasesAndCommentsDoNotBlockUnrelatedManagedAccounts(t *testing.T
 		t.Fatal("ambiguous target GID accepted")
 	}
 }
+
+func TestCreationReceiptsAcrossRetries(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		cfg := policyTestConfig(t)
+		name := "alice"
+		if group {
+			name = "engineering"
+		}
+		target := creationTarget{cfg: cfg, name: name, group: group}
+		if err := target.begin(); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.resume(); err == nil {
+			t.Fatal("adopted an unconfirmed object")
+		}
+		// Stand in for a failed grant write after the system ID was recorded.
+		if err := os.Mkdir(cfg.AccountPolicyPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.confirm(); err == nil {
+			t.Fatal("grant write unexpectedly succeeded")
+		}
+		if err := os.Remove(cfg.AccountPolicyPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.resume(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(target.path()); !os.IsNotExist(err) {
+			t.Fatal("completed receipt retained", err)
+		}
+		if group {
+			if err := requireManagedGroup(cfg, name); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := requireManagedUser(cfg, name); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.write(99999); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.resume(); err == nil {
+			t.Fatal("changed ID accepted")
+		}
+		if err := updateAccountPolicy(cfg, name, group, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := target.resume(); err != nil {
+			t.Fatal(err)
+		}
+		p, err := readAccountPolicy(cfg)
+		if err != nil || len(p.Users)+len(p.Groups) != 0 {
+			t.Fatal("revocation did not persist", err)
+		}
+	}
+}

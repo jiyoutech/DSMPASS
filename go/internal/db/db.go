@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     provision_status TEXT NOT NULL DEFAULT 'pending',
     conflict_reason TEXT,
     allow_login INTEGER NOT NULL DEFAULT 1,
+    manual_login_blocked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -270,7 +271,29 @@ CREATE INDEX IF NOT EXISTS idx_operation_events_run_created
 	_, _ = database.ExecContext(ctx, `ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1`)
 	_, _ = database.ExecContext(ctx, `ALTER TABLE login_audit_logs ADD COLUMN ip_address TEXT`)
 	_, _ = database.ExecContext(ctx, `ALTER TABLE dsm_accounts ADD COLUMN conflict_reason TEXT`)
-	return nil
+	return migrateLoginPreference(ctx, database)
+}
+
+func migrateLoginPreference(ctx context.Context, database *sql.DB) error {
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('dsm_accounts') WHERE name='manual_login_blocked')`).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE dsm_accounts ADD COLUMN manual_login_blocked INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		// Older databases do not distinguish an operator block from automatic deactivation.
+		if _, err := tx.ExecContext(ctx, `UPDATE dsm_accounts SET manual_login_blocked=1 WHERE allow_login=0`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func PrepareLogSchema(ctx context.Context, database *sql.DB) error {

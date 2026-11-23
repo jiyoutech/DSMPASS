@@ -670,12 +670,8 @@ for value in "${delete_data:-}" "${DSMPASS_DELETE_DATA:-}" "${remove_data:-}"; d
   case "$value" in true|TRUE|yes|YES|1) cleanup_action=uninstall-purge ;; esac
 done
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
-  # Run while the package account and sudo policy still exist. If recovery is
-  # incomplete the controller restarts Helper and retains all recovery data.
-  if ! /usr/local/libexec/dsmpass/helper-control.sh "$cleanup_action"; then
-    echo "Uninstall cancelled: Helper recovery or cleanup failed. Recovery files were retained; check the protected Helper log before retrying." >&2
-    exit 1
-  fi
+  echo "Stop DSMPASS, then as a root administrator run /usr/local/libexec/dsmpass/helper-control.sh $cleanup_action and retry uninstall." >&2
+  exit 1
 fi
 exit 0
 EOF
@@ -708,7 +704,7 @@ EOF
   "step_title": "Remove DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "Keep or delete package data and protected Helper settings, account grants and logs. Helper programs and sudo rules are removed automatically. Uninstall waits for password recovery; unresolved recovery is retained and reported.",
+    "desc": "Stop DSMPASS first. If Helper is installed, run /usr/local/libexec/dsmpass/helper-control.sh as root with uninstall-preserve to keep its data or uninstall-purge to erase it, then select the matching option below.",
     "subitems": [{
       "key": "keep_data",
       "desc": "Keep package data",
@@ -761,7 +757,7 @@ EOF
   "step_title": "卸载 DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "请选择是否保留配置、同步身份、日志和 TLS 文件。卸载后请通过 SSH 确认 /etc/sudoers.d/DSMPASS-helper 已删除。",
+    "desc": "先停用套件。若已安装 Helper，请以 root 运行 /usr/local/libexec/dsmpass/helper-control.sh，保留数据使用参数 uninstall-preserve，彻底清除使用 uninstall-purge，再选择对应选项卸载。",
     "subitems": [{
       "key": "keep_data",
       "desc": "保留套件数据",

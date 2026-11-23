@@ -273,7 +273,7 @@ srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 
 脚本成功后会把 Helper 安装到 root 控制的目录，并写入 `/etc/sudoers.d/DSMPASS-helper`，只允许套件用户执行固定的启停操作。Helper 不再以 root 执行套件用户可修改的 env 文件或程序路径。详细迁移、更新及日志位置见 [SPK 权限说明](dsm-spk-package.md)。
 
-卸载套件时会尝试删除这条 sudo 规则；保留套件数据只保留配置、数据库、日志和 TLS 文件。卸载后建议通过 SSH 确认：
+卸载前请管理员按[套件卸载说明](dsm-spk-package.md#卸载)清理受保护的 Helper 和 sudo 规则。卸载后建议通过 SSH 确认：
 
 ```bash
 sudo -i

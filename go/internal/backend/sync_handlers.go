@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug s
 	return s.runSyncProviderModeWithProgress(ctx, providerSlug, syncIncremental, progress)
 }
 
-func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (syncsvc.Result, error) {
+func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (result syncsvc.Result, runErr error) {
 	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
@@ -95,19 +96,32 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 	}
 	runID := "sync_" + randomHex(12)
 	var syncStart string
-	_ = s.store.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
-	_, _ = s.store.DBTX().ExecContext(ctx, `
-INSERT INTO sync_runs (id, source_slug, dry_run, status, started_at)
-VALUES (?, ?, 0, 'running', CURRENT_TIMESTAMP)
-`, runID, directory.Slug())
-	_, _ = s.logs().DBTX().ExecContext(ctx, `
-INSERT INTO sync_runs (id, source_slug, dry_run, status, started_at)
-VALUES (?, ?, 0, 'running', CURRENT_TIMESTAMP)
-ON CONFLICT(id) DO NOTHING
-`, runID, directory.Slug())
+	if err := s.store.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart); err != nil {
+		return result, err
+	}
+	const beginRun = `INSERT INTO sync_runs (id,source_slug,dry_run,status,started_at) VALUES(?,?,0,'running',CURRENT_TIMESTAMP)`
+	if _, err := s.store.DBTX().ExecContext(ctx, beginRun, runID, directory.Slug()); err != nil {
+		return result, err
+	}
 	logBuffer := s.newSyncLogBuffer(ctx)
-	defer func() { _ = logBuffer.Flush() }()
-	policy := s.sourceSyncPolicy(ctx, directory.Slug())
+	defer func() {
+		runErr = errors.Join(runErr, logBuffer.Flush())
+		finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		runErr = errors.Join(runErr, finishSyncRun(finalCtx, s.store, runID, runErr))
+		if s.logs() != s.store {
+			runErr = errors.Join(runErr, finishSyncRun(finalCtx, s.logs(), runID, runErr))
+		}
+	}()
+	if s.logs() != s.store {
+		if _, err := s.logs().DBTX().ExecContext(ctx, beginRun, runID, directory.Slug()); err != nil {
+			return result, err
+		}
+	}
+	policy, err := s.sourceSyncPolicy(ctx, directory.Slug())
+	if err != nil {
+		return result, err
+	}
 	policy.FullSync = mode == syncFull
 	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "sync_mode", "success", "", string(mode), "")
 	if progress != nil {
@@ -123,7 +137,7 @@ ON CONFLICT(id) DO NOTHING
 		}
 		q = db.New(tx)
 	}
-	result, err := syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
+	result, err = syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
 		DeactivateMissingData: policy.DeactivateMissingData,
 		SyncStart:             syncStart,
 		Progress: func(phase string, current, total int, message string) {
@@ -141,10 +155,7 @@ ON CONFLICT(id) DO NOTHING
 		}
 	}
 	if err != nil {
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
-		_, _ = s.logs().DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
 		logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "read_directory", "failed", "running", "failed", err.Error())
-		_ = logBuffer.Flush()
 		return result, err
 	}
 	if progress != nil {
@@ -155,17 +166,18 @@ ON CONFLICT(id) DO NOTHING
 		policy.PreserveMissingGroups = true
 	}
 	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
-	if err != nil {
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
-		_, _ = s.logs().DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, error = ? WHERE id = ?`, err.Error(), runID)
-		_ = logBuffer.Flush()
-		return result, err
-	}
-	_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'success', finished_at = CURRENT_TIMESTAMP WHERE id = ?`, runID)
-	_, _ = s.logs().DBTX().ExecContext(ctx, `UPDATE sync_runs SET status = 'success', finished_at = CURRENT_TIMESTAMP WHERE id = ?`, runID)
-	_ = logBuffer.Flush()
 	result.Items = append(result.Items, operations...)
-	return result, nil
+	return result, err
+}
+
+func finishSyncRun(ctx context.Context, q *db.Queries, id string, runErr error) error {
+	status := "success"
+	var detail any
+	if runErr != nil {
+		status = "failed"
+		detail = runErr.Error()
+	}
+	return saveObjectState(ctx, q.DBTX(), id, `UPDATE sync_runs SET status=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE id=?`, status, detail, id)
 }
 
 func (s *Server) logDirectoryLinkPlan(ctx context.Context, runID, sourceSlug string, items []syncsvc.PlanItem) {
@@ -224,16 +236,19 @@ type sourceSyncPolicy struct {
 	PreserveMissingGroups bool
 }
 
-func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) sourceSyncPolicy {
+func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) (sourceSyncPolicy, error) {
 	source, err := s.loadIdentitySource(ctx, sourceSlug)
+	if errors.Is(err, sql.ErrNoRows) && sourceSlug == "feishu" && s.cfg.FeishuEnabled {
+		return sourceSyncPolicy{DeactivateMissingData: true}, nil
+	}
 	if err != nil {
-		return sourceSyncPolicy{DisableMissingUsers: false, DeactivateMissingData: true}
+		return sourceSyncPolicy{}, err
 	}
 	cfg := decodeSourceConfigForType(source.ProviderType, source.ConfigJSON)
 	return sourceSyncPolicy{
 		DisableMissingUsers:   boolValue(cfg.DisableMissingUsers, false),
 		DeactivateMissingData: boolValue(cfg.DeactivateMissingData, true),
-	}
+	}, nil
 }
 
 func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy) ([]syncsvc.PlanItem, error) {
@@ -246,15 +261,20 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		return operations, err
 	}
 	if policy.DeactivateMissingData {
-		if policy.PreserveMissingGroups {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND mapping_type = 'user' AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-		} else {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE provider_groups SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE external_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_mapping_entries SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE provider_slug = ? AND active = 1 AND updated_at < ?`, sourceSlug, syncStart)
+		if err := s.markMissingSourceData(ctx, sourceSlug, syncStart, policy.PreserveMissingGroups); err != nil {
+			return operations, err
 		}
 	}
+	var disableErr error
+	if policy.DisableMissingUsers {
+		operations, disableErr = s.disableMissingAccounts(ctx, runID, sourceSlug, logBuffer, progress)
+	}
+	provisioned, err := s.provisionSourceToDSM(ctx, runID, sourceSlug, policy, logBuffer, progress)
+	return append(operations, provisioned...), errors.Join(disableErr, err)
+}
+
+func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+	var operations []syncsvc.PlanItem
 	var groupConflicts, accountConflicts int
 	if err := s.store.DBTX().QueryRowContext(ctx, `
 	SELECT COUNT(*)
@@ -324,7 +344,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		id, groupname, status := item.id, item.groupname, item.status
 		created, err := s.helper.ProvisionGroup(ctx, "sync_group_"+randomHex(8), groupname)
 		if err != nil {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_groups SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, err
 		}
@@ -339,7 +359,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		if progress != nil {
 			progress.step(ctx, "同步 DSM 部门", groupname)
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+		if err := saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+			return operations, err
+		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "success", status, "created", "")
 		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group", ProviderSlug: sourceSlug, Subject: id, DSMGroupname: groupname, ProvisionStatus: "created"})
 	}
@@ -384,13 +406,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		err := error(nil)
 		password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
 		if err != nil {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, errors.Join(append(accountErrors, err)...)
 		}
 		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
 		if err != nil {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
 			accountErrors = append(accountErrors, err)
 			if progress != nil {
@@ -404,7 +426,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			nextStatus = "linked_existing"
 			action = "link_existing_dsm_user"
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id)
+		if err := saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id); err != nil {
+			return operations, errors.Join(append(accountErrors, err)...)
+		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, nextStatus, "")
 		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
 		if progress != nil {
@@ -420,7 +444,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	}
 
 	memberRows, err := s.store.DBTX().QueryContext(ctx, `
-	SELECT DISTINCT m.id, g.id, g.dsm_groupname, a.dsm_username, m.provision_status
+	SELECT DISTINCT m.id, g.dsm_groupname, a.dsm_username, m.provision_status
 	FROM group_members m
 	JOIN dsm_groups g ON g.id = m.dsm_group_id
 	JOIN dsm_accounts a ON a.id = m.dsm_account_id
@@ -439,7 +463,6 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	}
 	type pendingMemberProvision struct {
 		id        string
-		groupID   string
 		groupname string
 		username  string
 		status    string
@@ -447,7 +470,7 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	var pendingMembers []pendingMemberProvision
 	for memberRows.Next() {
 		var item pendingMemberProvision
-		if err := memberRows.Scan(&item.id, &item.groupID, &item.groupname, &item.username, &item.status); err != nil {
+		if err := memberRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
 			memberRows.Close()
 			return operations, errors.Join(append(accountErrors, err)...)
 		}
@@ -462,14 +485,15 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		progress.setTotal(ctx, "同步 DSM 成员", "正在同步 DSM 成员", len(pendingMembers))
 	}
 	for _, item := range pendingMembers {
-		id, groupID, groupname, username, status := item.id, item.groupID, item.groupname, item.username, item.status
+		id, groupname, username, status := item.id, item.groupname, item.username, item.status
 		if _, err := s.helper.AddGroupMember(ctx, "sync_member_"+randomHex(8), groupname, username); err != nil {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname+":"+username, `UPDATE group_members SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "failed", status, "failed", err.Error())
 			return operations, errors.Join(append(accountErrors, err)...)
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, groupID)
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'created', active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+		if err := s.saveGroupMembership(ctx, id, groupname+":"+username); err != nil {
+			return operations, errors.Join(append(accountErrors, err)...)
+		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "success", status, "created", "")
 		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group_member", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, DSMGroupname: groupname, ProvisionStatus: "created"})
 		if progress != nil {
@@ -520,7 +544,9 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 			progress.setTotal(ctx, "禁用本地成员关系", "正在禁用本地成员关系", len(pendingRemovals))
 		}
 		for _, item := range pendingRemovals {
-			_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE group_members SET provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id)
+			if err := saveObjectState(ctx, s.store.DBTX(), item.groupname+":"+item.username, `UPDATE group_members SET provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, item.id); err != nil {
+				return operations, errors.Join(append(accountErrors, err)...)
+			}
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", item.id, item.groupname+":"+item.username, "disable_local_group_member", "success", item.status, "disabled", "本地成员关系已禁用；DSM 群组成员关系不自动处理")
 			operations = append(operations, syncsvc.PlanItem{Action: "disable_local_group_member", ProviderSlug: sourceSlug, Subject: item.id, DSMUsername: item.username, DSMGroupname: item.groupname, ProvisionStatus: "disabled"})
 			if progress != nil {
@@ -529,13 +555,16 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		}
 	}
 
-	if !policy.DisableMissingUsers {
-		return operations, errors.Join(accountErrors...)
-	}
+	return operations, errors.Join(accountErrors...)
+}
+
+func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug string, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+	var operations []syncsvc.PlanItem
+	var accountErrors []error
 	disableRows, err := s.store.DBTX().QueryContext(ctx, `
 		SELECT DISTINCT a.id, a.dsm_username
 		FROM dsm_accounts a
-		WHERE a.allow_login = 1
+		WHERE a.provision_status <> 'disabled' AND a.provision_status <> 'conflict'
 		  AND EXISTS (
 			SELECT 1
 			FROM dsm_mapping_entries stale
@@ -579,9 +608,13 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 		accountID, username := item.accountID, item.username
 		if _, err := s.helper.DisableUser(ctx, "sync_disable_"+randomHex(8), username); err != nil {
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "failed", "active", "active", err.Error())
-			return operations, errors.Join(append(accountErrors, err)...)
+			accountErrors = append(accountErrors, fmt.Errorf("停用 %s: %w", username, err))
+			continue
 		}
-		_, _ = s.store.DBTX().ExecContext(ctx, `UPDATE dsm_accounts SET allow_login = 0, provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, accountID)
+		if err := saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET allow_login = 0, provision_status = 'disabled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, accountID); err != nil {
+			accountErrors = append(accountErrors, err)
+			continue
+		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "success", "active", "disabled", "")
 		operations = append(operations, syncsvc.PlanItem{Action: "disable_missing_dsm_user", ProviderSlug: sourceSlug, Subject: accountID, DSMUsername: username, ProvisionStatus: "disabled"})
 		if progress != nil {
@@ -627,6 +660,7 @@ type syncLogBuffer struct {
 	ctx       context.Context
 	entries   []syncLogEntry
 	lastFlush time.Time
+	flushErr  error
 }
 
 const syncLogFlushSize = 100
@@ -662,6 +696,9 @@ func (b *syncLogBuffer) Log(runID, sourceSlug, objectType, objectKey, dsmName, a
 }
 
 func (b *syncLogBuffer) LogEntry(entry syncLogEntry) {
+	if b.flushErr != nil {
+		return
+	}
 	b.entries = append(b.entries, entry)
 	if len(b.entries) >= syncLogFlushSize || time.Since(b.lastFlush) >= syncLogFlushInterval {
 		_ = b.Flush()
@@ -669,13 +706,17 @@ func (b *syncLogBuffer) LogEntry(entry syncLogEntry) {
 }
 
 func (b *syncLogBuffer) Flush() error {
-	if b == nil || len(b.entries) == 0 {
+	if b == nil {
 		return nil
+	}
+	if b.flushErr != nil || len(b.entries) == 0 {
+		return b.flushErr
 	}
 	entries := b.entries
 	b.entries = nil
 	b.lastFlush = time.Now()
-	return b.server.insertSyncLogEntries(b.ctx, entries)
+	b.flushErr = b.server.insertSyncLogEntries(b.ctx, entries)
+	return b.flushErr
 }
 
 func (s *Server) insertSyncLogEntries(ctx context.Context, entries []syncLogEntry) error {

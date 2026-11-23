@@ -36,6 +36,7 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 			return errorResponse("SYNOUSER_MISSING", "DSM user is unavailable")
 		}
 	}
+	target := creationTarget{cfg: cfg, name: groupname, group: true}
 	response := map[string]any{"success": true, "created": false}
 	err = withFileLock(cfg.ShadowLockPath, func() error {
 		if username != "" {
@@ -54,6 +55,11 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 			exists = run(cfg.SynoGroupPath, "--get", groupname) == nil
 		}
 		if exists {
+			if action != "scoped_remove_group_member" {
+				if err := target.resume(); err != nil {
+					return err
+				}
+			}
 			if err := requireManagedGroup(cfg, groupname); err != nil {
 				return err
 			}
@@ -64,6 +70,9 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 				response["created"] = true
 				return nil
 			}
+			if err := target.begin(); err != nil {
+				return err
+			}
 			if err := run(cfg.SynoGroupPath, "--add", groupname); err != nil {
 				if isSynoNoSuchGroupError(err) {
 					response["deferred"] = true
@@ -72,16 +81,19 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 				}
 				return err
 			}
-			if err := updateAccountPolicy(cfg, groupname, true, false); err != nil {
+			if err := target.confirm(); err != nil {
 				return err
 			}
 			response["created"] = true
 		case "scoped_add_group_member":
 			if !exists {
+				if err := target.begin(); err != nil {
+					return err
+				}
 				if err := run(cfg.SynoGroupPath, "--add", groupname, username); err != nil {
 					return err
 				}
-				if err := updateAccountPolicy(cfg, groupname, true, false); err != nil {
+				if err := target.confirm(); err != nil {
 					return err
 				}
 			} else if err := run(cfg.SynoGroupPath, "--memberadd", groupname, username); err != nil && !isSynoGroupMemberPresent(err, groupname, username) {

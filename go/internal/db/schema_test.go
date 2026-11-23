@@ -46,3 +46,31 @@ func TestPrepareSchemaCreatesPerformanceIndexes(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyLoginPreferenceMigratesOnce(t *testing.T) {
+	ctx := context.Background()
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err = PrepareSchema(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec(`ALTER TABLE dsm_accounts DROP COLUMN manual_login_blocked;
+ INSERT INTO dsm_accounts(id,app_identity_id,dsm_username,dsm_username_norm,allow_login) VALUES('a','i','demo','demo',0)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []int{1, 0} {
+		if err = PrepareSchema(ctx, database); err != nil {
+			t.Fatal(err)
+		}
+		var got int
+		if err = database.QueryRow("SELECT manual_login_blocked FROM dsm_accounts").Scan(&got); err != nil || got != want {
+			t.Fatalf("manual block=%d want=%d err=%v", got, want, err)
+		}
+		if _, err = database.Exec("UPDATE dsm_accounts SET manual_login_blocked=0"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

@@ -3032,3 +3032,84 @@ func assertStatus(t *testing.T, handler http.Handler, method, path string, want 
 		t.Fatalf("%s %s got %d want %d", method, path, response.Code, want)
 	}
 }
+
+func TestSyncPreservesManualLoginPreference(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	s := NewWithDB(config.BackendConfig{RelayMode: "socket"}, &recordingHelper{}, database, q)
+	seedSyncedAccount(t, ctx, database, "feishu-main", "i", "e", "u", "demo", "2999-01-01")
+	for _, allow := range []bool{false, false, true} {
+		if _, err := s.runDSMAccountsLogin(ctx, []string{"account-i"}, allow, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.syncSourceToDSM(ctx, "r", "feishu-main", "2000-01-01", sourceSyncPolicy{}); err != nil {
+			t.Fatal(err)
+		}
+		var actual bool
+		if err := database.QueryRow("SELECT allow_login FROM dsm_accounts WHERE id='account-i'").Scan(&actual); err != nil || actual != allow {
+			t.Fatalf("allow=%v want=%v err=%v", actual, allow, err)
+		}
+	}
+}
+
+func TestOffboardingRunsBeforeGroupConflicts(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	helper := &recordingHelper{}
+	s := NewWithDB(config.BackendConfig{RelayMode: "socket"}, helper, database, q)
+	seedSyncedAccount(t, ctx, database, "source", "i", "e", "u", "demo", "2000-01-01")
+	seedSyncedAccount(t, ctx, database, "source", "other", "external", "u2", "shared", "2000-01-01")
+	seedGroupMember(t, ctx, database, "source", "g", "dg", "m", "dept", "groupname", "i", 1, "created")
+	_, err = database.Exec(`UPDATE dsm_accounts SET allow_login=0;
+ UPDATE dsm_mapping_entries SET active=0 WHERE mapping_type='user';
+ INSERT INTO dsm_mapping_entries(id,mapping_type,provider_slug,external_account_id,dsm_account_id) VALUES('another','user','source2','e2','account-other');
+ UPDATE dsm_groups SET provision_status='conflict'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.syncSourceToDSM(ctx, "run", "source", "2000-01-01", sourceSyncPolicy{DisableMissingUsers: true})
+	if err == nil || !strings.Contains(err.Error(), "冲突") || fmt.Sprint(helper.disabled) != "[demo]" {
+		t.Fatalf("disabled=%v err=%v", helper.disabled, err)
+	}
+}
+
+func TestSyncReportsLocalStateWriteFailure(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	s := NewWithDB(config.BackendConfig{}, &recordingHelper{}, database, q)
+	seedSyncedAccount(t, ctx, database, "source", "i", "e", "u", "demo", "2999-01-01")
+	seedGroupMember(t, ctx, database, "source", "g", "dg", "m", "dept", "team", "i", 1, "pending")
+	if _, err := database.Exec(`UPDATE dsm_groups SET provision_status='pending';
+ CREATE TRIGGER fail_member BEFORE UPDATE ON group_members BEGIN SELECT RAISE(FAIL,'write failed'); END;
+ CREATE TRIGGER fail_user BEFORE UPDATE ON dsm_accounts BEGIN SELECT RAISE(FAIL,'write failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.saveGroupMembership(ctx, "m", "team:demo"); err == nil {
+		t.Fatal("accepted failed member update")
+	}
+	var status string
+	if err := database.QueryRow("SELECT provision_status FROM dsm_groups WHERE id='dg'").Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("partial group state %q: %v", status, err)
+	}
+	if _, err := s.syncSourceToDSM(ctx, "r", "source", "2000-01-01", sourceSyncPolicy{}); err == nil || !strings.Contains(err.Error(), "demo") {
+		t.Fatalf("missing account failure: %v", err)
+	}
+	if _, err := database.Exec("DROP TRIGGER fail_member; DROP TRIGGER fail_user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.syncSourceToDSM(ctx, "r", "source", "2000-01-01", sourceSyncPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+}

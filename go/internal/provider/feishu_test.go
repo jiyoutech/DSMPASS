@@ -479,3 +479,16 @@ func (f fakeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		Request:    r,
 	}, nil
 }
+
+func TestIncompleteDirectoryPage(t *testing.T) {
+	f := NewFeishu(config.BackendConfig{FeishuContactBaseURL: "https://example.test"})
+	f.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+		return map[string]any{"data": map[string]any{"items": []map[string]any{{"open_id": "first"}}, "has_more": true}}, http.StatusOK
+	})}
+	for _, read := range []func(string, string) ([]map[string]any, error){f.departmentUsers, f.departmentChildren} {
+		items, err := read("test", "dept")
+		if err == nil || items != nil {
+			t.Fatalf("incomplete page accepted: %v, %v", items, err)
+		}
+	}
+}
