@@ -147,7 +147,7 @@ sudo /var/packages/DSMPASS/scripts/start-stop-status restart
 
 只有在确认要删除本地配置、同步数据、日志和 TLS 文件时，才选择删除套件数据。
 
-无论是否保留数据，卸载前都会通过受保护控制器删除 Helper 程序、控制脚本、socket、PID 记录和 `/etc/sudoers.d/DSMPASS-helper`。这一步在套件账号仍然存在时执行，避免卸载后低权限脚本无法清理 root 文件。
+先停用 DSMPASS。若已安装受保护的 Helper，请管理员通过 SSH 进入 root shell。计划保留授权和配置时执行 `/usr/local/libexec/dsmpass/helper-control.sh uninstall-preserve`；确认彻底清除时执行 `/usr/local/libexec/dsmpass/helper-control.sh uninstall-purge`。命令成功后，在套件中心选择相应的数据保留选项并完成卸载。
 
 选择保留数据时，同时保留 root 私有的 `/etc/dsmpass` 配置和 `/var/lib/dsmpass` 授权、日志及恢复资料；选择删除数据时，控制器在确认没有未完成恢复后自动清理这两个固定目录。`/run/dsmpass` 中少量空的进程锁文件保留到重启，防止排队控制进程绕过同一把锁，不包含密码或可执行程序。
 

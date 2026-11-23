@@ -42,19 +42,27 @@ func TestUpgradeCannotRunUninstallCleanup(t *testing.T) {
 				script = strings.ReplaceAll(script, `/volume1/@appdata/$PACKAGE_NAME`, filepath.Join(dir, "appdata"))
 				cmd := exec.Command("/bin/sh", "-c", script)
 				cmd.Env = append(os.Environ(), "SYNOPKG_PKG_STATUS="+status, "SYNOPKG_PKGVAR="+pkgvar, "DSMPASS_DELETE_DATA=1", "TEST_MARKER="+marker)
-				if output, err := cmd.CombinedOutput(); err != nil {
+				output, err := cmd.CombinedOutput()
+				if hook == "preuninst" && status == "UNINSTALL" {
+					if err == nil || !strings.Contains(string(output), "uninstall-purge") {
+						t.Fatalf("missing administrator instruction: %v %s", err, output)
+					}
+					if err := os.Remove(controller); err != nil {
+						t.Fatal(err)
+					}
+					retry := exec.Command("/bin/sh", "-c", script)
+					retry.Env = cmd.Env
+					if out, e := retry.CombinedOutput(); e != nil {
+						t.Fatalf("uninstall after cleanup: %v %s", e, out)
+					}
+				} else if err != nil {
 					t.Fatalf("hook: %v %s", err, output)
 				}
 				_, markerErr := os.Stat(marker)
 				_, dataErr := os.Stat(pkgvar)
-				if status != "UNINSTALL" {
+				if status != "UNINSTALL" || hook == "preuninst" {
 					if !os.IsNotExist(markerErr) || dataErr != nil {
-						t.Fatal("non-uninstall lifecycle removed helper or data")
-					}
-				} else if hook == "preuninst" {
-					called, err := os.ReadFile(marker)
-					if err != nil || string(called) != "uninstall-purge" {
-						t.Fatal("uninstall did not select fixed purge action", err)
+						t.Fatal("lifecycle hook unexpectedly ran cleanup")
 					}
 				} else if !os.IsNotExist(dataErr) {
 					t.Fatal("requested uninstall did not remove package data")

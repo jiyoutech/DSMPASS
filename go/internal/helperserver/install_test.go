@@ -28,10 +28,13 @@ func TestHelperSudoRuleRestrictsCommandsAndEnvironment(t *testing.T) {
 	if strings.Contains(rule, "NOPASSWD:SETENV:") || strings.Contains(rule, config.HelperBinaryPath) || strings.Contains(rule, "/var/packages/") || strings.Contains(rule, "*") {
 		t.Fatal("sudo rule permits untrusted executable, arguments or environment")
 	}
+	if strings.Contains(rule, "uninstall") {
+		t.Fatal("service account may uninstall Helper")
+	}
 	if !strings.Contains(rule, "NOSETENV:") || !strings.Contains(rule, "!setenv") {
 		t.Fatal("sudo environment restrictions missing")
 	}
-	for _, action := range []string{"start", "stop", "restart", "status", "upgrade", "uninstall-preserve", "uninstall-purge"} {
+	for _, action := range []string{"start", "stop", "restart", "status", "upgrade"} {
 		if !strings.Contains(rule, config.HelperControlPath+" "+action) {
 			t.Fatal("required control action missing")
 		}
