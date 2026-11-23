@@ -196,9 +196,20 @@ func TestShadowOnlyBrowserTTLRestoresPassword(t *testing.T) {
 			if err := withLoginAccountLock(lockPath(cfg.LockDir, "alice"), func() error { return nil }); err != nil {
 				t.Fatal(err)
 			}
-			line, err := shadowLine(cfg.ShadowPath, "alice")
-			if err != nil || line != original {
-				t.Fatalf("TTL recovery did not restore the original password: %v", err)
+			// The terminal status is visible before the recovery goroutine finishes
+			// archiving the journal and updating the active index under this lock.
+			if err := withLoginAccountLock(lockPath(cfg.LockDir, "alice"), func() error {
+				line, err := shadowLine(cfg.ShadowPath, "alice")
+				if err != nil || line != original {
+					t.Fatalf("TTL recovery did not restore the original password: %v", err)
+				}
+				_, active, err := browserLeaseForUser(cfg, "alice")
+				if active {
+					t.Fatal("TTL recovery left an active lease")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
 			}
 			return
 		}
