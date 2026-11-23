@@ -17,14 +17,7 @@ import (
 )
 
 func (s *Server) authorizeAccount(cfg config.HelperConfig, request db.HelperAuthorizationQuery) error {
-	var allowed bool
-	var err error
-	if cfg.Privileged {
-		request.DatabasePath = strings.TrimPrefix(cfg.DatabaseURL, "sqlite://")
-		allowed, err = queryAccountAsPackage(cfg, request)
-	} else {
-		allowed, err = db.HelperAccountAllowed(context.Background(), s.store, request)
-	}
+	allowed, err := s.mappingAllowed(cfg, request)
 	if err != nil {
 		return fmt.Errorf("verify DSM account authorization: %w", err)
 	}
@@ -32,6 +25,14 @@ func (s *Server) authorizeAccount(cfg config.HelperConfig, request db.HelperAuth
 		return errors.New("DSM account is not authorized for this identity and operation")
 	}
 	return nil
+}
+
+func (s *Server) mappingAllowed(cfg config.HelperConfig, request db.HelperAuthorizationQuery) (bool, error) {
+	if cfg.Privileged {
+		request.DatabasePath = strings.TrimPrefix(cfg.DatabaseURL, "sqlite://")
+		return queryAccountAsPackage(cfg, request)
+	}
+	return db.HelperAccountAllowed(context.Background(), s.store, request)
 }
 
 func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any) error {

@@ -15,8 +15,12 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) == 2 && os.Args[1] == "install-helper" {
-		if err := helperserver.InstallPrivilegedHelper(); err != nil {
+	if len(os.Args) >= 2 && os.Args[1] == "install-helper" {
+		reuseExisting := len(os.Args) == 3 && os.Args[2] == "--reuse-local-groups"
+		if len(os.Args) != 2 && !reuseExisting {
+			log.Fatal("usage: install-helper [--reuse-local-groups]")
+		}
+		if err := helperserver.InstallPrivilegedHelper(reuseExisting); err != nil {
 			log.Fatal(err)
 		}
 		log.Print("protected Helper and restricted sudo rule installed")

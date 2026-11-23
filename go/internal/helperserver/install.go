@@ -19,7 +19,7 @@ const installedPackageDir = "/var/packages/DSMPASS/target"
 const installedPackageVar = "/var/packages/DSMPASS/var"
 const helperSudoersPath = "/etc/sudoers.d/DSMPASS-helper"
 
-func InstallPrivilegedHelper() error {
+func InstallPrivilegedHelper(reuseExisting bool) error {
 	if os.Geteuid() != 0 {
 		return errors.New("Helper installation requires a root administrator")
 	}
@@ -95,7 +95,7 @@ func InstallPrivilegedHelper() error {
 		if err != nil {
 			return err
 		}
-		result, err := migrateInstalledAccounts(cfg)
+		result, err := migrateInstalledAccounts(cfg, reuseExisting)
 		if err != nil {
 			return fmt.Errorf("automatic account enrollment failed; start the backend to initialize its database and retry setup: %w", err)
 		}

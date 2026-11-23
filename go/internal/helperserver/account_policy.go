@@ -17,10 +17,11 @@ import (
 
 // This authority is independent of the package database and HMAC secret.
 // Existing DSM accounts are enrolled by the root install migration or an
-// explicit root action; package RPCs cannot extend this authority.
+// explicit root action. The installer can also pin local groups for directory reuse.
 type accountPolicy struct {
 	Users                   map[string]int `json:"users"`
 	Groups                  map[string]int `json:"groups"`
+	ReusableGroups          map[string]int `json:"reusable_groups,omitzero"`
 	LegacyMigrationComplete bool           `json:"legacy_migration_complete,omitempty"`
 }
 
@@ -195,6 +196,12 @@ func requireManagedUser(cfg config.HelperConfig, username string) error {
 }
 
 func requireManagedGroup(cfg config.HelperConfig, name string) error {
+	return checkGroupEnrollment(cfg, name, nil)
+}
+
+// A mapping lookup is supplied only for provisioning under the writer lock.
+// Membership changes alone cannot claim a pre-existing group.
+func checkGroupEnrollment(cfg config.HelperConfig, name string, mapped func() (bool, error)) error {
 	if cfg.AccountPolicyPath == "" && !cfg.Privileged {
 		return nil
 	}
@@ -206,10 +213,38 @@ func requireManagedGroup(cfg config.HelperConfig, name string) error {
 	if err != nil {
 		return err
 	}
-	if id, ok := p.Groups[name]; !ok || id != a.id {
-		return errors.New("DSM group requires root authorization or its GID has changed")
+	id, enrolled := p.Groups[name]
+	if !enrolled {
+		var captured bool
+		id, captured = p.ReusableGroups[name]
+		if !captured || mapped == nil {
+			return fmt.Errorf("DSM 群组 %q 未登记为可同步群组", name)
+		}
 	}
-	return nil
+	if id != a.id {
+		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组", name, id, a.id)
+	}
+	if enrolled {
+		return nil
+	}
+	ok, err := mapped()
+	if err != nil {
+		return fmt.Errorf("核对 DSM 群组 %q 的部门映射失败: %w", name, err)
+	}
+	if !ok {
+		return fmt.Errorf("DSM 群组 %q 没有有效的通讯录部门映射", name)
+	}
+	// DSM administrators can change local groups outside the Helper lock.
+	current, err := normalGroup(cfg, name)
+	if err != nil {
+		return err
+	}
+	if current.id != id {
+		return fmt.Errorf("DSM 群组 %q 的编号已从 %d 变为 %d，请核对群组", name, id, current.id)
+	}
+	p.Groups[name] = id
+	delete(p.ReusableGroups, name)
+	return saveAccountPolicy(cfg, p)
 }
 
 // Call with the project writer lock held. Atomic replacement permits concurrent
@@ -225,6 +260,7 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 	entries := p.Users
 	if group {
 		entries = p.Groups
+		delete(p.ReusableGroups, name)
 	}
 	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
 		return err
