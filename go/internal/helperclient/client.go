@@ -298,6 +298,17 @@ func (c UnixSocketClient) PrepareGroupForMembers(ctx context.Context, requestID,
 	return boolResponse(response, err)
 }
 
+type LoginApprovalClient interface {
+	WebLoginApproval(ctx context.Context, requestID string, owner db.CredentialIdentity, identityID string, verify bool) (map[string]any, error)
+}
+
+func (c UnixSocketClient) WebLoginApproval(ctx context.Context, requestID string, owner db.CredentialIdentity, identityID string, verify bool) (map[string]any, error) {
+	if c.Timeout < 15*time.Second {
+		c.Timeout = 15 * time.Second
+	}
+	return c.send(ctx, map[string]any{"action": "scoped_web_login_approval", "request_id": requestID, "dsm_username": owner.Username, "source_slug": owner.SourceSlug, "subject": owner.Subject, "identity_id": identityID, "verify": verify})
+}
+
 func (c UnixSocketClient) WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error) {
 	if c.Timeout < 15*time.Second {
 		c.Timeout = 15 * time.Second

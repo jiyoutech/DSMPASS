@@ -9,7 +9,7 @@ import (
 )
 
 // Only the trusted installer captures the verified email/subject pairs and local UIDs.
-// A normal sync completes the link using the independently stored DSM email.
+// Provisioning or the first login can complete the link using the independently stored DSM email.
 func captureVerifiedDirectory(cfg config.HelperConfig, p *accountPolicy, emails map[string]db.CredentialIdentity, users, groups map[string]systemAccount) bool {
 	changed := false
 	for email, owner := range emails {
@@ -45,7 +45,7 @@ func captureVerifiedDirectory(cfg config.HelperConfig, p *accountPolicy, emails 
 }
 
 // Called under both account locks, using the email read from DSM itself.
-func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail string, grant *directoryUserGrant) (bool, error) {
+func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail string, grant *directoryUserGrant, req db.HelperAuthorizationQuery) (bool, error) {
 	p, err := readAccountPolicy(cfg)
 	if err != nil {
 		return false, err
@@ -55,7 +55,16 @@ func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail s
 	if !ok || candidate.Email != mail || mail == "" {
 		return false, nil
 	}
-	owner, uid := candidate.Owner, candidate.UID
+	req.VerifiedEmail = mail
+	return s.bindCredentialOwner(cfg, p, candidate.Owner, candidate.UID, grant, req)
+}
+
+// The caller holds both account locks and has independently verified ownership in DSM.
+func (s *Server) bindCredentialOwner(cfg config.HelperConfig, p accountPolicy, owner db.CredentialIdentity, uid int, grant *directoryUserGrant, req db.HelperAuthorizationQuery) (bool, error) {
+	name := req.Username
+	if prior, ok := p.CredentialOwners[name]; ok && prior != owner {
+		return false, errors.New("该账号已有其他固定登录归属")
+	}
 	if _, explicit := p.Users[name]; explicit || owner.Username != name {
 		return false, nil
 	}
@@ -83,7 +92,8 @@ func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail s
 			return false, errors.New("该身份已绑定其他 DSM 账号")
 		}
 	}
-	allowed, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "verify_existing_owner", Username: name, CredentialOwner: &owner, VerifiedEmail: mail})
+	req.CredentialOwner = &owner
+	allowed, err := s.mappingAllowed(cfg, req)
 	if err != nil || !allowed {
 		return false, err
 	}
@@ -94,5 +104,6 @@ func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail s
 	p.Users[name] = uid
 	delete(p.CredentialCandidates, name)
 	delete(p.DirectoryUsers, name)
+	delete(p.LoginApprovals, name)
 	return true, saveAccountPolicy(cfg, p)
 }

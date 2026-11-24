@@ -38,6 +38,7 @@ import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { LoginApprovalDialog } from "./components/LoginApprovalDialog";
 import { GroupApprovalDialog } from "./components/GroupApprovalDialog";
 import { EntityList, HelpLabel, IdentityCell, LogBlock, MetricStrip, PageTitle, RelationCount, SourceTable } from "./components/common";
 import { useAsyncData } from "./hooks/useAsyncData";
@@ -1141,6 +1142,7 @@ function SourceDetail({
   const [sourceSyncLoading, setSourceSyncLoading] = useState(false);
   const [resettingSyncData, setResettingSyncData] = useState(false);
   const [deletingSource, setDeletingSource] = useState(false);
+  const [approvalLogin, setApprovalLogin] = useState<LoginAuditLog | null>(null);
   const [approvalGroup, setApprovalGroup] = useState<DSMGroup | null>(null);
   const [syncApplying, setSyncApplying] = useState(false);
   const [accountLoginAction, setAccountLoginAction] = useState<string | null>(null);
@@ -1905,6 +1907,7 @@ function SourceDetail({
       />
       <Alert type="info" showIcon message="旧版本导致 DSM 与 SMB 密码不一致时，请执行一次全量同步。符合条件的同步账号将重置为本身份源的 DSM 初始密码，可在身份源配置中查看；日常使用增量同步保留已有密码。" />
       {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      {approvalLogin && <LoginApprovalDialog key={approvalLogin.id} record={approvalLogin} onClose={() => setApprovalLogin(null)} />}
       {approvalGroup && <GroupApprovalDialog key={approvalGroup.id} group={approvalGroup} onClose={() => setApprovalGroup(null)} onApproved={syncAfterGroupApproval} />}
       <Modal
         title={operationModalTitle}
@@ -2461,6 +2464,9 @@ function SourceDetail({
                             <span>访问 IP</span><strong>{record.ip_address ?? "-"}</strong>
                           </div>
                           <LogBlock title="错误内容" value={record.error_code} empty="无错误" tone="danger" />
+                          {source.provider_type === "dingtalk" && record.result === "failed" && record.dsm_username &&
+                            /LOGIN_OWNER_VERIFICATION_REQUIRED|仅用于同步群组成员|钉钉同名用户保留 DSM\/SMB 密码/.test(record.error_code ?? "") &&
+                            <Button onClick={() => setApprovalLogin(record)}>核实登录归属</Button>}
                         </div>
                       )
                     }}

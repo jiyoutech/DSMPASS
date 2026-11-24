@@ -33,7 +33,7 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 			}
 			grant, err := userEnrollment(cfg, username)
 			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired && info.Mail != "" {
-				linked, linkErr := s.linkVerifiedDirectoryUser(cfg, username, info.Mail, grant)
+				linked, linkErr := s.linkVerifiedDirectoryUser(cfg, username, info.Mail, grant, db.HelperAuthorizationQuery{Action: "verify_existing_owner", Username: username})
 				if linkErr != nil {
 					return linkErr
 				}

@@ -47,8 +47,8 @@ func TestVerifiedExistingUserAutomaticallyGetsLoginAndFullSyncPassword(t *testin
 			server := NewWithStore(cfg, q)
 			login := map[string]any{"dsm_username": "alice", "identity_id": "identity", "login_source": "source"}
 			provision := map[string]any{"dsm_username": "alice"}
-			if err := server.authorizeLogin(cfg, login); err == nil {
-				t.Fatal("credential used before independent DSM verification")
+			if err := requireManagedUser(cfg, "alice"); err == nil {
+				t.Fatal("credential granted before independent DSM verification")
 			}
 			// A changed stable identifier cannot consume a previously captured candidate.
 			exec("UPDATE external_accounts SET subject='substitution'")
@@ -132,7 +132,7 @@ func TestVerifiedExistingUserRequiresPinnedOrdinaryDSMAccount(t *testing.T) {
 	}
 	s := NewWithStore(cfg, q)
 	for _, pair := range [][2]string{{"bob", "alice@example.test"}, {"operator", "alice@example.test"}, {"alice", "different@example.test"}, {"alice", ""}} {
-		if ok, err := s.linkVerifiedDirectoryUser(cfg, pair[0], pair[1], nil); err != nil || ok {
+		if ok, err := s.linkVerifiedDirectoryUser(cfg, pair[0], pair[1], nil, db.HelperAuthorizationQuery{Action: "verify_existing_owner", Username: pair[0]}); err != nil || ok {
 			t.Fatal("claimed unrelated account", pair, err)
 		}
 	}
@@ -141,7 +141,7 @@ func TestVerifiedExistingUserRequiresPinnedOrdinaryDSMAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, cfg.PasswdPath, strings.Replace(string(data), "alice:x:1026:", "alice:x:1041:", 1))
-	if ok, err := s.linkVerifiedDirectoryUser(cfg, "alice", "alice@example.test", nil); err == nil || ok {
+	if ok, err := s.linkVerifiedDirectoryUser(cfg, "alice", "alice@example.test", nil, db.HelperAuthorizationQuery{Action: "verify_existing_owner", Username: "alice"}); err == nil || ok {
 		t.Fatal("claimed replacement UID")
 	}
 }

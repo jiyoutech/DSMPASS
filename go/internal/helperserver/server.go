@@ -227,7 +227,7 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		}
 	case "scoped_relay_login":
 		if err := s.authorizeLogin(cfg, payload); err != nil {
-			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+			return loginDeniedResponse(err)
 		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
@@ -258,7 +258,7 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		return map[string]any{"success": true, "sid": result.SID, "cookies": result.Cookies}
 	case "scoped_prepare_browser_login":
 		if err := s.authorizeLogin(cfg, payload); err != nil {
-			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+			return loginDeniedResponse(err)
 		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
@@ -323,6 +323,8 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		return s.provisionAccount(ctx, cfg, payload)
 	case "scoped_disable_dingtalk_user", "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
+	case "scoped_web_login_approval":
+		return s.webLoginApproval(cfg, payload)
 	case "scoped_web_group_approval":
 		return s.webGroupApproval(cfg, payload)
 	case "scoped_add_group_members":
@@ -430,9 +432,10 @@ func synouserAddArgs(username, password, displayName, email string) []string {
 }
 
 type synoUserInfo struct {
-	FullName string
-	Mail     string
-	Expired  bool
+	ExpiryKnown bool
+	FullName    string
+	Mail        string
+	Expired     bool
 }
 
 func getSynoUser(path, username string) (synoUserInfo, error) {
@@ -468,6 +471,7 @@ func parseSynoUserInfo(output string) synoUserInfo {
 		case "User Mail":
 			info.Mail = value
 		case "Expired":
+			info.ExpiryKnown = strings.EqualFold(value, "true") || strings.EqualFold(value, "false") || value == "1" || value == "0"
 			info.Expired = strings.EqualFold(value, "true") || value == "1"
 		}
 	}

@@ -217,7 +217,7 @@ SELECT EXISTS (
  AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other JOIN external_accounts x ON x.id=other.external_account_id AND x.active=1
  JOIN identity_sources src ON src.slug=other.provider_slug AND src.enabled=1
  WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>m.id)
-  AND (? <> 'login' OR (s.login_enabled=1 AND i.id=? AND a.allow_login=1 AND a.provision_status IN ('created','linked_existing')))
+  AND (? <> 'login' OR (s.login_enabled=1 AND i.id=? AND a.allow_login=1 AND a.manual_login_blocked=0 AND a.provision_status IN ('created','linked_existing')))
  AND (? <> 'password_reset' OR (s.directory_sync_enabled=1 AND a.id=? AND a.provision_status IN ('created','linked_existing')))
  )`, request.Username, owner.SourceSlug, owner.Subject, request.VerifiedEmail, request.VerifiedEmail, request.Action, request.IdentityID, request.Action, request.AccountID).Scan(&valid)
 	return valid, err

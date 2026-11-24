@@ -55,6 +55,7 @@ func (s *Server) router(includeAdmin, includeIDP bool) *gin.Engine {
 		admin.DELETE("/providers/:slug", s.deleteProvider)
 		admin.POST("/providers/:slug/reset-sync-data", s.resetProviderSyncData)
 		admin.POST("/providers/:slug/cleanup-runs", s.startProviderCleanupRun)
+		admin.POST("/providers/:slug/login-audit/:id/login-approval", s.webLoginApproval)
 		admin.POST("/providers/:slug/sync-runs", s.startProviderSyncRun)
 		admin.GET("/providers/:slug/sync-runs", s.sourceSyncRuns)
 		admin.GET("/providers/:slug/sync-logs", s.sourceSyncLogs)

@@ -37,6 +37,7 @@ type verifiedAccountCandidate struct {
 }
 
 type accountPolicy struct {
+	LoginApprovals          map[string]loginApprovalTicket      `json:"pending_login_approvals,omitempty"`
 	CredentialCandidates    map[string]verifiedAccountCandidate `json:"credential_candidates,omitempty"`
 	CredentialOwners        map[string]db.CredentialIdentity    `json:"credential_owners,omitempty"`
 	DingTalkScope           *dingTalkDirectoryScope             `json:"dingtalk_scope,omitempty"`
@@ -213,13 +214,15 @@ var errUserNotEnrolled = errors.New("尚未登记")
 
 var errDingTalkMembershipOnly = errors.New("此账号已关联钉钉通讯录，仅用于同步群组成员。现有绑定没有 DSM 登录及改密授权")
 
+var errDirectoryMembershipOnly = errors.New("已获通讯录同步授权，登录、改密和停用需独立核实账号归属")
+
 func requireManagedUser(cfg config.HelperConfig, username string) error {
 	grant, err := userEnrollment(cfg, username)
 	if err == nil && grant != nil {
 		if grant.DingTalk != nil {
 			return fmt.Errorf("DSM 用户 %q: %w", username, errDingTalkMembershipOnly)
 		}
-		return fmt.Errorf("DSM 用户 %q 已获通讯录同步授权，登录、改密和停用需独立核实账号归属", username)
+		return fmt.Errorf("DSM 用户 %q %w", username, errDirectoryMembershipOnly)
 	}
 	return err
 }
@@ -362,6 +365,7 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		delete(p.WebApprovals, name)
 	} else {
 		delete(p.DirectoryUsers, name)
+		delete(p.LoginApprovals, name)
 		delete(p.CredentialOwners, name)
 		delete(p.CredentialCandidates, name)
 	}
