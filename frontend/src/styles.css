@@ -197,11 +197,24 @@ body {
   gap: 8px;
 }
 
-.runtime-alert-detail pre {
+.runtime-alert-detail summary {
+  cursor: pointer;
+}
+
+.runtime-alert-detail .runtime-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.runtime-command pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -1,5 +1,5 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Upload } from "antd";
+import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Typography, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -30,7 +30,7 @@ const systemFieldHelp = {
 };
 
 const fieldEffectHelp = {
-  adminPort: "由套件启动参数提供；修改后需重启 DSMPASS。",
+  adminPort: "修改套件启动参数后，请用 DSM 管理员账号通过 SSH 重启套件后台。",
   deploymentMode: "保存后立即更新地址推导规则。",
   accessHost: "保存后立即更新默认地址推导。",
   accessScheme: "保存后刷新认证路由；无需重启套件。",
@@ -217,7 +217,10 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
               <Form.Item
                 name="admin_port"
                 label={<HelpLabel label="管理后台监听端口" help={systemFieldHelp.adminPort} />}
-                extra={fieldEffectHelp.adminPort}
+                extra={<>
+                  {fieldEffectHelp.adminPort}<br />
+                  <Typography.Text code copyable>sudo /var/packages/DSMPASS/scripts/start-stop-status restart</Typography.Text>
+                </>}
               >
                 <InputNumber disabled controls={false} precision={0} className="settings-full-input" />
               </Form.Item>
