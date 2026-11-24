@@ -160,6 +160,11 @@ PACKAGE_NAME="$PACKAGE_NAME"
 DEFAULT_IDP_PORT="$DEFAULT_IDP_PORT"
 EOF
   cat >> "$work_dir/scripts/start-stop-status" <<'EOF'
+runtime_uid=$(id -u) || exit 1
+if [ "$runtime_uid" = 0 ]; then
+  echo "Use DSM Package Center or synopkg to manage DSMPASS as the package user." >&2
+  exit 1
+fi
 PKGDEST=${SYNOPKG_PKGDEST:-"/var/packages/$PACKAGE_NAME/target"}
 PKGVAR=${SYNOPKG_PKGVAR:-"/var/packages/$PACKAGE_NAME/var"}
 PIDFILE="$PKGVAR/dsmpass.pid"
