@@ -200,3 +200,40 @@ func TestRecoveryFinishesInterruptedArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStartupRepairsInterruptedFirstIndexWrite(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if _, err := prepareBrowserLogin(cfg, "before-index", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(journalIndexPath(cfg, "bob")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	j, found, err := browserLeaseForUser(cfg, "bob")
+	if err != nil || !found || j.RequestID != "before-index" {
+		t.Fatalf("lost interrupted record: %v, %v", found, err)
+	}
+	if err := recoverPending(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalBodyWriteFailureLeavesNoNewIndex(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if err := ensureJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cfg.JournalDir, "blocked.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := saveJournal(cfg, journal{RequestID: "blocked", DSMUsername: "bob", Status: "pending"})
+	if err == nil {
+		t.Fatal("expected body write failure")
+	}
+	if _, err := os.Stat(journalIndexPath(cfg, "bob")); !os.IsNotExist(err) {
+		t.Fatalf("dangling account index: %v", err)
+	}
+}

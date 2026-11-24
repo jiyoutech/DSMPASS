@@ -900,12 +900,6 @@ func saveJournal(cfg config.HelperConfig, j journal) error {
 		return err
 	}
 	path := filepath.Join(dir, safeName(j.RequestID)+".json")
-	if !terminalJournal(j.Status) {
-		// Persist the account association before any password write can happen.
-		if err := updateJournalIndex(cfg, j, false); err != nil {
-			return err
-		}
-	}
 	if err := writeFileAtomically(path, data, 0o600); err != nil {
 		return err
 	}
@@ -915,7 +909,8 @@ func saveJournal(cfg config.HelperConfig, j journal) error {
 		}
 		return updateJournalIndex(cfg, j, true)
 	}
-	return nil
+	// The account index must always refer to a durable recovery record.
+	return updateJournalIndex(cfg, j, false)
 }
 
 func (j *journal) encryptOriginalLine(cfg config.HelperConfig) error {
