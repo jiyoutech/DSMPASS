@@ -181,13 +181,19 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 		}
 		workers.Go(func() {
 			// Settle an already started native operation even if the socket closes.
-			cmdCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			errs[i] = runAccountCommand(cmdCtx, cfg.SynoUserPath, synouserAddArgs(u.name, password, u.display, u.email)...)
+			errs[i] = createNativeUser(cfg, u, password)
 		})
 	}
 	workers.Wait()
 	for i, u := range eligible {
+		if commandExited255(errs[i]) && ctx.Err() == nil && s.canRetryAbsentCreate(cfg, u.name) {
+			// The previous synchronous command exited, all workers are joined,
+			// and both namespaces still report absence under the same locks.
+			errs[i] = createNativeUser(cfg, u, password)
+			if commandExited255(errs[i]) && s.canRetryAbsentCreate(cfg, u.name) {
+				errs[i] = errors.Join(errs[i], (creationTarget{cfg: cfg, name: u.name}).clear())
+			}
+		}
 		if errs[i] == nil {
 			// Only this goroutine updates the shared policy. confirm binds the
 			// actual ordinary UID and rejects missing, privileged or duplicate UIDs.
@@ -211,4 +217,28 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 		results[u.name] = map[string]any{"success": true, "created": true, "initial_password_applied": checkPasswordResetPending(cfg, u.name) == nil}
 	}
 	return nil
+}
+
+func createNativeUser(cfg config.HelperConfig, u newDSMUser, password string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return runAccountCommand(ctx, cfg.SynoUserPath, synouserAddArgs(u.name, password, u.display, u.email)...)
+}
+
+// Synology also returns 255 for permanent failures. The exit code alone never
+// authorizes a retry. Inconclusive queries and partially created accounts retain
+// the pending ownership receipt.
+func commandExited255(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 255
+}
+
+func (s *Server) canRetryAbsentCreate(cfg config.HelperConfig, name string) bool {
+	if _, err := getSynoUser(cfg.SynoUserPath, name); !dsmUserNotFound(err) {
+		return false
+	}
+	if err := verifyAccountAbsent(cfg, name); err != nil {
+		return false
+	}
+	return s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "provision", Username: name}) == nil
 }

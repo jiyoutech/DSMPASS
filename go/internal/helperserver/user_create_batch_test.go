@@ -170,3 +170,59 @@ echo '{"success":true,"data":{"total":2,"offset":0,"users":[{"name":"fresh-b","u
 		}
 	}
 }
+
+func TestRetryNativeCreateOnlyAfterConfirmedAbsence(t *testing.T) {
+	names := []string{"transient", "permanent", "partial", "unknown"}
+	cfg := policyTestConfig(t)
+	s := NewWithStore(cfg, batchMemberTestStore(t, names, "engineering"))
+	dir := t.TempDir()
+	t.Setenv("FIXTURES", dir)
+	t.Setenv("PASSWD_ROWS", cfg.PasswdPath)
+	cfg.SynoUserPath = filepath.Join(dir, "synouser")
+	cfg.SynoWebAPIPath = ""
+	script := `#!/bin/sh
+calls="$FIXTURES/$2.calls"
+if [ "$1" = --get ]; then
+ if [ "$2" = unknown ] && [ -f "$calls" ]; then exit 1; fi
+ if grep -q "^$2:" "$PASSWD_ROWS"; then printf 'Fullname : [%s]\nUser Mail : []\nExpired : [false]\n' "$2"; exit 0; fi
+ echo 'synoerr=[0x1D00]' >&2; exit 255
+fi
+[ "$1" = --add ] || exit 1
+echo attempt >> "$calls"
+case "$2" in
+ transient) [ "$(wc -l < "$calls")" -gt 1 ] || exit 255; uid=2100;;
+ permanent|unknown) exit 255;;
+ partial) uid=2101;;
+ *) exit 1;;
+esac
+printf '%s:x:%s:100:%s:/:/bin/false\n' "$2" "$uid" "$2" >> "$PASSWD_ROWS"
+[ "$2" != partial ] || exit 255
+`
+	if err := os.WriteFile(cfg.SynoUserPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var rows []any
+	for _, name := range names {
+		rows = append(rows, map[string]any{"dsm_username": name, "display_name": name, "email": ""})
+	}
+	payload := map[string]any{"dsm_users": rows, "initial_password": "fixture-password"}
+	results := s.provisionAccounts(context.Background(), cfg, payload)["user_results"].([]map[string]any)
+	for i, name := range names {
+		count := 1
+		if name == "transient" || name == "permanent" {
+			count = 2
+		}
+		got, err := os.ReadFile(filepath.Join(dir, name+".calls"))
+		if err != nil || len(strings.Fields(string(got))) != count || results[i]["success"] != (name == "transient") {
+			t.Fatal(name, string(got), results[i], err)
+		}
+		_, err = os.Stat((creationTarget{cfg: cfg, name: name}).path())
+		pending := name == "partial" || name == "unknown"
+		if pending != (err == nil) {
+			t.Fatalf("pending receipt for %s: %v", name, err)
+		}
+		if err := requireManagedUser(cfg, name); (err == nil) != (name == "transient") {
+			t.Fatal("unconfirmed UID enrolled", name, err)
+		}
+	}
+}
