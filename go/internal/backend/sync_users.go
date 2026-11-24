@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
@@ -61,4 +63,75 @@ func (s *Server) saveSyncUserBatch(ctx context.Context, batch []pendingAccountPr
 		}
 		return nil
 	})
+}
+
+func (s *Server) pendingSourceAccounts(ctx context.Context, sourceSlug string, policy sourceSyncPolicy) ([]pendingAccountProvision, error) {
+	accountRows, err := s.store.DBTX().QueryContext(ctx, `
+	SELECT DISTINCT a.id, a.dsm_username, COALESCE(i.display_name, ''), COALESCE(i.primary_email, ''), a.provision_status
+		FROM dsm_accounts a
+		JOIN app_identities i ON i.id = a.app_identity_id
+		JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id
+		WHERE me.provider_slug = ? AND me.mapping_type = 'user' AND me.active = 1 AND a.provision_status IN ('pending', 'failed', 'created', 'linked_existing', 'disabled')
+		AND (NOT ? OR EXISTS (SELECT 1 FROM external_accounts e WHERE e.id=me.external_account_id AND e.provider_slug=me.provider_slug AND e.app_identity_id=i.id AND e.active=1))
+        ORDER BY a.created_at`, sourceSlug, policy.DingTalk)
+	if err != nil {
+		return nil, err
+	}
+	var pendingAccounts []pendingAccountProvision
+	for accountRows.Next() {
+		var item pendingAccountProvision
+		if err := accountRows.Scan(&item.id, &item.username, &item.displayName, &item.email, &item.status); err != nil {
+			accountRows.Close()
+			return nil, err
+		}
+		pendingAccounts = append(pendingAccounts, item)
+	}
+	if err := accountRows.Err(); err != nil {
+		accountRows.Close()
+		return nil, err
+	}
+	accountRows.Close()
+	return pendingAccounts, nil
+}
+
+func (s *Server) readSyncAccountPlan(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) (map[pendingAccountProvision]helperclient.DirectoryAccountState, error) {
+	reader, ok := s.helper.(helperclient.DirectorySnapshotClient)
+	if !ok {
+		return nil, nil
+	}
+	started := time.Now()
+	accounts, err := s.pendingSourceAccounts(ctx, sourceSlug, policy)
+	if err != nil {
+		return nil, err
+	}
+	profiles := make([]helperclient.UserProfile, len(accounts))
+	for i, a := range accounts {
+		profiles[i] = helperclient.UserProfile{Username: a.username, Email: a.email, DisplayName: a.displayName}
+	}
+	if progress != nil {
+		progress.message(ctx, "读取 DSM", "正在分页核对 DSM 用户和本地群组")
+	}
+	states, err := reader.DirectorySnapshot(ctx, runID, profiles)
+	if err != nil {
+		return nil, fmt.Errorf("读取 DSM 完整目录失败: %w", err)
+	}
+	var missing, unchanged int
+	for _, state := range states {
+		switch state {
+		case helperclient.DirectoryMissing:
+			missing++
+		case helperclient.DirectoryUnchanged:
+			unchanged++
+		}
+	}
+	detail := fmt.Sprintf("目标 %d 人，待建 %d 人，资料一致 %d 人，需复核 %d 人，用时 %s", len(accounts), missing, unchanged, len(accounts)-missing-unchanged, time.Since(started).Round(time.Millisecond))
+	s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "read_dsm_snapshot", "success", "", "", detail)
+	if progress != nil {
+		progress.message(ctx, "读取 DSM", detail)
+	}
+	plan := make(map[pendingAccountProvision]helperclient.DirectoryAccountState, len(accounts))
+	for _, a := range accounts {
+		plan[a] = states[a.username]
+	}
+	return plan, nil
 }

@@ -307,6 +307,8 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
 		}
 		return map[string]any{"success": true}
+	case "scoped_directory_snapshot":
+		return s.directorySnapshot(ctx, cfg, payload)
 	case "scoped_provision_users":
 		return s.provisionAccounts(ctx, cfg, payload)
 	case "scoped_provision_user":

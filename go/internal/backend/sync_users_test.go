@@ -112,3 +112,61 @@ func TestSaveUserBatchRollsBackOnMissingRow(t *testing.T) {
 		t.Fatalf("partial commit: %s %v", status, err)
 	}
 }
+
+type directoryPlanFixture struct {
+	syncUserBatchFixture
+	fail  bool
+	reads int
+}
+
+func (h *directoryPlanFixture) DirectorySnapshot(_ context.Context, _ string, profiles []helperclient.UserProfile) (map[string]helperclient.DirectoryAccountState, error) {
+	h.reads++
+	if h.fail {
+		return nil, errors.New("missing last page")
+	}
+	out := make(map[string]helperclient.DirectoryAccountState)
+	for _, p := range profiles {
+		out[p.Username] = helperclient.DirectoryUnchanged
+		if p.Username == "new1" || p.Username == "new2" {
+			out[p.Username] = helperclient.DirectoryMissing
+		}
+	}
+	return out, nil
+}
+
+func TestDirectoryPlanBeforeWritesAndMixedBatch(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		ctx := context.Background()
+		database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := &directoryPlanFixture{fail: fail}
+		s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, h, database, q)
+		if _, err := database.Exec("INSERT INTO identity_sources(slug,provider_type,display_name) VALUES('source','feishu','Directory')"); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"new1", "existing1", "new2", "existing2"} {
+			seedSyncedAccount(t, ctx, database, "source", name, "external-"+name, name, name, "2999-01-01")
+		}
+		if _, err := database.Exec("UPDATE dsm_accounts SET provision_status='pending'"); err != nil {
+			t.Fatal(err)
+		}
+		ops, err := s.syncSourceToDSM(ctx, "run", "source", "2000-01-01", sourceSyncPolicy{})
+		var pending int
+		if e := database.QueryRow("SELECT COUNT(*) FROM dsm_accounts WHERE provision_status='pending'").Scan(&pending); e != nil {
+			t.Fatal(e)
+		}
+		database.Close()
+		if h.reads != 1 {
+			t.Fatalf("snapshot reads %d", h.reads)
+		}
+		if fail {
+			if err == nil || len(ops) != 0 || len(h.sizes) != 0 || h.singles != 0 || pending != 4 {
+				t.Fatalf("partial page allowed writes: %v %v", ops, err)
+			}
+		} else if err != nil || !slices.Equal(h.sizes, []int{2}) || len(ops) != 4 || pending != 0 {
+			t.Fatalf("did not separate existing and missing users: batches %v ops %v err %v", h.sizes, ops, err)
+		}
+	}
+}

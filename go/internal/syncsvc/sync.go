@@ -52,17 +52,26 @@ func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Optio
 }
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
+	// Preserve the snapshot boundary for callers that do not supply a run timestamp.
+	if e.options.DeactivateMissingData && strings.TrimSpace(e.options.SyncStart) == "" {
+		copy := *e
+		if err := e.q.DBTX().QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&copy.options.SyncStart); err != nil {
+			return Result{ProviderSlug: directory.Slug()}, err
+		}
+		e = &copy
+	}
+	users, groups, err := ReadDirectorySnapshot(directory)
+	if err != nil {
+		return Result{ProviderSlug: directory.Slug()}, err
+	}
+	return e.ApplySnapshot(ctx, directory, users, groups)
+}
+
+func (e *Engine) ApplySnapshot(ctx context.Context, directory provider.Directory, users []provider.User, groups []provider.Group) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
 	providerName := providerDisplayName(directory)
 	result := Result{ProviderSlug: directory.Slug()}
 	syncStart := e.options.SyncStart
-	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
-		_ = e.q.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
-	}
-	users, groups, err := listDirectorySnapshot(directory)
-	if err != nil {
-		return result, err
-	}
 	if err := validateDirectorySnapshot(providerName, users, groups); err != nil {
 		return result, err
 	}
@@ -285,7 +294,7 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	return result, nil
 }
 
-func listDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
+func ReadDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
 	if snapshot, ok := directory.(provider.SnapshotDirectory); ok {
 		return snapshot.ListUsersAndGroups()
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -42,17 +41,7 @@ func (s *Server) unchangedAccounts(ctx context.Context, cfg config.HelperConfig,
 			if assertAllowed(cfg, name) != nil {
 				continue
 			}
-			if _, bound := policy.CredentialOwners[name]; bound {
-				continue // The individual check also verifies the fixed source and subject.
-			}
-			grant, err := enrolledLocalUser(policy, name, users, groups)
-			if err != nil || grant != nil {
-				continue
-			}
-			if _, err := os.Lstat((creationTarget{cfg: cfg, name: name}).path()); !os.IsNotExist(err) {
-				continue
-			}
-			if _, busy, err := browserLeaseForUser(cfg, name); err != nil || busy {
+			if !s.canConfirmDirectoryUser(cfg, policy, name, users, groups) {
 				continue
 			}
 			candidates[name] = row
