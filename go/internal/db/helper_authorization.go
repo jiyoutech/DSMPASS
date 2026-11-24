@@ -139,6 +139,23 @@ SELECT NOT EXISTS (
 		// Offboarding separately checks the historical source/subject and completed directory evidence.
 	}
 
+	if q != nil && (request.Action == "cleanup_user" || request.Action == "cleanup_absent" || request.Action == "cleanup_conflict") {
+		subject := ""
+		if request.CredentialOwner != nil {
+			subject = request.CredentialOwner.Subject
+		}
+		var ok bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM source_cleanup_targets t JOIN dsm_accounts a ON a.id=t.account_id AND a.dsm_username=t.username
+WHERE t.source_slug=? AND t.request_id=? AND t.account_id=? AND t.username=?
+AND EXISTS (SELECT 1 FROM external_accounts e WHERE e.app_identity_id=a.app_identity_id AND e.provider_slug=t.source_slug)
+AND NOT EXISTS(SELECT 1 FROM external_accounts x WHERE x.app_identity_id=a.app_identity_id AND x.provider_slug<>t.source_slug)
+AND ((? AND a.provision_status IN ('pending','failed','disabled','conflict'))
+ OR (? AND a.provision_status='conflict' AND NOT EXISTS(SELECT 1 FROM dsm_mapping_entries m WHERE m.mapping_type='user' AND m.dsm_account_id=a.id))
+ OR (? AND EXISTS(SELECT 1 FROM dsm_mapping_entries m JOIN external_accounts e ON e.id=m.external_account_id
+ WHERE m.mapping_type='user' AND m.dsm_account_id=a.id AND m.provider_slug=t.source_slug AND e.provider_slug=t.source_slug AND e.app_identity_id=a.app_identity_id AND (?='' OR e.subject=?)))))`,
+			request.SourceSlug, request.RunID, request.AccountID, request.Username, request.Action == "cleanup_absent", request.Action == "cleanup_conflict", request.Action == "cleanup_user", subject, subject).Scan(&ok)
+		return ok, err
+	}
 	if q != nil && (request.Action == "restore_sync_disable" || request.Action == "disable_missing_user") {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dsm_accounts a

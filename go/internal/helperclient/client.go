@@ -250,6 +250,24 @@ func provisionUserResult(response map[string]any, initialPassword string, err er
 	return ProvisionUserResult{Created: created, InitialPasswordApplied: err == nil && explicit && applied && initialPassword != ""}, err
 }
 
+type CleanupClient interface {
+	CleanupUser(context.Context, string, string, string, string) (string, error)
+}
+
+func (c UnixSocketClient) CleanupUser(ctx context.Context, requestID, source, accountID, username string) (string, error) {
+	response, err := c.send(ctx, map[string]any{"action": "scoped_cleanup_user", "request_id": requestID, "source_slug": source, "account_id": accountID, "dsm_username": username})
+	if err != nil {
+		return "", err
+	}
+	outcome, _ := response["outcome"].(string)
+	switch outcome {
+	case "disabled", "membership_only", "absent", "unmapped_conflict":
+		return outcome, nil
+	default:
+		return "", errors.New("Helper 未确认清理结果")
+	}
+}
+
 type MissingUserClient interface {
 	DisableMissingUser(context.Context, string, string, string, string, string, string) error
 }
