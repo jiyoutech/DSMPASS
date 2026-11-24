@@ -36,7 +36,13 @@ type HelperAuthorizationQuery struct {
 	AccountID       string              `json:"account_id,omitempty"`
 }
 
+type AccountOrigin struct {
+	CredentialIdentity
+	AccountID string `json:"account_id"`
+}
+
 type HelperAuthorizationResult struct {
+	Origins            map[string]AccountOrigin  `json:"origins,omitempty"`
 	DingTalkLoginMatch *DingTalkLoginMatch       `json:"dingtalk_login_match,omitempty"`
 	LoginRoster        map[string]string         `json:"login_roster,omitempty"`
 	DingTalkBinding    *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
@@ -287,4 +293,31 @@ SELECT EXISTS (
  AND (? <> 'password_reset' OR (src.directory_sync_enabled=1 AND a.id=? AND a.provision_status IN ('created','linked_existing')))
  )`, request.Username, request.Action, owner.SourceSlug, owner.Subject, request.VerifiedEmail, request.VerifiedEmail, request.Action, request.IdentityID, request.Action, request.AccountID).Scan(&valid)
 	return valid, err
+}
+
+// Provisioning may run before the user mapping is finalized. Pin only an
+// unambiguous source and employee from the same authorized provisioning scope.
+func ProvisionOrigins(ctx context.Context, q *Queries, names []string) (map[string]AccountOrigin, error) {
+	if q == nil || len(names) == 0 || len(names) > MaxProvisionUsers {
+		return nil, errors.New("invalid provisioning scope")
+	}
+	raw, err := json.Marshal(names)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.DBTX().QueryContext(ctx, `SELECT a.dsm_username,a.id,MIN(src.slug),MIN(e.subject) `+provisionIdentityScope+`
+	 AND a.dsm_username IN (SELECT value FROM json_each(?)) AND e.subject<>'' GROUP BY a.dsm_username,a.id HAVING COUNT(*)=1`, string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]AccountOrigin{}
+	for rows.Next() {
+		var o AccountOrigin
+		if err := rows.Scan(&o.Username, &o.AccountID, &o.SourceSlug, &o.Subject); err != nil {
+			return nil, err
+		}
+		out[o.Username] = o
+	}
+	return out, rows.Err()
 }

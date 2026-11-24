@@ -144,6 +144,13 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if cfg.AccountPolicyPath != "" {
+			owners, err := s.provisionOrigins(cfg, []string{username})
+			if err != nil {
+				return err
+			}
+			target.origin = owners[username]
+		}
 		if err := target.begin(); err != nil {
 			return err
 		}

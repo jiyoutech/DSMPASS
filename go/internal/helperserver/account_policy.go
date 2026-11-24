@@ -37,6 +37,7 @@ type verifiedAccountCandidate struct {
 }
 
 type accountPolicy struct {
+	CreatedUsers            map[string]db.AccountOrigin         `json:"created_users,omitempty"`
 	SyncDisables            map[string]syncDisableReceipt       `json:"sync_disables,omitempty"`
 	LoginApprovals          map[string]loginApprovalTicket      `json:"pending_login_approvals,omitempty"`
 	CredentialCandidates    map[string]verifiedAccountCandidate `json:"credential_candidates,omitempty"`
@@ -365,6 +366,7 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		delete(p.ReusableGroups, name)
 		delete(p.WebApprovals, name)
 	} else {
+		delete(p.CreatedUsers, name)
 		delete(p.SyncDisables, name)
 		delete(p.DirectoryUsers, name)
 		delete(p.LoginApprovals, name)

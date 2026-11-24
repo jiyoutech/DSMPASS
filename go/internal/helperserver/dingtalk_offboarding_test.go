@@ -141,3 +141,33 @@ func TestDirectoryOnlyDeparturePreservesNativeUser(t *testing.T) {
 		}
 	}
 }
+
+func TestCreatedNamesakeOffboardsOnlyOriginalEmployee(t *testing.T) {
+	cfg := policyTestConfig(t)
+	q := syncedPasswordTestStore(t, "alice")
+	checkSQL := func(sql string) {
+		t.Helper()
+		if _, err := q.DBTX().ExecContext(context.Background(), sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkSQL("UPDATE identity_sources SET provider_type='dingtalk'")
+	s := NewWithStore(cfg, q)
+	origins, err := s.provisionOrigins(cfg, []string{"alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := creationTarget{cfg: cfg, name: "alice", origin: origins["alice"]}
+	if err := target.confirm(); err != nil {
+		t.Fatal(err)
+	}
+	checkSQL("UPDATE external_accounts SET active=0; UPDATE dsm_mapping_entries SET active=0; INSERT INTO sync_runs(id,source_slug,status,dry_run) VALUES('run','source','running',0); INSERT INTO dingtalk_offboarding VALUES('source','account','subject','run','departed'); INSERT INTO external_accounts(id,provider_slug,subject,subject_norm,subject_type,display_name) VALUES('second','source','other','other','user','alice')")
+	req := db.HelperAuthorizationQuery{Action: "dingtalk_offboard", Username: "alice", SourceSlug: "source", Subject: "subject", AccountID: "account", RunID: "run"}
+	if err := s.authorizeAccount(cfg, req); err != nil {
+		t.Fatal(err)
+	}
+	req.Subject = "other"
+	if s.authorizeAccount(cfg, req) == nil {
+		t.Fatal("changed employee inherited origin")
+	}
+}
