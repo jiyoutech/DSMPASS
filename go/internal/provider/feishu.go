@@ -302,6 +302,18 @@ func (f Feishu) ListGroupMembers(groupSubject string) ([]string, error) {
 	return members, nil
 }
 
+// A successful terminal page can omit its empty list. Keep strict record
+// validation for every other response, including an explicit null list.
+func feishuPageItems(response, data map[string]any) ([]map[string]any, error) {
+	if _, exists := data["items"]; !exists && response["code"] == float64(0) && data["has_more"] == false {
+		cursor, present := data["page_token"]
+		if !present || cursor == "" {
+			return nil, nil
+		}
+	}
+	return directoryPageItems(data, "items")
+}
+
 func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, error) {
 	var result []map[string]any
 	pageToken := ""
@@ -320,7 +332,7 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, err := directoryPageItems(data, "items")
+		items, err := feishuPageItems(out, data)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +379,7 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, err := directoryPageItems(data, "items")
+		items, err := feishuPageItems(out, data)
 		if err != nil {
 			return nil, err
 		}
