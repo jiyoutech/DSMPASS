@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
@@ -94,6 +95,34 @@ func (s *Server) pendingSourceAccounts(ctx context.Context, sourceSlug string, p
 	return pendingAccounts, nil
 }
 
+func (s *Server) captureSyncDirectory(ctx context.Context, runID string, progress *operationProgress) error {
+	if err := s.ensureRealDSMProvisioning(ctx); err != nil {
+		return err
+	}
+	reader, ok := s.helper.(helperclient.DirectorySnapshotClient)
+	if !ok {
+		return nil
+	}
+	if progress != nil {
+		progress.message(ctx, "读取 DSM", "正在读取 DSM 现有用户和群组")
+	}
+	if err := reader.CaptureDirectory(ctx, runID); err != nil {
+		return fmt.Errorf("读取 DSM 完整目录失败: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) releaseSyncDirectory(ctx context.Context, runID string) {
+	if reader, ok := s.helper.(helperclient.DirectorySnapshotClient); ok {
+		// Cleanup also runs when the source read or mapping is canceled.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		if err := reader.ReleaseDirectory(cleanup, runID); err != nil {
+			log.Printf("释放 DSM 同步快照 %s 失败，将由 Helper 自动回收: %v", runID, err)
+		}
+	}
+}
+
 func (s *Server) readSyncAccountPlan(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) (map[pendingAccountProvision]helperclient.DirectoryAccountState, error) {
 	reader, ok := s.helper.(helperclient.DirectorySnapshotClient)
 	if !ok {
@@ -109,7 +138,7 @@ func (s *Server) readSyncAccountPlan(ctx context.Context, runID, sourceSlug stri
 		profiles[i] = helperclient.UserProfile{Username: a.username, Email: a.email, DisplayName: a.displayName}
 	}
 	if progress != nil {
-		progress.message(ctx, "读取 DSM", "正在分页核对 DSM 用户和本地群组")
+		progress.message(ctx, "匹配 DSM 用户", "正在将身份源账号与本轮 DSM 快照匹配")
 	}
 	states, err := reader.DirectorySnapshot(ctx, runID, profiles)
 	if err != nil {
@@ -125,9 +154,9 @@ func (s *Server) readSyncAccountPlan(ctx context.Context, runID, sourceSlug stri
 		}
 	}
 	detail := fmt.Sprintf("目标 %d 人，待建 %d 人，资料一致 %d 人，需复核 %d 人，用时 %s", len(accounts), missing, unchanged, len(accounts)-missing-unchanged, time.Since(started).Round(time.Millisecond))
-	s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "read_dsm_snapshot", "success", "", "", detail)
+	s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "match_dsm_accounts", "success", "", "", detail)
 	if progress != nil {
-		progress.message(ctx, "读取 DSM", detail)
+		progress.message(ctx, "匹配 DSM 用户", detail)
 	}
 	plan := make(map[pendingAccountProvision]helperclient.DirectoryAccountState, len(accounts))
 	for _, a := range accounts {

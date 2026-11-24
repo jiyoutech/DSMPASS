@@ -26,13 +26,14 @@ import (
 )
 
 type Server struct {
-	cfg        config.HelperConfig
-	store      *db.Queries
-	replayMu   sync.Mutex
-	seenNonce  map[string]int64
-	startupMu  sync.RWMutex
-	starting   bool
-	startupErr string
+	directories sync.Map // run ID -> *directoryInventory
+	cfg         config.HelperConfig
+	store       *db.Queries
+	replayMu    sync.Mutex
+	seenNonce   map[string]int64
+	startupMu   sync.RWMutex
+	starting    bool
+	startupErr  string
 }
 
 func New(cfg config.HelperConfig) *Server {
@@ -306,6 +307,11 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 			}
 			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
 		}
+		return map[string]any{"success": true}
+	case "capture_directory_snapshot":
+		return s.captureDirectory(ctx, cfg, requestID)
+	case "release_directory_snapshot":
+		s.releaseDirectory(requestID)
 		return map[string]any{"success": true}
 	case "scoped_directory_snapshot":
 		return s.directorySnapshot(ctx, cfg, payload)

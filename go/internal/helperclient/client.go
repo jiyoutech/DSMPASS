@@ -404,7 +404,7 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	// recovery. Health checks and unrelated actions retain their short timeout.
 	timeout := c.Timeout
 	switch action {
-	case "scoped_directory_snapshot":
+	case "capture_directory_snapshot", "scoped_directory_snapshot":
 		timeout = max(timeout, 3*time.Minute)
 	case "scoped_provision_users":
 		timeout = max(timeout, 16*time.Minute)

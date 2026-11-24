@@ -119,6 +119,15 @@ type directoryPlanFixture struct {
 	reads int
 }
 
+func (h *directoryPlanFixture) CaptureDirectory(context.Context, string) error {
+	if h.fail {
+		return errors.New("missing last page")
+	}
+	return nil
+}
+
+func (h *directoryPlanFixture) ReleaseDirectory(context.Context, string) error { return nil }
+
 func (h *directoryPlanFixture) DirectorySnapshot(_ context.Context, _ string, profiles []helperclient.UserProfile) (map[string]helperclient.DirectoryAccountState, error) {
 	h.reads++
 	if h.fail {
@@ -158,7 +167,7 @@ func TestDirectoryPlanBeforeWritesAndMixedBatch(t *testing.T) {
 			t.Fatal(e)
 		}
 		database.Close()
-		if h.reads != 1 {
+		if (!fail && h.reads != 1) || (fail && h.reads != 0) {
 			t.Fatalf("snapshot reads %d", h.reads)
 		}
 		if fail {

@@ -125,6 +125,13 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return result, err
 	}
 	policy.FullSync = mode == syncFull
+	startedDSM := time.Now()
+	if err = s.captureSyncDirectory(ctx, runID, progress); err != nil {
+		logBuffer.Log(runID, directory.Slug(), "directory", directory.Slug(), "", "read_dsm_snapshot", "failed", "", "", err.Error())
+		return result, err
+	}
+	logBuffer.Log(runID, directory.Slug(), "directory", directory.Slug(), "", "read_dsm_snapshot", "success", "", "", fmt.Sprintf("读取 DSM 目录用时 %s", time.Since(startedDSM).Round(time.Millisecond)))
+	defer s.releaseSyncDirectory(ctx, runID)
 	var scopeCheck func() (bool, error)
 	if policy.DingTalk && policy.FullSync && policy.DisableMissingUsers && policy.DeactivateMissingData {
 		if directoryScope, ok := directory.(interface{ WholeDirectoryVisible() (bool, error) }); ok {
@@ -149,35 +156,26 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return result, err
 	}
 	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "read_directory", "success", "", "", fmt.Sprintf("读取 %d 个用户、%d 个部门，用时 %s", len(users), len(groups), time.Since(startedSource).Round(time.Millisecond)))
+	if visibleBefore && len(groups) > 0 {
+		policy.confirmDingTalkAbsence, err = scopeCheck()
+		if err != nil {
+			return result, err
+		}
+	}
 	startedMapping := time.Now()
-	q := s.store
-	var tx *sql.Tx
-	if s.database != nil {
-		var err error
-		tx, err = s.database.BeginTx(ctx, nil)
-		if err != nil {
-			return syncsvc.Result{}, err
-		}
-		q = db.New(tx)
-	}
-	result, err = syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
-		TrackAccountSuspensions: policy.DingTalk && policy.DisableMissingUsers,
-		DeactivateMissingData:   policy.DeactivateMissingData,
-		SyncStart:               syncStart,
-		Progress: func(phase string, current, total int, message string) {
-			if progress == nil {
-				return
-			}
-			progress.report(ctx, phase, current, total, message)
-		},
-	}).ApplySnapshot(ctx, directory, users, groups)
-	if tx != nil {
-		if err != nil {
-			_ = tx.Rollback()
-		} else if commitErr := tx.Commit(); commitErr != nil {
-			err = commitErr
-		}
-	}
+	err = s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		engine := syncsvc.NewEngineWithOptions(s.cfg, db.New(tx), syncsvc.Options{
+			TrackAccountSuspensions: policy.DingTalk && policy.DisableMissingUsers,
+			Progress: func(phase string, current, total int, message string) {
+				if progress != nil {
+					progress.report(ctx, phase, current, total, message)
+				}
+			},
+		})
+		var mappingErr error
+		result, mappingErr = engine.MapSnapshot(ctx, directory, users, groups)
+		return mappingErr
+	})
 	if err != nil {
 		logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "map_directory", "failed", "running", "failed", err.Error())
 		return result, err
@@ -187,22 +185,26 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		progress.message(ctx, "写入同步日志", "正在记录映射结果")
 	}
 	s.logDirectoryLinkPlanWithBuffer(logBuffer, runID, directory.Slug(), result.Items)
-	if syncResultHasDirectoryWarning(result) {
-		policy.PreserveMissingGroups = true
-	}
+	policy.PreserveMissingGroups = syncResultHasDirectoryWarning(result)
 	if policy.DingTalk && policy.DisableMissingUsers {
 		policy.dingTalkUsers = result.AccountSuspensions
-		if visibleBefore && !policy.PreserveMissingGroups {
-			policy.confirmDingTalkAbsence, err = scopeCheck()
-			if err != nil {
-				return result, err
-			}
-		}
 		if policy.FullSync && !policy.confirmDingTalkAbsence {
 			logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "offboarding_scope", "skipped", "", "", "未确认完整组织通讯录，仅处理企业账号明确停用状态")
 		}
 	}
-	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
+	plan, err := s.readSyncAccountPlan(ctx, runID, directory.Slug(), policy, logBuffer, progress)
+	if err != nil {
+		return result, err
+	}
+	if err := s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		engine := syncsvc.NewEngineWithOptions(s.cfg, db.New(tx), syncsvc.Options{
+			DeactivateMissingData: policy.DeactivateMissingData, SyncStart: syncStart,
+		})
+		return engine.FinalizeMappings(ctx, directory.Slug(), policy.PreserveMissingGroups)
+	}); err != nil {
+		return result, err
+	}
+	operations, err := s.applySyncAccountPlan(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress, plan)
 	result.Items = append(result.Items, operations...)
 	return result, err
 }
@@ -293,18 +295,19 @@ func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) (sourc
 }
 
 func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy) ([]syncsvc.PlanItem, error) {
-	return s.syncSourceToDSMWithBuffer(ctx, runID, sourceSlug, syncStart, policy, nil, nil)
-}
-
-func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
-	var operations []syncsvc.PlanItem
-	if err := s.ensureRealDSMProvisioning(ctx); err != nil {
-		return operations, err
+	if err := s.captureSyncDirectory(ctx, runID, nil); err != nil {
+		return nil, err
 	}
-	plan, err := s.readSyncAccountPlan(ctx, runID, sourceSlug, policy, logBuffer, progress)
+	defer s.releaseSyncDirectory(ctx, runID)
+	plan, err := s.readSyncAccountPlan(ctx, runID, sourceSlug, policy, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	return s.applySyncAccountPlan(ctx, runID, sourceSlug, syncStart, policy, nil, nil, plan)
+}
+
+func (s *Server) applySyncAccountPlan(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress, plan map[pendingAccountProvision]helperclient.DirectoryAccountState) ([]syncsvc.PlanItem, error) {
+	var operations []syncsvc.PlanItem
 	if policy.DeactivateMissingData {
 		if err := s.markMissingSourceData(ctx, sourceSlug, syncStart, policy.PreserveMissingGroups); err != nil {
 			return operations, err

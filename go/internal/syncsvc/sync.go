@@ -68,10 +68,19 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 }
 
 func (e *Engine) ApplySnapshot(ctx context.Context, directory provider.Directory, users []provider.User, groups []provider.Group) (Result, error) {
+	result, err := e.MapSnapshot(ctx, directory, users, groups)
+	if err == nil {
+		err = e.FinalizeMappings(ctx, directory.Slug(), len(users) > 0 && len(groups) == 0)
+	}
+	return result, err
+}
+
+// MapSnapshot stages the identities and relationships present in the source.
+// The caller publishes absences only once the DSM inventory has been matched.
+func (e *Engine) MapSnapshot(ctx context.Context, directory provider.Directory, users []provider.User, groups []provider.Group) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
 	providerName := providerDisplayName(directory)
 	result := Result{ProviderSlug: directory.Slug()}
-	syncStart := e.options.SyncStart
 	if err := validateDirectorySnapshot(providerName, users, groups); err != nil {
 		return result, err
 	}
@@ -279,19 +288,21 @@ func (e *Engine) ApplySnapshot(ctx context.Context, directory provider.Directory
 			e.report("写入成员映射", memberCurrent, memberTotal, group.Path)
 		}
 	}
-	if e.options.DeactivateMissingData {
-		mappingTypes := []string{}
-		if inactiveUserOnlyDirectory {
-			mappingTypes = []string{"user"}
-		}
-		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart, mappingTypes...); err != nil {
-			return result, err
-		}
-	}
-	if err := identityService.ReconcileFinalGroupMembers(ctx); err != nil {
-		return result, err
-	}
 	return result, nil
+}
+
+func (e *Engine) FinalizeMappings(ctx context.Context, source string, preserveGroups bool) error {
+	service := identity.NewService(e.cfg, e.q)
+	if e.options.DeactivateMissingData {
+		var types []string
+		if preserveGroups {
+			types = []string{"user"}
+		}
+		if err := service.DeactivateStaleMappings(ctx, source, e.options.SyncStart, types...); err != nil {
+			return err
+		}
+	}
+	return service.ReconcileFinalGroupMembers(ctx)
 }
 
 func ReadDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {

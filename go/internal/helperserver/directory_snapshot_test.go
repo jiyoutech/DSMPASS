@@ -47,3 +47,61 @@ esac
 		})
 	}
 }
+
+func TestDirectoryCaptureMatchesOnlyItsRunAndRechecksCurrentUIDs(t *testing.T) {
+	cfg := policyTestConfig(t)
+	dir := t.TempDir()
+	cfg.SynoWebAPIPath = filepath.Join(dir, "list")
+	t.Setenv("PAGE", filepath.Join(dir, "page"))
+	t.Setenv("READS", filepath.Join(dir, "reads"))
+	if err := os.WriteFile(cfg.SynoWebAPIPath, []byte("#!/bin/sh\necho read >> \"$READS\"\ncat \"$PAGE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	current := func(name string) {
+		writeFile(t, os.Getenv("PAGE"), `{"success":true,"data":{"offset":0,"total":1,"users":[{"name":"`+name+`","uid":2020,"email":"","description":"test","expired":"normal"}]}}`)
+	}
+	local := func(name string) { writeFile(t, cfg.PasswdPath, name+":x:2020:100:test:/:/bin/false\n") }
+	local("first")
+	current("first")
+	s := NewWithStore(cfg, batchMemberTestStore(t, []string{"first", "second", "new"}, "engineering"))
+	begin := func(id string) {
+		t.Helper()
+		if got := s.captureDirectory(context.Background(), cfg, id); got["success"] != true {
+			t.Fatal(got)
+		}
+	}
+	request := func(id string) map[string]any {
+		return map[string]any{"request_id": id, "snapshot_id": id, "dsm_users": []any{
+			map[string]any{"dsm_username": "first", "display_name": "test", "email": ""},
+			map[string]any{"dsm_username": "second", "display_name": "test", "email": ""},
+			map[string]any{"dsm_username": "new", "display_name": "test", "email": ""},
+		}}
+	}
+	begin("a")
+	defer s.releaseDirectory("a")
+	local("second")
+	current("second")
+	begin("b")
+	defer s.releaseDirectory("b")
+	if got := s.captureDirectory(context.Background(), cfg, "b"); got["success"] != false {
+		t.Fatal("overwrote a live capture")
+	}
+	writeFile(t, os.Getenv("READS"), "")
+	for _, tc := range []struct{ id, want string }{{"a", "rrm"}, {"b", "mrm"}} {
+		if got := s.directorySnapshot(context.Background(), cfg, request(tc.id)); got["states"] != tc.want {
+			t.Fatal(tc, got)
+		}
+	}
+	if reads, err := os.ReadFile(os.Getenv("READS")); err != nil || len(reads) != 0 {
+		t.Fatal("captured profiles re-read", string(reads), err)
+	}
+	s.releaseDirectory("b")
+	writeFile(t, os.Getenv("PAGE"), "invalid")
+	if got := s.directorySnapshot(context.Background(), cfg, request("b")); got["success"] != false {
+		t.Fatal("expired capture used partial data")
+	}
+	current("second")
+	if got := s.directorySnapshot(context.Background(), cfg, request("b")); got["states"] != "mrm" {
+		t.Fatal("failed to refresh expired complete capture", got)
+	}
+}

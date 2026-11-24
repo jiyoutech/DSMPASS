@@ -54,6 +54,57 @@ func completeDSMProfiles(ctx context.Context, path string, local map[string]syst
 	}
 }
 
+type directoryInventory struct {
+	expiry   *time.Timer
+	users    map[string]systemAccount
+	profiles map[string]dsmUserProfile
+}
+
+func readDirectoryInventory(ctx context.Context, cfg config.HelperConfig) (*directoryInventory, error) {
+	users, err := systemAccounts(cfg.PasswdPath, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := systemAccounts(cfg.GroupPath, true); err != nil {
+		return nil, err
+	}
+	profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, users)
+	if err != nil {
+		return nil, err
+	}
+	return &directoryInventory{users: users, profiles: profiles}, nil
+}
+
+func (s *Server) captureDirectory(ctx context.Context, cfg config.HelperConfig, runID string) map[string]any {
+	if runID == "" || cfg.SynoWebAPIPath == "" || cfg.AccountPolicyPath == "" {
+		return errorResponse("DSM_SNAPSHOT_UNAVAILABLE", "DSM directory snapshot unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	var inventory *directoryInventory
+	err := withFileLock(cfg.ShadowLockPath, func() error {
+		var err error
+		inventory, err = readDirectoryInventory(ctx, cfg)
+		return err
+	})
+	if err != nil {
+		return errorResponse("DSM_SNAPSHOT_FAILED", err.Error())
+	}
+	// Release normally stops this timer. A backend crash also frees the inventory.
+	inventory.expiry = time.AfterFunc(time.Hour, func() { s.directories.CompareAndDelete(runID, inventory) })
+	if _, loaded := s.directories.LoadOrStore(runID, inventory); loaded {
+		inventory.expiry.Stop()
+		return errorResponse("DSM_SNAPSHOT_FAILED", "duplicate directory capture")
+	}
+	return map[string]any{"success": true}
+}
+
+func (s *Server) releaseDirectory(runID string) {
+	if old, ok := s.directories.LoadAndDelete(runID); ok {
+		old.(*directoryInventory).expiry.Stop()
+	}
+}
+
 func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig, payload map[string]any) map[string]any {
 	rows, ok := payload["dsm_users"].([]any)
 	if !ok || cfg.SynoWebAPIPath == "" || cfg.AccountPolicyPath == "" {
@@ -88,9 +139,24 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 		if err != nil {
 			return err
 		}
-		profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, local)
-		if err != nil {
-			return err
+		var inventory *directoryInventory
+		if id, captured := payload["snapshot_id"]; captured {
+			snapshotID, ok := id.(string)
+			if !ok || snapshotID == "" || snapshotID != payload["request_id"] {
+				return errors.New("directory snapshot ID mismatch")
+			}
+			value, ok := s.directories.Load(snapshotID)
+			if ok {
+				inventory = value.(*directoryInventory)
+			}
+		}
+		if inventory == nil {
+			// An older backend, an expired capture or a restarted Helper requires
+			// a fresh complete read before reporting any matches.
+			inventory, err = readDirectoryInventory(ctx, cfg)
+			if err != nil {
+				return err
+			}
 		}
 		offset := 0
 		for batch := range slices.Chunk(names, helperclient.UserProvisionBatchSize) {
@@ -105,11 +171,15 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 					continue
 				}
 				user, found := local[name]
+				captured, existed := inventory.users[name]
+				if found != existed || (found && captured.id != user.id) {
+					continue
+				}
 				if !found {
 					states[i] = 'm'
 					continue
 				}
-				profile, visible := profiles[name]
+				profile, visible := inventory.profiles[name]
 				if !visible || !profile.matches(user, rows[i].(map[string]any)) {
 					continue
 				}
