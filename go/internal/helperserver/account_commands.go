@@ -72,8 +72,8 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 			if err := target.resume(); err != nil {
 				return err
 			}
-			if info.Expired {
-				return errAccountDisabled
+			if restored, err := s.reconcileSyncDisable(cfg, username, info); err != nil || restored {
+				return err
 			}
 			grant, err := userEnrollment(cfg, username)
 			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired {
@@ -186,8 +186,9 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 		return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 	}
 	dingTalk := payload["action"] == "scoped_disable_dingtalk_user"
+	scoped := dingTalk || payload["action"] == "scoped_disable_missing_user"
 	authorize := func() error {
-		if !dingTalk {
+		if !scoped {
 			if err := requireManagedUser(cfg, username); err != nil {
 				return err
 			}
@@ -201,6 +202,13 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 			return errors.New("钉钉停用请求缺少身份或同步记录")
 		}
 		request := db.HelperAuthorizationQuery{Action: "dingtalk_offboard", SourceSlug: source, Subject: subject, AccountID: accountID, Username: username, RunID: runID}
+		if !dingTalk {
+			request.Action = "disable_missing_user"
+			if err := requireManagedUser(cfg, username); err != nil {
+				return err
+			}
+			return s.authorizeAccount(cfg, request)
+		}
 		grant, err := userEnrollment(cfg, username)
 		if errors.Is(err, os.ErrNotExist) {
 			request.Action = "dingtalk_offboard_absent"
@@ -243,13 +251,29 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 			if err := modifySynoUser(cfg.SynoUserPath, username, info.FullName, true, info.Mail); err != nil {
 				return err
 			}
-			if dingTalk {
+			if scoped {
 				verified, err := getSynoUser(cfg.SynoUserPath, username)
 				if err != nil {
 					return fmt.Errorf("读取停用后的 DSM 账号状态: %w", err)
 				}
-				if !verified.Expired {
+				if !verified.ExpiryKnown || !verified.Expired {
 					return errors.New("DSM 未确认账号已停用")
+				}
+				if info.ExpiryKnown && cfg.AccountPolicyPath != "" {
+					user, err := normalUser(cfg, username)
+					if err != nil {
+						return err
+					}
+					p, err := readAccountPolicy(cfg)
+					if err != nil {
+						return err
+					}
+					if p.SyncDisables == nil {
+						p.SyncDisables = make(map[string]syncDisableReceipt)
+					}
+					p.SyncDisables[username] = syncDisableReceipt{UID: user.id, Source: payload["source_slug"].(string), Subject: payload["subject"].(string), AccountID: payload["account_id"].(string), RunID: payload["run_id"].(string)}
+					disabled = true
+					return saveAccountPolicy(cfg, p)
 				}
 			}
 		}

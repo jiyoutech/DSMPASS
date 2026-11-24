@@ -325,7 +325,7 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		return s.provisionAccounts(ctx, cfg, payload)
 	case "scoped_provision_user":
 		return s.provisionAccount(ctx, cfg, payload)
-	case "scoped_disable_dingtalk_user", "scoped_disable_user":
+	case "scoped_disable_dingtalk_user", "scoped_disable_missing_user", "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
 	case "scoped_web_login_approval":
 		return s.webLoginApproval(cfg, payload)

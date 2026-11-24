@@ -679,7 +679,9 @@ func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug s
 	var operations []syncsvc.PlanItem
 	var accountErrors []error
 	disableRows, err := s.store.DBTX().QueryContext(ctx, `
-		SELECT DISTINCT a.id, a.dsm_username
+		SELECT DISTINCT a.id, a.dsm_username, COALESCE((SELECT MIN(e.subject)
+			FROM dsm_mapping_entries m JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=a.app_identity_id AND e.provider_slug=m.provider_slug
+			WHERE m.dsm_account_id=a.id AND m.mapping_type='user' AND m.provider_slug=? HAVING COUNT(DISTINCT e.subject)=1),'')
 		FROM dsm_accounts a
 		WHERE a.provision_status <> 'disabled' AND a.provision_status <> 'conflict'
 		  AND EXISTS (
@@ -696,18 +698,19 @@ func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug s
 		WHERE me.mapping_type = 'user'
 			  AND me.active = 1
 			  AND me.dsm_account_id = a.id
-		  )`, sourceSlug)
+		  )`, sourceSlug, sourceSlug)
 	if err != nil {
 		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	type pendingUserDisable struct {
+		subject   string
 		accountID string
 		username  string
 	}
 	var pendingDisables []pendingUserDisable
 	for disableRows.Next() {
 		var item pendingUserDisable
-		if err := disableRows.Scan(&item.accountID, &item.username); err != nil {
+		if err := disableRows.Scan(&item.accountID, &item.username, &item.subject); err != nil {
 			disableRows.Close()
 			return operations, errors.Join(append(accountErrors, err)...)
 		}
@@ -723,7 +726,14 @@ func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug s
 	}
 	for _, item := range pendingDisables {
 		accountID, username := item.accountID, item.username
-		if _, err := s.helper.DisableUser(ctx, "sync_disable_"+randomHex(8), username); err != nil {
+		id := "sync_disable_" + randomHex(8)
+		var err error
+		if client, ok := s.helper.(helperclient.MissingUserClient); ok {
+			err = client.DisableMissingUser(ctx, id, runID, sourceSlug, accountID, item.subject, username)
+		} else {
+			_, err = s.helper.DisableUser(ctx, id, username)
+		}
+		if err != nil {
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "failed", "active", "active", err.Error())
 			accountErrors = append(accountErrors, fmt.Errorf("停用 %s: %w", username, err))
 			continue

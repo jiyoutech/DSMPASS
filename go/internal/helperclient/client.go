@@ -250,8 +250,20 @@ func provisionUserResult(response map[string]any, initialPassword string, err er
 	return ProvisionUserResult{Created: created, InitialPasswordApplied: err == nil && explicit && applied && initialPassword != ""}, err
 }
 
+type MissingUserClient interface {
+	DisableMissingUser(context.Context, string, string, string, string, string, string) error
+}
+
+func (c UnixSocketClient) DisableMissingUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
+	return c.disableDirectoryUser(ctx, "scoped_disable_missing_user", requestID, runID, source, accountID, subject, username)
+}
+
 func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
-	response, err := c.send(ctx, map[string]any{"action": "scoped_disable_dingtalk_user", "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
+	return c.disableDirectoryUser(ctx, "scoped_disable_dingtalk_user", requestID, runID, source, accountID, subject, username)
+}
+
+func (c UnixSocketClient) disableDirectoryUser(ctx context.Context, action, requestID, runID, source, accountID, subject, username string) error {
+	response, err := c.send(ctx, map[string]any{"action": action, "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
 	if err != nil {
 		return err
 	}
