@@ -89,7 +89,17 @@ func (e *Engine) MapSnapshot(ctx context.Context, directory provider.Directory, 
 	if e.options.TrackAccountSuspensions {
 		result.AccountSuspensions = make(map[string]bool, len(users))
 	}
-	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
+	var duplicateUserNames map[string]int
+	var numbered map[string]string
+	if providerName == "钉钉" {
+		var err error
+		numbered, err = e.dingTalkNumberedNames(ctx, directory.Slug(), users, "/etc/passwd")
+		if err != nil {
+			return result, err
+		}
+	} else {
+		duplicateUserNames = duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
+	}
 	for index, user := range users {
 		if e.options.TrackAccountSuspensions {
 			if user.Subject == "" || user.ProviderSlug != directory.Slug() {
@@ -134,11 +144,17 @@ func (e *Engine) MapSnapshot(ctx context.Context, directory provider.Directory, 
 			e.report("写入用户映射", index+1, len(users), user.DisplayName)
 			continue
 		}
-		appIdentity, identityLinkedExisting, err := identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
-		if err != nil {
-			return result, err
+		var account db.DSMAccount
+		var accountCreated, identityLinkedExisting bool
+		if name, assign := numbered[external.SubjectNorm]; assign {
+			account, err = identityService.AssignNumberedDingTalkAccount(ctx, external, name)
+		} else {
+			var owner db.AppIdentity
+			owner, identityLinkedExisting, err = identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
+			if err == nil {
+				account, accountCreated, err = identityService.EnsureDSMAccountWithCreated(ctx, owner)
+			}
 		}
-		account, accountCreated, err := identityService.EnsureDSMAccountWithCreated(ctx, appIdentity)
 		if err != nil {
 			return result, err
 		}

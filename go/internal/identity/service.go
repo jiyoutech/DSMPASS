@@ -116,29 +116,40 @@ func (s *Service) ResolveOrCreateIdentityWithLinkedExisting(ctx context.Context,
 				return db.AppIdentity{}, false, err
 			}
 			if hasDifferentProvider && !hasSameProvider {
-				if err := s.linkExternalToIdentity(ctx, external.ID, existing.AppIdentityID); err != nil {
+				owner, err := s.getIdentity(ctx, existing.AppIdentityID)
+				if err != nil {
 					return db.AppIdentity{}, false, err
 				}
-				identity, err := s.getIdentity(ctx, existing.AppIdentityID)
-				return identity, true, err
+				// A generated numeric suffix can also be somebody else's literal name.
+				natural, nameErr := s.allocateUsernameForDisplayName(owner.DisplayName)
+				if existing.Managed == 0 || (nameErr == nil && Normalize(natural) == Normalize(username)) {
+					if err := s.linkExternalToIdentity(ctx, external.ID, owner.ID); err != nil {
+						return db.AppIdentity{}, false, err
+					}
+					return owner, true, nil
+				}
 			}
 		} else if !errors.Is(existingErr, sql.ErrNoRows) {
 			return db.AppIdentity{}, false, existingErr
 		}
 	}
+	owner, err := s.createIdentity(ctx, external)
+	return owner, false, err
+}
+
+func (s *Service) createIdentity(ctx context.Context, external db.ExternalAccount) (db.AppIdentity, error) {
 	id := uuid.NewString()
 	_, err := s.q.DBTX().ExecContext(ctx, `
 	INSERT INTO app_identities (id, display_name, primary_email, primary_email_norm, status, created_by, created_at, updated_at)
 	VALUES (?, ?, ?, ?, 'active', 'system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	`, id, external.DisplayName, external.Email, external.EmailNorm)
 	if err != nil {
-		return db.AppIdentity{}, false, err
+		return db.AppIdentity{}, err
 	}
 	if err := s.linkExternalToIdentity(ctx, external.ID, id); err != nil {
-		return db.AppIdentity{}, false, err
+		return db.AppIdentity{}, err
 	}
-	identity, err := s.getIdentity(ctx, id)
-	return identity, false, err
+	return s.getIdentity(ctx, id)
 }
 
 func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity) (db.DSMAccount, error) {
