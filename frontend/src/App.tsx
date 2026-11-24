@@ -671,6 +671,15 @@ function Onboarding({
   );
 }
 
+const helperControlPath = "/usr/local/libexec/dsmpass/helper-control.sh";
+const restartHelperCommands = `sudo ${helperControlPath} restart &&
+sudo ${helperControlPath} status`;
+const installHelperCommands = `if [ -x ${helperControlPath} ]; then
+  sudo ${helperControlPath} stop
+fi &&
+sudo /var/packages/DSMPASS/target/setup-helper-sudo.sh &&
+${restartHelperCommands}`;
+
 function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => void }) {
   const initialParams = new URLSearchParams(window.location.search);
   const initialPage = initialParams.get("page");
@@ -874,20 +883,12 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                   description={`登录和同步将在初始化完成后恢复。日志较多时需要等待，页面会自动检查进度，无需反复重启。${helperDetails?.startup_error ? `迁移尚未完成：${helperDetails.startup_error}。修复原因后会自动重试。` : ""}`}
                 />
               )}
-              {helperNeedsRestart && (
-                <Alert type="warning" showIcon className="runtime-alert"
-                  message="Helper 更新待生效，请重启 Helper"
-                  description={helperStatus.data?.error}
-                  action={<Button icon={<ReloadOutlined />} loading={helperRestarting}
-                    onClick={() => void restartAndCheckHelper()}>重启并检查 Helper</Button>}
-                />
-              )}
-              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && !helperNeedsRestart && (
+              {(helperNeedsRestart || (!helperStatus.loading && !helperPermissionOK && !helperInitializing)) && (
                 <Alert
-                  type="error"
+                  type={helperNeedsRestart ? "warning" : "error"}
                   showIcon
                   className="runtime-alert"
-                  message="Helper 尚未就绪，登录和同步可能不可用"
+                  message={helperNeedsRestart ? "Helper 更新待生效，请重启 Helper" : "Helper 尚未就绪，登录和同步可能不可用"}
                   description={
                     <div className="runtime-alert-detail">
                       <div>
@@ -895,23 +896,21 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                           ? `当前 EUID: ${helperDetails?.euid ?? "-"}，synouser: ${helperDetails?.synouser_status?.error ?? "ok"}，synogroup: ${helperDetails?.synogroup_status?.error ?? "ok"}`
                           : helperStatus.error ?? "Helper 不可连接")}
                       </div>
-                      <div>
-                        请先点击“重启并检查 Helper”。完成首次管理员初始化后，带有效发行签名的套件会自动更新 Helper。首次从旧机制迁移，或自行编译的未签名套件，需要管理员执行下面的安装命令。
-                      </div>
-                      <pre><code>ssh 管理员账号@NAS_IP{"\n"}sudo -i{"\n"}/var/packages/DSMPASS/target/setup-helper-sudo.sh{"\n"}# 回到本页面点击「重启并检查 Helper」后，再检查 socket 是否生成{"\n"}ls -l /run/dsmpass/helper.sock</code></pre>
-                      <div>
-                        正常结果应显示 `helper.sock`，并且权限列以 `s` 开头，例如 `srw-rw----`；如果显示 `No such file or directory`，说明 Helper 还没有成功启动。
-                      </div>
                       <Space>
-                        <Button
-                          htmlType="button"
-                          icon={<ReloadOutlined />}
-                          loading={helperRestarting}
-                          onClick={() => void restartAndCheckHelper()}
-                        >
-                          重启并检查 Helper
-                        </Button>
+                        <Button htmlType="button" icon={<ReloadOutlined />} loading={helperRestarting}
+                          onClick={() => void restartAndCheckHelper()}>重启并检查 Helper</Button>
                       </Space>
+                      <div>手动重启时，请用 DSM 管理员账号通过 SSH 登录 NAS，执行以下命令重启 Helper 并检查运行状态。</div>
+                      <Typography.Paragraph className="runtime-command" copyable={{ text: restartHelperCommands }}>
+                        <pre>{restartHelperCommands}</pre>
+                      </Typography.Paragraph>
+                      <details>
+                        <summary>首次安装、未签名升级或重启后版本仍不匹配</summary>
+                        <div>在同一 SSH 终端执行以下命令，安装套件自带的 Helper，再重启并检查。完成后刷新管理后台，确认 Helper 已就绪。</div>
+                        <Typography.Paragraph className="runtime-command" copyable={{ text: installHelperCommands }}>
+                          <pre>{installHelperCommands}</pre>
+                        </Typography.Paragraph>
+                      </details>
                     </div>
                   }
                 />
