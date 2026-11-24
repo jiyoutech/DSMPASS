@@ -18,6 +18,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
+var ErrMembershipOnly = errors.New("仅结束该身份的部门同步")
+
 var ErrAccountAbsent = errors.New("DSM 已确认账号不存在")
 var ErrAccountDisabled = errors.New("DSM 账号已停用，需核实后恢复")
 var ErrDirectoryMembershipOnly = errors.New("此账号仅同步部门成员，保留原密码")
@@ -284,6 +286,9 @@ func (c UnixSocketClient) disableDirectoryUser(ctx context.Context, action, requ
 	response, err := c.send(ctx, map[string]any{"action": action, "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
 	if err != nil {
 		return err
+	}
+	if action == "scoped_disable_missing_user" && response["membership_only"] == true && response["disabled"] == false && response["absent"] == false {
+		return ErrMembershipOnly
 	}
 	if response["absent"] == true && response["disabled"] == false {
 		return ErrAccountAbsent
