@@ -85,6 +85,7 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 		return nil, err
 	}
 	var scopes []db.HelperMemberScope
+	newPins := false
 	for _, name := range users {
 		grant, err := enrolledLocalUser(policy, name, localUsers, localGroups)
 		if err != nil {
@@ -97,6 +98,13 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 			return nil, helperclient.ErrGroupBatchUnsupported
 		}
 		pinned := grant.Groups[group] == before.id
+		if !pinned && grant.DingTalk == nil {
+			if err := s.pinMatchedMembership(cfg, &policy, name, before); err != nil {
+				return nil, err
+			}
+			newPins = true
+			pinned = true
+		}
 		if !isLocalDirectoryGroup(group, before.id) || (!pinned && grant.DingTalk == nil) {
 			return nil, errors.New("通讯录成员关系与当前 DSM 群组不符")
 		}
@@ -104,6 +112,11 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 	}
 	if len(scopes) != 0 {
 		if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "directory_member_batch", Groupname: group, Members: scopes}); err != nil {
+			return nil, err
+		}
+	}
+	if newPins {
+		if err := saveAccountPolicy(cfg, policy); err != nil {
 			return nil, err
 		}
 	}
