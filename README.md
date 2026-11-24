@@ -102,7 +102,7 @@ Feishu / WeCom / DingTalk OAuth
 
 ### 下载 SPK
 
-本分支的升级目标为 **0.8.53 单身份源版**，支持从飞书、企业微信和钉钉中选择一个身份源。
+本分支的升级目标为 **0.8.54 单身份源版**，支持从飞书、企业微信和钉钉中选择一个身份源。
 
 公开安装包及校验文件请从 [GitHub Releases](https://github.com/jiyoutech/DSMPASS/releases/latest) 下载，按 NAS 架构选择同一版本的文件。
 
