@@ -1,5 +1,5 @@
 import { ReloadOutlined, SafetyCertificateOutlined, UploadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Typography, Upload } from "antd";
+import { Alert, App as AntApp, Button, Card, Flex, Form, Input, InputNumber, Menu, Segmented, Select, Space, Switch, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -219,7 +219,7 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
                 label={<HelpLabel label="管理后台监听端口" help={systemFieldHelp.adminPort} />}
                 extra={<>
                   {fieldEffectHelp.adminPort}<br />
-                  <Typography.Text code copyable>sudo /var/packages/DSMPASS/scripts/start-stop-status restart</Typography.Text>
+                  在 DSM 套件中心停止 DSMPASS，再启动套件。
                 </>}
               >
                 <InputNumber disabled controls={false} precision={0} className="settings-full-input" />

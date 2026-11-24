@@ -674,7 +674,7 @@ function Onboarding({
 const helperControlPath = "/usr/local/libexec/dsmpass/helper-control.sh";
 const restartHelperCommands = `sudo ${helperControlPath} restart &&
 sudo ${helperControlPath} status`;
-const installHelperCommands = `if [ -x ${helperControlPath} ]; then
+const installHelperCommands = `if [ -x ${helperControlPath} ] && [ ! -f /usr/local/libexec/dsmpass/retained ]; then
   sudo ${helperControlPath} stop
 fi &&
 sudo /var/packages/DSMPASS/target/setup-helper-sudo.sh &&
@@ -905,8 +905,8 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                         <pre>{restartHelperCommands}</pre>
                       </Typography.Paragraph>
                       <details>
-                        <summary>首次安装、未签名升级或重启后版本仍不匹配</summary>
-                        <div>在同一 SSH 终端执行以下命令，安装套件自带的 Helper，再重启并检查。完成后刷新管理后台，确认 Helper 已就绪。</div>
+                        <summary>首次安装、保留数据重装或更新后版本仍不匹配</summary>
+                        <div>确认已安装来自可信来源的套件后，在同一 SSH 终端安装 Helper，再重启并检查。完成后刷新管理后台，确认 Helper 已就绪。</div>
                         <Typography.Paragraph className="runtime-command" copyable={{ text: installHelperCommands }}>
                           <pre>{installHelperCommands}</pre>
                         </Typography.Paragraph>

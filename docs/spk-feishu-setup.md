@@ -296,11 +296,7 @@ sudo rm -f /etc/sudoers.d/DSMPASS-helper
 4. 重新发布飞书应用。
 5. 再做一次登录验证。
 
-修改 SPK 环境变量后，重启套件：
-
-```bash
-sudo /var/packages/DSMPASS/scripts/start-stop-status restart
-```
+修改 SPK 环境变量后，在 DSM 套件中心停止 DSMPASS，再启动套件。
 
 查看日志：
 
