@@ -76,6 +76,7 @@ func (s *Server) runProviderCleanup(ctx context.Context, slug string, remove boo
 		progress.setTotal(ctx, "禁用 DSM 用户", "正在核对 DSM 用户", len(targets))
 	}
 	var disabledDSMUsers int64
+	var cleanupErrors []error
 	for _, target := range targets {
 		var outcome string
 		if client, ok := s.helper.(helperclient.CleanupClient); ok {
@@ -89,7 +90,8 @@ func (s *Server) runProviderCleanup(ctx context.Context, slug string, remove boo
 			outcome = "disabled"
 		}
 		if err != nil {
-			return nil, http.StatusBadGateway, fmt.Errorf("清理 %s 失败，映射已保留，可重试：%w", target.Name, err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("清理 %s 失败，映射已保留，可重试：%w", target.Name, err))
+			continue
 		}
 		if err = saveObjectState(ctx, s.store.DBTX(), target.Name, `UPDATE source_cleanup_targets SET outcome=? WHERE request_id=?`, outcome, target.RequestID); err != nil {
 			return nil, http.StatusInternalServerError, err
@@ -100,6 +102,9 @@ func (s *Server) runProviderCleanup(ctx context.Context, slug string, remove boo
 		if progress != nil {
 			progress.step(ctx, "核对 DSM 用户", target.Name)
 		}
+	}
+	if len(cleanupErrors) > 0 {
+		return nil, http.StatusBadGateway, errors.Join(cleanupErrors...)
 	}
 	var deletedSyncRuns, deletedSyncLogs, deletedAuditLogs int64
 	if s.logs() != s.store {
@@ -284,6 +289,9 @@ func deleteIdentitySourceData(ctx context.Context, tx db.DBTX, slug string) (gin
 }
 
 func deleteIdentitySourceDataWithIDs(ctx context.Context, tx db.DBTX, slug string, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs []string) (gin.H, error) {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM dingtalk_offboarding WHERE source_slug=?", slug); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM directory_owner_choices WHERE source_slug = ?`, slug); err != nil {
 		return nil, err
 	}

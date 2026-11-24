@@ -46,7 +46,11 @@ func (s *Server) recordDirectoryMatch(cfg config.HelperConfig, name string) (boo
 	if p.DirectoryUsers == nil {
 		p.DirectoryUsers = make(map[string]directoryUserGrant)
 	}
-	p.DirectoryUsers[name] = directoryUserGrant{UID: user.id}
+	origins, err := s.provisionOrigins(cfg, []string{name})
+	if err != nil {
+		return false, err
+	}
+	p.DirectoryUsers[name] = directoryUserGrant{UID: user.id, Source: origins[name].SourceSlug}
 	return true, saveAccountPolicy(cfg, p)
 }
 

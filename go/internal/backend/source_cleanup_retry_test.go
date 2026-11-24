@@ -46,6 +46,9 @@ func TestCleanupRetriesAfterPartialDisableOutsideTransaction(t *testing.T) {
 		for _, name := range []string{"alice", "bob"} {
 			seedSyncedAccount(t, ctx, database, "src", name, "ext-"+name, name, name, "2000-01-01")
 		}
+		if _, err := database.ExecContext(ctx, "INSERT INTO dingtalk_offboarding VALUES(\x27src\x27,\x27retired\x27,\x27employee\x27,\x27old\x27,\x27departed\x27)"); err != nil {
+			t.Fatal(err)
+		}
 		h := &retryCleanupHelper{db: database, requests: map[string]string{}, fail: true}
 		s := newServer(config.BackendConfig{}, h, database, q)
 		if _, _, err := s.runProviderCleanup(ctx, "src", remove, nil); err == nil {
@@ -62,6 +65,9 @@ func TestCleanupRetriesAfterPartialDisableOutsideTransaction(t *testing.T) {
 		s = newServer(config.BackendConfig{}, h, database, q)
 		if _, _, err := s.runProviderCleanup(ctx, "src", remove, nil); err != nil {
 			t.Fatal(err)
+		}
+		if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM dingtalk_offboarding").Scan(&count); err != nil || count != 0 {
+			t.Fatal(count, err)
 		}
 		if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM source_cleanup_targets").Scan(&count); err != nil || count != 0 {
 			t.Fatal(count, err)

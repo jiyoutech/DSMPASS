@@ -20,6 +20,7 @@ import (
 // Existing DSM accounts are enrolled by the root install migration or an
 // explicit root action. The installer can also pin local groups for directory reuse.
 type directoryUserGrant struct {
+	Source   string                  `json:"source,omitempty"`
 	DingTalk *db.DingTalkUserBinding `json:"dingtalk,omitempty"`
 	UID      int                     `json:"uid"`
 	Groups   map[string]int          `json:"groups,omitempty"`
@@ -37,6 +38,7 @@ type verifiedAccountCandidate struct {
 }
 
 type accountPolicy struct {
+	CleanupResults          map[string]cleanupResult            `json:"cleanup_results,omitempty"`
 	CreatedUsers            map[string]db.AccountOrigin         `json:"created_users,omitempty"`
 	SyncDisables            map[string]syncDisableReceipt       `json:"sync_disables,omitempty"`
 	LoginApprovals          map[string]loginApprovalTicket      `json:"pending_login_approvals,omitempty"`
@@ -119,7 +121,7 @@ func normalLocalUser(username string, users, groups map[string]systemAccount) (s
 		return a, os.ErrNotExist
 	}
 	if a.id < 1024 || a.gid == 0 {
-		return a, errors.New("system or privileged account is forbidden")
+		return a, errPrivilegedUser
 	}
 	for name, other := range users {
 		if name != username && other.id == a.id {
@@ -131,7 +133,7 @@ func normalLocalUser(username string, users, groups map[string]systemAccount) (s
 		return a, errors.New("cannot determine DSM administrator membership")
 	}
 	if a.gid == admins.id {
-		return a, errors.New("DSM administrator account is forbidden")
+		return a, errPrivilegedUser
 	}
 	for _, group := range groups {
 		if group.id != 0 && group.id != admins.id {
@@ -139,7 +141,7 @@ func normalLocalUser(username string, users, groups map[string]systemAccount) (s
 		}
 		for _, member := range group.members {
 			if member == username {
-				return a, errors.New("DSM administrator account is forbidden")
+				return a, errPrivilegedUser
 			}
 		}
 	}
@@ -212,6 +214,8 @@ func readAccountPolicy(cfg config.HelperConfig) (accountPolicy, error) {
 // System UIDs are nonnegative. Older Helpers also deny this binding.
 const revokedUserID = -1
 
+var errPrivilegedUser = errors.New("DSM administrator or system account is forbidden")
+var errRevokedUser = errors.New("授权已撤销")
 var errUserNotEnrolled = errors.New("尚未登记")
 
 var errDingTalkMembershipOnly = errors.New("此账号已关联钉钉通讯录，仅用于同步群组成员。现有绑定没有 DSM 登录及改密授权")
@@ -272,7 +276,7 @@ func enrolledLocalUser(p accountPolicy, username string, users, groups map[strin
 		return nil, fmt.Errorf("DSM 用户 %q %w（当前 UID %d），请管理员运行 setup-helper-sudo.sh 批量核对当前映射", username, errUserNotEnrolled, a.id)
 	}
 	if id == revokedUserID {
-		return nil, fmt.Errorf("DSM 用户 %q 的授权已撤销", username)
+		return nil, fmt.Errorf("DSM 用户 %q 的%w", username, errRevokedUser)
 	}
 	if id != a.id {
 		return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d，请管理员核实是否为同一账号", username, id, a.id)
@@ -366,6 +370,7 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		delete(p.ReusableGroups, name)
 		delete(p.WebApprovals, name)
 	} else {
+		delete(p.CleanupResults, name)
 		delete(p.CreatedUsers, name)
 		delete(p.SyncDisables, name)
 		delete(p.DirectoryUsers, name)
@@ -416,7 +421,7 @@ func ManageAccountPolicy(cfg config.HelperConfig, action, name string) error {
 	}
 	group := action == "authorize-group" || action == "revoke-group"
 	revoke := action == "revoke-user" || action == "revoke-group"
-	if action != "authorize-user" && action != "authorize-group" && !revoke {
+	if action != "forget-absent-user" && action != "authorize-user" && action != "authorize-group" && !revoke {
 		return errors.New("unsupported policy command")
 	}
 	if group {
@@ -425,6 +430,9 @@ func ManageAccountPolicy(cfg config.HelperConfig, action, name string) error {
 		}
 	} else if err := assertAllowed(cfg, name); err != nil {
 		return err
+	}
+	if action == "forget-absent-user" {
+		return withAccountMutation(cfg, name, false, func() error { return forgetAbsentUser(cfg, name) })
 	}
 	apply := func() error {
 		return withFileLock(cfg.ShadowLockPath, func() error { return updateAccountPolicy(cfg, name, group, revoke) })
