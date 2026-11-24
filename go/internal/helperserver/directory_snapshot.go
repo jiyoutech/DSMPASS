@@ -55,24 +55,78 @@ func completeDSMProfiles(ctx context.Context, path string, local map[string]syst
 }
 
 type directoryInventory struct {
+	stamp    directoryStamp
 	expiry   *time.Timer
 	users    map[string]systemAccount
 	profiles map[string]dsmUserProfile
 }
 
+// Native account and group files may also be changed outside the Helper.
+type directoryStamp [3]os.FileInfo
+
+func readDirectoryStamp(cfg config.HelperConfig) (directoryStamp, error) {
+	var stamp directoryStamp
+	for i, path := range []string{cfg.PasswdPath, cfg.GroupPath, cfg.ShadowPath} {
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return stamp, err
+		}
+		stamp[i] = info
+	}
+	return stamp, nil
+}
+func (stamp directoryStamp) matches(other directoryStamp) bool {
+	for i, info := range stamp {
+		current := other[i]
+		if info == nil && current == nil {
+			continue
+		}
+		if info == nil || current == nil || !os.SameFile(info, current) || info.Size() != current.Size() || !info.ModTime().Equal(current.ModTime()) {
+			return false
+		}
+	}
+	return true
+}
 func readDirectoryInventory(ctx context.Context, cfg config.HelperConfig) (*directoryInventory, error) {
-	users, err := systemAccounts(cfg.PasswdPath, false)
-	if err != nil {
-		return nil, err
+	for attempt := 0; attempt < 2; attempt++ {
+		var inventory directoryInventory
+		err := withFileLockContext(ctx, cfg.ShadowLockPath, func() error {
+			var err error
+			inventory.stamp, err = readDirectoryStamp(cfg)
+			if err != nil {
+				return err
+			}
+			inventory.users, err = systemAccounts(cfg.PasswdPath, false)
+			if err != nil {
+				return err
+			}
+			_, err = systemAccounts(cfg.GroupPath, true)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		inventory.profiles, err = completeDSMProfiles(ctx, cfg.SynoWebAPIPath, inventory.users)
+		var current directoryStamp
+		if checkErr := withFileLockContext(ctx, cfg.ShadowLockPath, func() error {
+			var err error
+			current, err = readDirectoryStamp(cfg)
+			return err
+		}); checkErr != nil {
+			return nil, checkErr
+		}
+		if !inventory.stamp.matches(current) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &inventory, nil
 	}
-	if _, err := systemAccounts(cfg.GroupPath, true); err != nil {
-		return nil, err
-	}
-	profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, users)
-	if err != nil {
-		return nil, err
-	}
-	return &directoryInventory{users: users, profiles: profiles}, nil
+	return nil, errors.New("采集期间 DSM 账号目录已变化，请重试")
 }
 
 func (s *Server) captureDirectory(ctx context.Context, cfg config.HelperConfig, runID string) map[string]any {
@@ -81,12 +135,7 @@ func (s *Server) captureDirectory(ctx context.Context, cfg config.HelperConfig, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	var inventory *directoryInventory
-	err := withFileLock(cfg.ShadowLockPath, func() error {
-		var err error
-		inventory, err = readDirectoryInventory(ctx, cfg)
-		return err
-	})
+	inventory, err := readDirectoryInventory(ctx, cfg)
 	if err != nil {
 		return errorResponse("DSM_SNAPSHOT_FAILED", err.Error())
 	}
@@ -125,8 +174,28 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	var err error
+	var inventory *directoryInventory
+	if id, captured := payload["snapshot_id"]; captured {
+		snapshotID, ok := id.(string)
+		if !ok || snapshotID == "" || snapshotID != payload["request_id"] {
+			return errorResponse("BAD_REQUEST", "directory snapshot ID mismatch")
+		}
+		value, ok := s.directories.Load(snapshotID)
+		if ok {
+			inventory = value.(*directoryInventory)
+		}
+	}
+	if inventory == nil {
+		// An older backend, an expired capture or a restarted Helper requires
+		// a fresh complete read before reporting any matches.
+		inventory, err = readDirectoryInventory(ctx, cfg)
+		if err != nil {
+			return errorResponse("DSM_SNAPSHOT_FAILED", err.Error())
+		}
+	}
 	states := make([]byte, len(names))
-	err := withFileLock(cfg.ShadowLockPath, func() error {
+	err = withFileLockContext(ctx, cfg.ShadowLockPath, func() error {
 		local, err := systemAccounts(cfg.PasswdPath, false)
 		if err != nil {
 			return err
@@ -139,25 +208,11 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 		if err != nil {
 			return err
 		}
-		var inventory *directoryInventory
-		if id, captured := payload["snapshot_id"]; captured {
-			snapshotID, ok := id.(string)
-			if !ok || snapshotID == "" || snapshotID != payload["request_id"] {
-				return errors.New("directory snapshot ID mismatch")
-			}
-			value, ok := s.directories.Load(snapshotID)
-			if ok {
-				inventory = value.(*directoryInventory)
-			}
+		current, err := readDirectoryStamp(cfg)
+		if err != nil {
+			return err
 		}
-		if inventory == nil {
-			// An older backend, an expired capture or a restarted Helper requires
-			// a fresh complete read before reporting any matches.
-			inventory, err = readDirectoryInventory(ctx, cfg)
-			if err != nil {
-				return err
-			}
-		}
+		sameGeneration := inventory.stamp.matches(current)
 		offset := 0
 		for batch := range slices.Chunk(names, helperclient.UserProvisionBatchSize) {
 			allowed, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "provision_users", Usernames: batch})
@@ -180,7 +235,7 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 					continue
 				}
 				profile, visible := inventory.profiles[name]
-				if !visible || !profile.matches(user, rows[i].(map[string]any)) {
+				if !sameGeneration || !visible || !profile.matches(user, rows[i].(map[string]any)) {
 					continue
 				}
 				if s.canConfirmDirectoryUser(cfg, policy, name, local, groups) {
@@ -198,6 +253,9 @@ func (s *Server) directorySnapshot(ctx context.Context, cfg config.HelperConfig,
 }
 
 func (s *Server) canConfirmDirectoryUser(cfg config.HelperConfig, policy accountPolicy, name string, users, groups map[string]systemAccount) bool {
+	if _, pending := policy.SyncDisables[name]; pending {
+		return false
+	}
 	if _, bound := policy.CredentialOwners[name]; bound {
 		return false
 	}

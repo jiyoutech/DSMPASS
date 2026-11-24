@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A one-row first page forces traversal even when all requested names appear on it.
@@ -103,5 +104,41 @@ func TestDirectoryCaptureMatchesOnlyItsRunAndRechecksCurrentUIDs(t *testing.T) {
 	current("second")
 	if got := s.directorySnapshot(context.Background(), cfg, request("b")); got["states"] != "mrm" {
 		t.Fatal("failed to refresh expired complete capture", got)
+	}
+}
+
+func TestSlowDirectoryPageReleasesAccountWriter(t *testing.T) {
+	cfg := policyTestConfig(t)
+	dir := t.TempDir()
+	cfg.SynoWebAPIPath = filepath.Join(dir, "list")
+	script := `#!/bin/sh
+touch "$0.started"
+while [ ! -f "$0.release" ]; do sleep 0.02; done
+echo '{"success":true,"data":{"offset":0,"total":0,"users":[]}}'
+`
+	if err := os.WriteFile(cfg.SynoWebAPIPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := readDirectoryInventory(ctx, cfg); done <- err }()
+	for {
+		if _, err := os.Stat(cfg.SynoWebAPIPath + ".started"); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	writer, cancelWriter := context.WithTimeout(ctx, time.Second)
+	defer cancelWriter()
+	if err := withFileLockContext(writer, cfg.ShadowLockPath, func() error { return os.WriteFile(cfg.SynoWebAPIPath+".release", nil, 0600) }); err != nil {
+		t.Fatal("directory scan blocked account writer", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
