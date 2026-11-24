@@ -64,16 +64,16 @@ func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig
 		return results, nil
 	}
 	createdIDs := map[string]int{}
-	// Keep account locks through the common readback. Other accounts can use
-	// the global writer between the native create windows.
-	err = withUserCreateLocks(userCreateLockPaths(cfg.LockDir, missing), func() error {
-		for group := range slices.Chunk(missing, maxConcurrentUserCreates) {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if len(group) < 2 {
-				break
-			}
+	// Release account locks as soon as this wave's successful UIDs are pinned.
+	// Final readback checks those same UIDs and the current enrollment under the writer lock.
+	for group := range slices.Chunk(missing, maxConcurrentUserCreates) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(group) < 2 {
+			break
+		}
+		err := withUserCreateLocks(userCreateLockPaths(cfg.LockDir, group), func() error {
 			var absent []newDSMUser
 			for _, u := range group {
 				if _, err := getSynoUser(cfg.SynoUserPath, u.name); dsmUserNotFound(err) {
@@ -81,51 +81,55 @@ func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig
 				}
 			}
 			if len(absent) < 2 {
+				return nil
+			}
+			return withFileLock(cfg.ShadowLockPath, func() error {
+				return s.createUsersUnderWriter(ctx, cfg, absent, password, results, createdIDs)
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(createdIDs) == 0 {
+		return results, nil
+	}
+	err = withFileLock(cfg.ShadowLockPath, func() error {
+		local, err := systemAccounts(cfg.PasswdPath, false)
+		if err != nil {
+			return err
+		}
+		groups, err := systemAccounts(cfg.GroupPath, true)
+		if err != nil {
+			return err
+		}
+		policy, err := readAccountPolicy(cfg)
+		if err != nil {
+			return err
+		}
+		profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, local)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			name := row["dsm_username"].(string)
+			id, created := createdIDs[name]
+			if !created {
 				continue
 			}
-			if err := withFileLock(cfg.ShadowLockPath, func() error {
-				return s.createUsersUnderWriter(ctx, cfg, absent, password, results, createdIDs)
-			}); err != nil {
-				return err
+			user := local[name]
+			p, ok := profiles[name]
+			grant, err := enrolledLocalUser(policy, name, local, groups)
+			if err != nil || grant != nil || !ok || user.id != id || !p.matches(user, row) {
+				results[name] = errorResponse("DSM_PROFILE_UNCONFIRMED", "DSM did not confirm the new account UID and profile")
+				continue
 			}
+			// A password reset may have completed since this wave released its locks.
+			reset, err := loadPasswordReset(cfg, name)
+			initial := os.IsNotExist(err) || (err == nil && reset.Status == "completed" && reset.PasswordDigest == lineHash(password))
+			results[name] = map[string]any{"success": true, "created": true, "initial_password_applied": initial}
 		}
-		if len(createdIDs) == 0 {
-			return nil
-		}
-		return withFileLock(cfg.ShadowLockPath, func() error {
-			local, err := systemAccounts(cfg.PasswdPath, false)
-			if err != nil {
-				return err
-			}
-			groups, err := systemAccounts(cfg.GroupPath, true)
-			if err != nil {
-				return err
-			}
-			policy, err := readAccountPolicy(cfg)
-			if err != nil {
-				return err
-			}
-			profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, local)
-			if err != nil {
-				return err
-			}
-			for _, row := range rows {
-				name := row["dsm_username"].(string)
-				id, created := createdIDs[name]
-				if !created {
-					continue
-				}
-				user := local[name]
-				p, ok := profiles[name]
-				grant, err := enrolledLocalUser(policy, name, local, groups)
-				if err != nil || grant != nil || !ok || user.id != id || !p.matches(user, row) {
-					results[name] = errorResponse("DSM_PROFILE_UNCONFIRMED", "DSM did not confirm the new account UID and profile")
-					continue
-				}
-				results[name] = map[string]any{"success": true, "created": true, "initial_password_applied": checkPasswordResetPending(cfg, name) == nil}
-			}
-			return nil
-		})
+		return nil
 	})
 	if err != nil {
 		return nil, err

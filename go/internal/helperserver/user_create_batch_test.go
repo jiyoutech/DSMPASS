@@ -2,12 +2,14 @@ package helperserver
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDSMUserNotFoundRequiresNativeEvidence(t *testing.T) {
@@ -274,5 +276,86 @@ func TestSingleProvisionPreservesOutstandingReceiptAndRequiresConfirmedAbsence(t
 				t.Fatal("changed pending receipt", string(got), err)
 			}
 		})
+	}
+}
+
+func TestCreationReleasesEarlierAccountLocksBeforeBatchReadback(t *testing.T) {
+	cfg := policyTestConfig(t)
+	names := []string{"wave0", "wave1", "wave2", "wave3", "wave4", "wave5", "wave6", "wave7"}
+	s := NewWithStore(cfg, batchMemberTestStore(t, names, "engineering"))
+	dir := t.TempDir()
+	t.Setenv("TEST_DIR", dir)
+	t.Setenv("TEST_PASSWD", cfg.PasswdPath)
+	cfg.SynoUserPath = filepath.Join(dir, "user")
+	native := `#!/bin/sh
+if [ "$1" = --get ]; then
+  if [ "$2" = wave4 ]; then
+    touch "$TEST_DIR/second"
+    while [ ! -e "$TEST_DIR/continue" ]; do sleep 0.02; done
+  fi
+  echo 'synoerr=[0x1D00]' >&2
+  exit 255
+fi
+[ "$1" = --add ] || exit 1
+printf '%s:x:%s:100:%s:/:/bin/false\n' "$2" "201${2#wave}" "$4" >> "$TEST_PASSWD"
+`
+	if err := os.WriteFile(cfg.SynoUserPath, []byte(native), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SynoWebAPIPath = filepath.Join(dir, "webapi")
+	var profiles []map[string]any
+	var rows []any
+	for i, n := range names {
+		profiles = append(profiles, map[string]any{"name": n, "uid": 2010 + i, "email": "", "description": n, "expired": "normal"})
+		rows = append(rows, map[string]any{"dsm_username": n, "display_name": n, "email": ""})
+	}
+	list, err := json.Marshal(map[string]any{"success": true, "data": map[string]any{"offset": 0, "total": len(rows), "users": profiles}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.SynoWebAPIPath, []byte("#!/bin/sh\necho '"+string(list)+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan map[string]any, 1)
+	go func() {
+		done <- s.provisionAccounts(context.Background(), cfg, map[string]any{"dsm_users": rows, "initial_password": "fixture"})
+	}()
+	release := func() {
+		if err := os.WriteFile(filepath.Join(dir, "continue"), nil, 0600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer release()
+	until := time.Now().Add(4 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "second")); err == nil {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("second wave did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = withFileLockContext(ctx, lockPath(cfg.LockDir, names[0]), func() error {
+		if err := requireManagedUser(cfg, names[0]); err != nil {
+			return err
+		}
+		return savePasswordReset(cfg, passwordResetRecord{RequestID: "intervening-reset", Username: names[0], SourceSlug: "source", AccountID: "account", Status: "completed", PasswordDigest: lineHash("updated")})
+	})
+	release()
+	response := <-done
+	if err != nil {
+		t.Fatal("first account remained locked during second wave", err)
+	}
+	out, ok := response["user_results"].([]map[string]any)
+	if !ok || len(out) != len(names) {
+		t.Fatal(response)
+	}
+	for i, result := range out {
+		if result["created"] != true || result["initial_password_applied"] != (i != 0) {
+			t.Fatalf("incorrect post-create result %s: %v", names[i], result)
+		}
 	}
 }
