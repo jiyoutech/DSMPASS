@@ -9,8 +9,45 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/identity"
+	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
+
+func (s *Server) chooseDirectoryOwner(c *gin.Context) {
+	if !s.cfg.AdminAuthEnabled || !s.validAdminSession(c) {
+		c.JSON(http.StatusForbidden, gin.H{"detail": "请登录管理页面选择账号归属"})
+		return
+	}
+	var input struct {
+		Subject string `json:"subject"`
+		Reason  string `json:"reason"`
+	}
+	if c.ContentType() != "application/json" || c.ShouldBindJSON(&input) != nil || input.Subject == "" || !strings.HasPrefix(input.Reason, identity.OwnerChoicePrefix) {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "请选择当前候选员工"})
+		return
+	}
+	source := c.Param("slug")
+	directory, ok := s.directoryProvider(source)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
+		return
+	}
+	if !s.beginSourceSync(source) {
+		c.JSON(http.StatusConflict, gin.H{"detail": "此身份源正在同步，请稍后重试"})
+		return
+	}
+	ctx := c.Request.Context()
+	err := s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		return syncsvc.NewEngine(s.cfg, db.New(tx)).ChooseDirectoryOwner(ctx, source, c.Param("id"), input.Subject, input.Reason)
+	})
+	if err != nil {
+		s.endSourceSync(source)
+		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+		return
+	}
+	s.enqueueLockedProviderSync(c, directory, syncIncremental)
+}
 
 func (s *Server) dsmAccounts(c *gin.Context) {
 	providerSlug := c.Query("provider")
@@ -280,13 +317,13 @@ SELECT dsm_username_norm FROM dsm_accounts WHERE id = ?`, id).Scan(&currentUsern
 	result, err := s.store.DBTX().ExecContext(c.Request.Context(), `
 	UPDATE dsm_accounts
 	SET dsm_username = ?, dsm_username_norm = ?, managed = 0, provision_status = 'pending', conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP
-	WHERE id = ?`, username, usernameNorm, id)
+	WHERE id = ? AND instr(COALESCE(conflict_reason,''),?)<>1`, username, usernameNorm, id, identity.OwnerChoicePrefix)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "account not found"})
+		c.JSON(http.StatusConflict, gin.H{"detail": "账号已变化或需先选择已有账号的归属员工"})
 		return
 	}
 	rows, err := s.dsmAccountRows(c.Request.Context(), []string{id})

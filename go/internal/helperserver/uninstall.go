@@ -10,6 +10,21 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/securefs"
 )
 
+// Retained by the root administrator's preserve action. Package hooks can read
+// this marker, but only the protected controller can change it.
+const retainedHelperMarker = config.HelperInstallDir + "/retained"
+
+func helperIsRetained() (bool, error) {
+	_, err := os.Lstat(retainedHelperMarker)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, securefs.CheckRootPath(retainedHelperMarker)
+}
+
 func uninstallPrivilegedHelper(cfg config.HelperConfig, purge bool) error {
 	if err := stopPrivilegedHelper(cfg); err != nil {
 		return err
@@ -17,12 +32,22 @@ func uninstallPrivilegedHelper(cfg config.HelperConfig, purge bool) error {
 	return withFileLock(filepath.Join(cfg.LockDir, "helper.instance.lock"), func() error {
 		paths := []string{config.HelperSocketPath, filepath.Join(config.HelperRunDir, "helper.pid")}
 		if purge {
-			paths = append(paths, filepath.Dir(config.HelperConfigPath), config.HelperDataDir)
+			paths = append(paths, filepath.Dir(config.HelperConfigPath), config.HelperDataDir, helperSudoersPath, config.HelperInstallDir)
 		}
-		paths = append(paths, helperSudoersPath, config.HelperInstallDir)
 		// Runtime lock inodes stay until reboot to serialize already queued
 		// control processes. No executable, credentials or socket remain there.
-		return cleanupHelperFiles(cfg.JournalDir, paths, checkHelperCleanupPath)
+		if err := cleanupHelperFiles(cfg.JournalDir, paths, checkHelperCleanupPath); err != nil || purge {
+			return err
+		}
+		// Block ordinary control calls before narrowing sudo privileges. The root
+		// gate also covers a power loss between the two atomic replacements.
+		if err := securefs.WriteRootFile(retainedHelperMarker, []byte("retained\n"), 0644); err != nil {
+			return err
+		}
+		if err := installHelperSudoersRule(retainedHelperRule(), "upgrade"); err != nil {
+			return errors.Join(err, os.Remove(retainedHelperMarker))
+		}
+		return nil
 	})
 }
 

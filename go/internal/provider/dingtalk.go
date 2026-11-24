@@ -172,37 +172,58 @@ func (d DingTalk) ListUsersAndGroups() ([]User, []Group, error) {
 }
 
 func (d DingTalk) listUsers(token string, groups []Group) ([]User, error) {
-	usersBySubject := map[string]User{}
-	disabledByID := make(map[string]bool)
-	loadUser := d.cachedUserGetter(token)
-	for _, group := range groups {
-		items, err := d.departmentUsers(token, group.Subject)
-		if err != nil {
-			return nil, err
-		}
+	pages, err := readDirectoryItems(groups, func(group Group) ([]map[string]any, error) { return d.departmentUsers(token, group.Subject) })
+	if err != nil {
+		return nil, err
+	}
+	detailIndex := make(map[string]int)
+	type membership struct {
+		index int
+		group string
+	}
+	var memberships []membership
+	var ids []string
+	for i, items := range pages {
 		for _, raw := range items {
-			userID := firstStringish(raw, "userid", "userId", "user_id")
-			if userID == "" {
+			id := firstStringish(raw, "userid", "userId", "user_id")
+			if id == "" {
 				if d.cfg.CheckAccountStatus {
 					return nil, errors.New("钉钉部门成员缺少 userid，无法确认通讯录完整")
 				}
 				continue
 			}
-			detail, err := loadUser(userID)
-			if err != nil {
-				return nil, err
+			index, exists := detailIndex[id]
+			if !exists {
+				index = len(ids)
+				detailIndex[id] = index
+				ids = append(ids, id)
 			}
-			disabled, known := disabledByID[userID]
-			if exclusive, _ := detail["exclusive_account"].(bool); d.cfg.CheckAccountStatus && exclusive && !known {
-				disabled, err = d.enterpriseAccountDisabled(token, userID)
-				if err != nil {
-					return nil, err
-				}
-				disabledByID[userID] = disabled
-			}
-			if err := d.upsertUserFromRaw(usersBySubject, detail, []string{group.Subject}, disabled); err != nil {
-				return nil, err
-			}
+			memberships = append(memberships, membership{index, groups[i].Subject})
+		}
+	}
+	type userDetail struct {
+		raw      map[string]any
+		disabled bool
+	}
+	details, err := readDirectoryItems(ids, func(id string) (userDetail, error) {
+		raw, err := d.directoryUser(token, id)
+		if err != nil {
+			return userDetail{}, err
+		}
+		result := userDetail{raw: raw}
+		if exclusive, _ := raw["exclusive_account"].(bool); d.cfg.CheckAccountStatus && exclusive {
+			result.disabled, err = d.enterpriseAccountDisabled(token, id)
+		}
+		return result, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	usersBySubject := map[string]User{}
+	for _, member := range memberships {
+		detail := details[member.index]
+		if err := d.upsertUserFromRaw(usersBySubject, detail.raw, []string{member.group}, detail.disabled); err != nil {
+			return nil, err
 		}
 	}
 	return usersFromMap(usersBySubject), nil
@@ -366,15 +387,25 @@ func (d DingTalk) departmentUsers(token, departmentID string) ([]map[string]any,
 			"cursor":  cursor,
 			"size":    d.pageSize(),
 		}
-		var out map[string]any
-		if err := d.postJSON(endpoint, body, "", &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := d.postJSON(endpoint, body, "", &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		result, _ := out["result"].(map[string]any)
-		items := mapItems(result, "list")
+		items, err := directoryPageItems(result, "list")
+		if err != nil {
+			return nil, err
+		}
 		all = append(all, items...)
-		hasMore, moreOK := result["has_more"].(bool)
-		if raw, listOK := result["list"].([]any); d.cfg.CheckAccountStatus && (!moreOK || !listOK || len(raw) != len(items)) {
+		hasMore, err := directoryPageHasMore(result, "next_cursor")
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := result["has_more"].(bool); d.cfg.CheckAccountStatus && !ok {
 			return nil, errors.New("钉钉成员分页结果不完整")
 		}
 		if !hasMore {
@@ -406,20 +437,28 @@ func (d DingTalk) user(token, userID string) (map[string]any, error) {
 	return out, nil
 }
 
+func (d DingTalk) directoryUser(token, userID string) (map[string]any, error) {
+	detail, err := d.user(token, userID)
+	if err != nil {
+		return nil, err
+	}
+	if returnedID := firstStringish(detail, "userid", "userId", "user_id"); d.cfg.CheckAccountStatus && returnedID != "" && returnedID != userID {
+		return nil, errors.New("钉钉用户详情标识与请求不一致")
+	} else if returnedID == "" {
+		detail["userid"] = userID
+	}
+	return detail, nil
+}
+
 func (d DingTalk) cachedUserGetter(token string) func(string) (map[string]any, error) {
 	cache := map[string]map[string]any{}
 	return func(userID string) (map[string]any, error) {
 		if detail, ok := cache[userID]; ok {
 			return detail, nil
 		}
-		detail, err := d.user(token, userID)
+		detail, err := d.directoryUser(token, userID)
 		if err != nil {
 			return nil, err
-		}
-		if returnedID := firstStringish(detail, "userid", "userId", "user_id"); d.cfg.CheckAccountStatus && returnedID != "" && returnedID != userID {
-			return nil, errors.New("钉钉用户详情标识与请求不一致")
-		} else if returnedID == "" {
-			detail["userid"] = userID
 		}
 		cache[userID] = detail
 		return detail, nil
@@ -565,7 +604,7 @@ func decodeDingTalkResponse(response *http.Response, out any) error {
 		return err
 	}
 	if response.StatusCode >= 400 {
-		return formatDingTalkHTTPError(response.StatusCode, body)
+		return directoryHTTPError(response, formatDingTalkHTTPError(response.StatusCode, body))
 	}
 	if err := dingTalkAPIError(response.StatusCode, body); err != nil {
 		return err

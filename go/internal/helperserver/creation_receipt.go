@@ -45,6 +45,15 @@ func (t creationTarget) begin() error {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
 		return nil
 	}
+	if !t.group {
+		// A previous attempt may already have changed DSM. Only its original
+		// owner may clear a confirmed failure or finish registering its UID.
+		if _, found, err := t.receiptID(); err != nil {
+			return err
+		} else if found {
+			return fmt.Errorf("DSM 用户 %q 有待核实的创建回执", t.name)
+		}
+	}
 	return t.write(-1)
 }
 func (t creationTarget) clear() error {
@@ -59,17 +68,22 @@ func (t creationTarget) clear() error {
 }
 
 func (t creationTarget) confirm() error {
+	_, err := t.confirmID()
+	return err
+}
+
+func (t creationTarget) confirmID() (int, error) {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
-		return nil
+		return 0, nil
 	}
 	a, err := t.account()
 	if err != nil {
-		return fmt.Errorf("DSM 已创建 %q，读取系统编号失败: %w", t.name, err)
+		return 0, fmt.Errorf("DSM 已创建 %q，读取系统编号失败: %w", t.name, err)
 	}
 	if err = t.write(a.id); err != nil {
-		return fmt.Errorf("DSM 已创建 %q，保存系统编号失败: %w", t.name, err)
+		return 0, fmt.Errorf("DSM 已创建 %q，保存系统编号失败: %w", t.name, err)
 	}
-	return t.resume()
+	return a.id, t.resume()
 }
 
 func (t creationTarget) resume() error {

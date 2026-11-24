@@ -61,7 +61,7 @@ func TestDingTalkDirectoryMatchesAndFollowsNewMembership(t *testing.T) {
 			change("UPDATE external_accounts SET active=1")
 			server := NewWithStore(cfg, q)
 			member := map[string]any{"dsm_username": "alice", "dsm_groupname": "engineering"}
-			if r := server.provisionAccount(cfg, member); r["success"] != true || r["created"] != false {
+			if r := server.provisionAccount(context.Background(), cfg, member); r["success"] != true || r["created"] != false {
 				t.Fatal(r)
 			}
 			grant, err := userEnrollment(cfg, "alice")
@@ -145,7 +145,7 @@ func TestDingTalkDirectoryMatchesAndFollowsNewMembership(t *testing.T) {
 			if err := updateAccountPolicy(cfg, "alice", false, true); err != nil {
 				t.Fatal(err)
 			}
-			if r := server.provisionAccount(cfg, member); r["success"] == true {
+			if r := server.provisionAccount(context.Background(), cfg, member); r["success"] == true {
 				t.Fatal("relinked revoked account")
 			}
 		})

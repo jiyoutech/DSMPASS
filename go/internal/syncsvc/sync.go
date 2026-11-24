@@ -31,9 +31,10 @@ type Result struct {
 }
 
 type Engine struct {
-	cfg     config.BackendConfig
-	q       *db.Queries
-	options Options
+	cfg         config.BackendConfig
+	q           *db.Queries
+	options     Options
+	localPasswd string
 }
 
 type Options struct {
@@ -44,25 +45,43 @@ type Options struct {
 }
 
 func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
-	return &Engine{cfg: cfg, q: q}
+	return &Engine{cfg: cfg, q: q, localPasswd: "/etc/passwd"}
 }
 
 func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Options) *Engine {
-	return &Engine{cfg: cfg, q: q, options: options}
+	return &Engine{cfg: cfg, q: q, options: options, localPasswd: "/etc/passwd"}
 }
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {
+	// Preserve the snapshot boundary for callers that do not supply a run timestamp.
+	if e.options.DeactivateMissingData && strings.TrimSpace(e.options.SyncStart) == "" {
+		copy := *e
+		if err := e.q.DBTX().QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP").Scan(&copy.options.SyncStart); err != nil {
+			return Result{ProviderSlug: directory.Slug()}, err
+		}
+		e = &copy
+	}
+	users, groups, err := ReadDirectorySnapshot(directory)
+	if err != nil {
+		return Result{ProviderSlug: directory.Slug()}, err
+	}
+	return e.ApplySnapshot(ctx, directory, users, groups)
+}
+
+func (e *Engine) ApplySnapshot(ctx context.Context, directory provider.Directory, users []provider.User, groups []provider.Group) (Result, error) {
+	result, err := e.MapSnapshot(ctx, directory, users, groups)
+	if err == nil {
+		err = e.FinalizeMappings(ctx, directory.Slug(), len(users) > 0 && len(groups) == 0)
+	}
+	return result, err
+}
+
+// MapSnapshot stages the identities and relationships present in the source.
+// The caller publishes absences only once the DSM inventory has been matched.
+func (e *Engine) MapSnapshot(ctx context.Context, directory provider.Directory, users []provider.User, groups []provider.Group) (Result, error) {
 	identityService := identity.NewService(e.cfg, e.q)
 	providerName := providerDisplayName(directory)
 	result := Result{ProviderSlug: directory.Slug()}
-	syncStart := e.options.SyncStart
-	if e.options.DeactivateMissingData && strings.TrimSpace(syncStart) == "" {
-		_ = e.q.DBTX().QueryRowContext(ctx, `SELECT CURRENT_TIMESTAMP`).Scan(&syncStart)
-	}
-	users, groups, err := listDirectorySnapshot(directory)
-	if err != nil {
-		return result, err
-	}
 	if err := validateDirectorySnapshot(providerName, users, groups); err != nil {
 		return result, err
 	}
@@ -71,7 +90,10 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 	if e.options.TrackAccountSuspensions {
 		result.AccountSuspensions = make(map[string]bool, len(users))
 	}
-	duplicateUserNames := duplicateUserNameCounts(activeDirectoryUsers(users), e.cfg)
+	numbered, err := e.directoryNames(ctx, directory.Slug(), providerName, users, e.localPasswd)
+	if err != nil {
+		return result, err
+	}
 	for index, user := range users {
 		if e.options.TrackAccountSuspensions {
 			if user.Subject == "" || user.ProviderSlug != directory.Slug() {
@@ -116,21 +138,22 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			e.report("写入用户映射", index+1, len(users), user.DisplayName)
 			continue
 		}
-		appIdentity, identityLinkedExisting, err := identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
-		if err != nil {
-			return result, err
+		var account db.DSMAccount
+		var identityLinkedExisting bool
+		if name, assign := numbered[external.SubjectNorm]; assign {
+			account, err = identityService.AssignDirectoryName(ctx, external, name.username, name.choice, providerName)
+		} else {
+			var owner db.AppIdentity
+			owner, identityLinkedExisting, err = identityService.ResolveOrCreateIdentityWithLinkedExisting(ctx, external)
+			if err == nil {
+				account, _, err = identityService.EnsureDSMAccountWithCreated(ctx, owner)
+			}
 		}
-		account, accountCreated, err := identityService.EnsureDSMAccountWithCreated(ctx, appIdentity)
 		if err != nil {
 			return result, err
 		}
 		if identity.IsReservedDSMUsername(account.DSMUsername) {
 			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s用户生成的 DSM 用户名 %q 属于系统保留名称。请手动指定其他 DSM 用户名", providerName, account.DSMUsername))
-			if err != nil {
-				return result, err
-			}
-		} else if accountCreated && duplicateUserNames[userNameKey(user.DisplayName, e.cfg)] > 1 && account.Managed == 1 {
-			account, err = identityService.MarkDSMAccountConflict(ctx, account.ID, fmt.Sprintf("冲突类型：%s通讯录内用户姓名重名。请根据邮箱、手机号、身份 ID 和部门手动指定最终 DSM 用户名", providerName))
 			if err != nil {
 				return result, err
 			}
@@ -270,22 +293,24 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			e.report("写入成员映射", memberCurrent, memberTotal, group.Path)
 		}
 	}
-	if e.options.DeactivateMissingData {
-		mappingTypes := []string{}
-		if inactiveUserOnlyDirectory {
-			mappingTypes = []string{"user"}
-		}
-		if err := identityService.DeactivateStaleMappings(ctx, directory.Slug(), syncStart, mappingTypes...); err != nil {
-			return result, err
-		}
-	}
-	if err := identityService.ReconcileFinalGroupMembers(ctx); err != nil {
-		return result, err
-	}
 	return result, nil
 }
 
-func listDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
+func (e *Engine) FinalizeMappings(ctx context.Context, source string, preserveGroups bool) error {
+	service := identity.NewService(e.cfg, e.q)
+	if e.options.DeactivateMissingData {
+		var types []string
+		if preserveGroups {
+			types = []string{"user"}
+		}
+		if err := service.DeactivateStaleMappings(ctx, source, e.options.SyncStart, types...); err != nil {
+			return err
+		}
+	}
+	return service.ReconcileFinalGroupMembers(ctx)
+}
+
+func ReadDirectorySnapshot(directory provider.Directory) ([]provider.User, []provider.Group, error) {
 	if snapshot, ok := directory.(provider.SnapshotDirectory); ok {
 		return snapshot.ListUsersAndGroups()
 	}
@@ -485,18 +510,6 @@ func inheritedDepartmentSubjects(subject string, parentByGroup map[string]string
 		subject = strings.TrimSpace(parentByGroup[subject])
 	}
 	return result
-}
-
-func duplicateUserNameCounts(users []provider.User, cfg config.BackendConfig) map[string]int {
-	counts := map[string]int{}
-	for _, user := range users {
-		key := userNameKey(user.DisplayName, cfg)
-		if key == "" {
-			continue
-		}
-		counts[key]++
-	}
-	return counts
 }
 
 func userNameKey(displayName string, cfg config.BackendConfig) string {

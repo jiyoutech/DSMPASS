@@ -47,7 +47,13 @@ func readSyncMode(c *gin.Context) (syncMode, bool) {
 	return payload.Mode, true
 }
 
-func (s *Server) resetFullSyncPasswords(ctx context.Context, runID, sourceSlug string, buffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+// A later run must reconcile passwords again, including accounts created in an earlier run.
+type syncCreatedPasswords struct {
+	accounts map[string]string
+	password string
+}
+
+func (s *Server) resetFullSyncPasswords(ctx context.Context, runID, sourceSlug string, buffer *syncLogBuffer, progress *operationProgress, created syncCreatedPasswords) ([]syncsvc.PlanItem, error) {
 	rows, err := queryJSON(ctx, s.store, `
 SELECT DISTINCT a.id, a.dsm_username FROM dsm_accounts a
 JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id
@@ -61,6 +67,31 @@ ORDER BY a.id`, sourceSlug)
 	var initialPassword string
 	if progress != nil {
 		progress.setTotal(ctx, "统一 DSM/SMB 密码", "仅重置当前身份源的有效同步账号", len(rows))
+	}
+	batchClient, _ := s.helper.(helperclient.PasswordBatchClient)
+	pending := make([]helperclient.PasswordResetTarget, 0, helperclient.PasswordResetBatchSize)
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		outcomes := s.resetPasswordWave(ctx, &batchClient, sourceSlug, initialPassword, pending)
+		for i, user := range pending {
+			err := outcomes[i]
+			switch {
+			case errors.Is(err, helperclient.ErrDingTalkMembershipOnly):
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", user.AccountID, user.Username, "reset_password", "skipped", "", "", err.Error())
+			case err != nil:
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", user.AccountID, user.Username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")
+				resetErrors = append(resetErrors, fmt.Errorf("全量同步重置 %s 的 DSM/SMB 密码未确认完成；已完成的账号不会回滚，请排查后重新全量同步：%w", user.Username, err))
+			default:
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", user.AccountID, user.Username, "reset_password", "success", "", "source_initial_password", "")
+				operations = append(operations, syncsvc.PlanItem{Action: "reset_dsm_smb_password", ProviderSlug: sourceSlug, Subject: user.AccountID, DSMUsername: user.Username, ProvisionStatus: "success"})
+			}
+			if progress != nil {
+				progress.step(ctx, "统一 DSM/SMB 密码", user.Username)
+			}
+		}
+		pending = pending[:0]
 	}
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
@@ -83,20 +114,51 @@ ORDER BY a.id`, sourceSlug)
 					return operations, errors.Join(append(resetErrors, err)...)
 				}
 			}
-			err = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), sourceSlug, id, username, initialPassword)
-			if errors.Is(err, helperclient.ErrDingTalkMembershipOnly) {
-				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "skipped", "", "", err.Error())
-			} else if err != nil {
-				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")
-				resetErrors = append(resetErrors, fmt.Errorf("全量同步重置 %s 的 DSM/SMB 密码未确认完成；已完成的账号不会回滚，请排查后重新全量同步：%w", username, err))
+			if name, ok := created.accounts[id]; ok && name == username && created.password == initialPassword {
+				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "initialize_password", "success", "", "source_initial_password", "")
+				operations = append(operations, syncsvc.PlanItem{Action: "initialize_password", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "success"})
 			} else {
-				s.writeSyncOperation(buffer, runID, sourceSlug, "user", id, username, "reset_password", "success", "", "source_initial_password", "")
-				operations = append(operations, syncsvc.PlanItem{Action: "reset_dsm_smb_password", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: "success"})
+				pending = append(pending, helperclient.PasswordResetTarget{AccountID: id, Username: username})
+				if len(pending) == helperclient.PasswordResetBatchSize || batchClient == nil {
+					flush()
+				}
+				continue
 			}
 		}
 		if progress != nil {
 			progress.step(ctx, "统一 DSM/SMB 密码", username)
 		}
 	}
+	flush()
 	return operations, errors.Join(resetErrors...)
+}
+
+// An unconfirmed batch may already have changed some passwords. Only an explicit
+// unsupported-action response from an older Helper permits single-account fallback.
+func (s *Server) resetPasswordWave(ctx context.Context, client *helperclient.PasswordBatchClient, source, password string, targets []helperclient.PasswordResetTarget) []error {
+	results := make([]error, len(targets))
+	if *client != nil && len(targets) > 1 {
+		outcomes, err := (*client).ResetSyncedUserPasswords(ctx, "sync_password_batch_"+randomHex(8), source, targets, password)
+		if !errors.Is(err, helperclient.ErrPasswordBatchUnsupported) {
+			if err == nil && len(outcomes) == len(targets) {
+				return outcomes
+			}
+			if err == nil {
+				err = errors.New("incomplete DSM password reset results")
+			}
+			for i := range results {
+				results[i] = err
+			}
+			return results
+		}
+		*client = nil
+	}
+	for i, user := range targets {
+		if err := ctx.Err(); err != nil {
+			results[i] = err
+			continue
+		}
+		results[i] = s.helper.ResetSyncedUserPassword(ctx, "sync_password_"+randomHex(8), source, user.AccountID, user.Username, password)
+	}
+	return results
 }

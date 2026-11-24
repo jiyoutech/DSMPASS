@@ -72,7 +72,7 @@ VALUES ('log','run','source','user','account','alice','create_or_update','succes
 			}
 			if tc.want {
 				server := NewWithStore(cfg, q)
-				if r := server.provisionAccount(cfg, map[string]any{"dsm_username": "alice"}); r["success"] != true {
+				if r := server.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": "alice"}); r["success"] != true {
 					t.Fatalf("provision after root setup: %v", r)
 				}
 			}
@@ -179,7 +179,7 @@ VALUES('membership','member','source','external','department','account','group')
 	}
 	server := NewWithStore(cfg, q)
 	user := map[string]any{"dsm_username": "alice", "display_name": "directory name", "email": "new@example.test"}
-	if r := server.provisionAccount(cfg, user); r["success"] != true || r["created"] != false {
+	if r := server.provisionAccount(context.Background(), cfg, user); r["success"] != true || r["created"] != false {
 		t.Fatalf("incremental link: %v", r)
 	}
 	payload := map[string]any{"dsm_username": "alice", "dsm_groupname": "engineering"}

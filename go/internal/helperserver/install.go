@@ -88,6 +88,17 @@ func InstallPrivilegedHelper(review LegacyGroupReview) error {
 		if err := assertNoPendingJournals(config.HelperDataDir + "/journal"); err != nil {
 			return err
 		}
+		// Older preserve-uninstalls removed the executable but kept the protected
+		// policy. Restore that policy in place, including any prior revocations.
+		retained, err := helperIsRetained()
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(config.HelperBinaryPath); os.IsNotExist(err) {
+			retained = true
+		} else if err != nil {
+			return err
+		}
 		if err := installProtectedHelperFiles(settings, binary, controller); err != nil {
 			return err
 		}
@@ -95,9 +106,26 @@ func InstallPrivilegedHelper(review LegacyGroupReview) error {
 		if err != nil {
 			return err
 		}
+		if retained {
+			policy, err := readAccountPolicy(cfg)
+			if err != nil {
+				return err
+			}
+			if policy.LegacyMigrationComplete {
+				if err := os.Remove(retainedHelperMarker); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				log.Print("已恢复原有账号授权")
+				return nil
+			}
+		}
 		result, err := migrateInstalledAccounts(cfg, review)
 		if err != nil {
 			return fmt.Errorf("automatic account enrollment failed; start the backend to initialize its database and retry setup: %w", err)
+		}
+		// An administrator may recover a retained install after a package UID change.
+		if err := os.Remove(retainedHelperMarker); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 		if result.ReviewedGroupCount != nil {
 			log.Printf("已保存自动复用范围，共 %d 个本地群组。部门映射和 GID 匹配后会在同步时自动登记。", *result.ReviewedGroupCount)
@@ -197,5 +225,5 @@ func bootstrapHelperSecret(data string) (string, error) {
 func helperSudoersRule() string {
 	controller := config.HelperControlPath
 	return "Defaults!" + controller + " env_reset, !setenv, secure_path=\"/usr/sbin:/usr/bin:/sbin:/bin\"\n" +
-		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status, " + controller + " upgrade\n"
+		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " start, " + controller + " stop, " + controller + " restart, " + controller + " status, " + controller + " retain, " + controller + " upgrade\n"
 }

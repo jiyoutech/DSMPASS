@@ -244,13 +244,14 @@ func runtimeSettingAllowed(key string) bool {
 
 func (s *Server) helperStatus(c *gin.Context) {
 	health, err := s.helper.HealthCheck(c.Request.Context())
-	compatibilityErr := helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision)
+	compatibilityErr := helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision, buildinfo.BuildEpoch)
 	response := gin.H{
-		"mode":        s.cfg.RelayMode,
-		"socket_path": s.cfg.RelayHelperSocket,
-		"reachable":   err == nil,
-		"details":     health,
-		"compatible":  err == nil && compatibilityErr == nil,
+		"mode":             s.cfg.RelayMode,
+		"socket_path":      s.cfg.RelayHelperSocket,
+		"reachable":        err == nil,
+		"details":          health,
+		"compatible":       err == nil && compatibilityErr == nil,
+		"restart_required": err == nil && compatibilityErr != nil,
 	}
 	if err != nil {
 		response["error"] = "Helper 未启动或升级未完成；首次迁移需管理员执行 setup-helper-sudo.sh 一次。" + err.Error()

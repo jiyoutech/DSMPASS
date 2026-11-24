@@ -26,13 +26,14 @@ import (
 )
 
 type Server struct {
-	cfg        config.HelperConfig
-	store      *db.Queries
-	replayMu   sync.Mutex
-	seenNonce  map[string]int64
-	startupMu  sync.RWMutex
-	starting   bool
-	startupErr string
+	directories sync.Map // run ID -> *directoryInventory
+	cfg         config.HelperConfig
+	store       *db.Queries
+	replayMu    sync.Mutex
+	seenNonce   map[string]int64
+	startupMu   sync.RWMutex
+	starting    bool
+	startupErr  string
 }
 
 func New(cfg config.HelperConfig) *Server {
@@ -151,12 +152,27 @@ func (s *Server) handle(conn net.Conn) {
 		_ = json.NewEncoder(conn).Encode(errorResponse("BAD_REQUEST", "invalid json"))
 		return
 	}
-	response := s.handlePayload(payload)
+	ctx := context.Background()
+	if payload["action"] == "scoped_provision_users" || payload["action"] == "scoped_reset_synced_user_passwords" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+		go func() {
+			var b [1]byte
+			_, _ = conn.Read(b[:])
+			cancel()
+		}()
+	}
+	response := s.handlePayloadContext(ctx, payload)
 	_ = json.NewEncoder(conn).Encode(response)
 }
 
 func (s *Server) handlePayload(payload map[string]any) map[string]any {
-	cfg := settings.ApplyHelperRuntime(context.Background(), s.cfg, s.store)
+	return s.handlePayloadContext(context.Background(), payload)
+}
+
+func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]any) map[string]any {
+	cfg := settings.ApplyHelperRuntime(ctx, s.cfg, s.store)
 	requestID, _ := payload["request_id"].(string)
 	action, _ := payload["action"].(string)
 	diaglog.Append(cfg.DataDir, requestID, "helper.socket.request.received", cfg.LoginDiagnosticsEnabled, diaglog.Event{
@@ -200,6 +216,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"dsm_endpoint_error":         errorString(endpointErr),
 			"version":                    buildinfo.Version,
 			"revision":                   buildinfo.Revision,
+			"build_epoch":                buildinfo.BuildEpoch,
 			"signed_helper_upgrade":      true,
 			"socket_path":                cfg.SocketPath,
 			"euid":                       os.Geteuid(),
@@ -211,7 +228,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 	case "scoped_relay_login":
 		if err := s.authorizeLogin(cfg, payload); err != nil {
-			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+			return loginDeniedResponse(err)
 		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
@@ -242,7 +259,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		return map[string]any{"success": true, "sid": result.SID, "cookies": result.Cookies}
 	case "scoped_prepare_browser_login":
 		if err := s.authorizeLogin(cfg, payload); err != nil {
-			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
+			return loginDeniedResponse(err)
 		}
 		username, err := requiredString(payload, "dsm_username")
 		if err != nil {
@@ -281,6 +298,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.complete_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{})
 		return map[string]any{"success": true}
+	case "scoped_reset_synced_user_passwords":
+		return s.resetSyncedPasswordBatch(ctx, cfg, payload)
 	case "scoped_reset_synced_user_password":
 		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
 			if errors.Is(err, errDingTalkMembershipOnly) {
@@ -292,12 +311,25 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			return errorResponse("SYNC_PASSWORD_RESET_FAILED", err.Error())
 		}
 		return map[string]any{"success": true}
+	case "capture_directory_snapshot":
+		return s.captureDirectory(ctx, cfg, requestID)
+	case "release_directory_snapshot":
+		s.releaseDirectory(requestID)
+		return map[string]any{"success": true}
+	case "scoped_directory_snapshot":
+		return s.directorySnapshot(ctx, cfg, payload)
+	case "scoped_provision_users":
+		return s.provisionAccounts(ctx, cfg, payload)
 	case "scoped_provision_user":
-		return s.provisionAccount(cfg, payload)
+		return s.provisionAccount(ctx, cfg, payload)
 	case "scoped_disable_dingtalk_user", "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
+	case "scoped_web_login_approval":
+		return s.webLoginApproval(cfg, payload)
 	case "scoped_web_group_approval":
 		return s.webGroupApproval(cfg, payload)
+	case "scoped_add_group_members":
+		return s.addGroupMembers(cfg, payload)
 	case "scoped_provision_group", "scoped_add_group_member", "scoped_remove_group_member":
 		return s.mutateGroup(cfg, action, payload)
 	default:
@@ -401,9 +433,10 @@ func synouserAddArgs(username, password, displayName, email string) []string {
 }
 
 type synoUserInfo struct {
-	FullName string
-	Mail     string
-	Expired  bool
+	ExpiryKnown bool
+	FullName    string
+	Mail        string
+	Expired     bool
 }
 
 func getSynoUser(path, username string) (synoUserInfo, error) {
@@ -439,6 +472,7 @@ func parseSynoUserInfo(output string) synoUserInfo {
 		case "User Mail":
 			info.Mail = value
 		case "Expired":
+			info.ExpiryKnown = strings.EqualFold(value, "true") || strings.EqualFold(value, "false") || value == "1" || value == "0"
 			info.Expired = strings.EqualFold(value, "true") || value == "1"
 		}
 	}

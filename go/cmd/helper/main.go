@@ -31,6 +31,22 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "bind-dingtalk-logins" {
+		dryRun := len(os.Args) == 4 && os.Args[3] == "--dry-run"
+		if len(os.Args) != 3 && !dryRun {
+			log.Fatal("usage: bind-dingtalk-logins SOURCE [--dry-run]")
+		}
+		total, err := helperserver.BindDingTalkLogins(cfg, os.Args[2], dryRun)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if dryRun {
+			log.Printf("可建立登录及全量改密归属 %d 个", total)
+		} else {
+			log.Printf("本次新增登录及全量改密归属 %d 个", total)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "finalize-upgrade" {
 		if err := helperserver.FinalizePrivilegedUpgrade(cfg); err != nil {
 			log.Fatal(err)

@@ -38,6 +38,7 @@ import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { LoginApprovalDialog } from "./components/LoginApprovalDialog";
 import { GroupApprovalDialog } from "./components/GroupApprovalDialog";
 import { EntityList, HelpLabel, IdentityCell, LogBlock, MetricStrip, PageTitle, RelationCount, SourceTable } from "./components/common";
 import { useAsyncData } from "./hooks/useAsyncData";
@@ -335,6 +336,7 @@ type EnrichedDSMAccount = DSMAccount & { groups: string[]; member_records: Group
 
 function accountConflictKind(record: DSMAccount) {
   const reason = record.conflict_reason || "";
+  if (reason.startsWith("多个员工对应已有 DSM 账号，请选择归属员工：")) return "owner_choice";
   if (reason.includes("通讯录内用户姓名重名") || reason.includes("飞书用户姓名重名")) {
     return "provider_duplicate";
   }
@@ -349,6 +351,8 @@ function accountConflictKind(record: DSMAccount) {
 
 function accountConflictLabel(record: DSMAccount, providerLabel: string) {
   switch (accountConflictKind(record)) {
+    case "owner_choice":
+      return "选择已有账号归属";
     case "provider_duplicate":
       return `${providerLabel}内重名`;
     case "dsm_existing":
@@ -682,21 +686,37 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
   const [helperRestarting, setHelperRestarting] = useState(false);
   const helperReachable = helperStatus.data?.reachable === true;
   const helperDetails = helperStatus.data?.details;
+  const helperNeedsRestart = helperReachable && helperStatus.data?.restart_required === true;
   const helperInitializing = helperReachable && helperStatus.data?.compatible === true && helperDetails?.startup_ready === false;
   const helperPermissionOK = helperStatusOK(helperStatus.data);
   const reloadHelperStatus = helperStatus.reloadWithResult;
 
   useEffect(() => {
-    if (!helperInitializing) return;
+    if (helperRestarting) return;
     let cancelled = false;
+    let loading = false;
     let timer: ReturnType<typeof setTimeout>;
+    const interval = helperInitializing ? 3000 : 30000;
     const poll = async () => {
-      await reloadHelperStatus({ silent: true });
-      if (!cancelled) timer = setTimeout(() => void poll(), 3000);
+      clearTimeout(timer);
+      if (loading || cancelled || document.hidden) return;
+      loading = true;
+      try {
+        await reloadHelperStatus({ silent: true });
+      } finally {
+        loading = false;
+        if (!cancelled && !document.hidden) timer = setTimeout(() => void poll(), interval);
+      }
     };
-    timer = setTimeout(() => void poll(), 3000);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [helperInitializing, reloadHelperStatus]);
+    const onVisibility = () => { if (!document.hidden) void poll(); };
+    timer = setTimeout(() => void poll(), interval);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [helperInitializing, helperRestarting, reloadHelperStatus]);
   const menuItems = [
     { key: "providers", icon: <KeyOutlined />, label: "身份源" },
     { key: "settings", icon: <SettingOutlined />, label: "系统设置" }
@@ -776,7 +796,7 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
       showHelperCheckResult(status, "Helper 已重启，检查通过");
     } catch (err) {
       const detail = err instanceof Error ? err.message : "Helper 重启失败";
-      message.error(`Helper 未能重启，请先通过 SSH 执行提权脚本。${detail}`);
+      message.error(`Helper 重启失败：${detail}`);
     } finally {
       setHelperRestarting(false);
     }
@@ -821,13 +841,13 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                 <div className="version-stack" aria-label="版本">
                   <span>FE {version.data?.frontend_version ?? "-"}</span>
                   <span>BE {version.data?.backend_version ?? "-"}</span>
-                  <span>Helper {version.data?.helper_version || "-"}</span>
+                  <span>Helper {helperDetails?.version || version.data?.helper_version || "-"}</span>
                 </div>
                 <Space className="runtime-status">
                   <Badge status="success" text="Backend" />
                   <Badge
                     status={helperStatus.loading || helperInitializing ? "processing" : helperPermissionOK ? "success" : "error"}
-                    text={helperInitializing ? "Helper 初始化中" : helperStatus.loading || helperPermissionOK ? "Helper" : "Helper 权限异常"}
+                    text={helperNeedsRestart ? "Helper 待重启" : helperInitializing ? "Helper 初始化中" : helperStatus.loading || helperPermissionOK ? "Helper" : "Helper 权限异常"}
                   />
                 </Space>
                 <Button icon={<LogoutOutlined />} onClick={async () => { await api.adminLogout(); onLogout(); }}>
@@ -854,7 +874,15 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                   description={`登录和同步将在初始化完成后恢复。日志较多时需要等待，页面会自动检查进度，无需反复重启。${helperDetails?.startup_error ? `迁移尚未完成：${helperDetails.startup_error}。修复原因后会自动重试。` : ""}`}
                 />
               )}
-              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && (
+              {helperNeedsRestart && (
+                <Alert type="warning" showIcon className="runtime-alert"
+                  message="Helper 更新待生效，请重启 Helper"
+                  description={helperStatus.data?.error}
+                  action={<Button icon={<ReloadOutlined />} loading={helperRestarting}
+                    onClick={() => void restartAndCheckHelper()}>重启并检查 Helper</Button>}
+                />
+              )}
+              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && !helperNeedsRestart && (
                 <Alert
                   type="error"
                   showIcon
@@ -1141,6 +1169,7 @@ function SourceDetail({
   const [sourceSyncLoading, setSourceSyncLoading] = useState(false);
   const [resettingSyncData, setResettingSyncData] = useState(false);
   const [deletingSource, setDeletingSource] = useState(false);
+  const [approvalLogin, setApprovalLogin] = useState<LoginAuditLog | null>(null);
   const [approvalGroup, setApprovalGroup] = useState<DSMGroup | null>(null);
   const [syncApplying, setSyncApplying] = useState(false);
   const [accountLoginAction, setAccountLoginAction] = useState<string | null>(null);
@@ -1358,7 +1387,7 @@ function SourceDetail({
     if (syncMode === "full") {
       return "将重新同步全部用户、部门和成员关系，并把当前身份源的有效同步账号的 DSM 和 SMB 密码重置为本身份源的 DSM 初始密码，用于修复旧版本造成的密码不一致。用户自行修改的密码也会被覆盖，请通知用户更新 SMB 连接凭据。已映射的已有 DSM 账号及手动修正用户名的同步账号也会重置；没有有效同步映射的本地账号和系统保留账号不重置。已完成的操作不会因后续失败而回滚；失败后可重新执行全量同步。";
     }
-    return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。定时同步和冲突处理后的自动同步也使用增量模式。";
+    return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。" + (source.provider_type === "dingtalk" ? "" : "定时同步和冲突处理后的自动同步也使用增量模式。");
   }
 
   async function runDirectorySync(mode: SyncMode) {
@@ -1436,6 +1465,11 @@ function SourceDetail({
   async function syncIfConflictsResolved(accountConflicts: PagedResponse<DSMAccount> | null, groupConflicts: PagedResponse<DSMGroup> | null) {
     if (conflictCount(accountConflicts) > 0 || conflictCount(groupConflicts) > 0) {
       message.success("已保存，继续处理剩余冲突");
+      return;
+    }
+    if (source.provider_type === "dingtalk") {
+      setConflictModalOpen(false);
+      message.success("冲突处理结果已保存。点击同步时会更新通讯录。");
       return;
     }
     setConflictModalOpen(true);
@@ -1526,12 +1560,14 @@ function SourceDetail({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [conflictAccounts]);
   const nonFeishuDuplicateConflictAccounts = useMemo(() => {
-    return conflictAccounts.filter((account) => accountConflictKind(account) !== "provider_duplicate");
+    return conflictAccounts.filter((account) => !["owner_choice", "provider_duplicate"].includes(accountConflictKind(account)));
   }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichGroups(conflictGroupData.data?.items ?? []), [conflictGroupData.data?.items, enrichGroups]);
+  const ownerChoices = conflictAccounts.filter((account) => accountConflictKind(account) === "owner_choice");
+  const currentOwnerChoices = ownerChoices.filter((account) => account.conflict_reason === ownerChoices[0]?.conflict_reason);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
   const currentFeishuDuplicateGroup = feishuDuplicateAccountGroups[0];
-  const conflictStepCount = (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
+  const conflictStepCount = new Set(ownerChoices.map((a) => a.conflict_reason)).size + (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
   const filteredSyncLogs = useMemo(() => {
     return (syncLogs.data?.items ?? [])
       .filter((record) => syncStatusFilter === "all" || record.status === syncStatusFilter)
@@ -1847,6 +1883,24 @@ function SourceDetail({
     setConflictModalOpen(false);
   }
 
+  async function chooseDirectoryOwner(account: DSMAccount) {
+    setSavingConflictKey(account.id);
+    try {
+      const { run_id } = await api.chooseDirectoryOwner(source.slug, account);
+      setConflictAutoSyncing(true);
+      setActiveOperation(null);
+      await waitOperation(run_id);
+      await refreshAll();
+      message.success("已保存归属并完成增量同步");
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "保存归属或增量同步失败");
+      await refreshAfterSyncFailure();
+    } finally {
+      setConflictAutoSyncing(false);
+      setSavingConflictKey(null);
+    }
+  }
+
   const activeConflictSaveAction = (() => {
     if (conflictAutoSyncing) {
       return null;
@@ -1857,6 +1911,7 @@ function SourceDetail({
         save: () => void saveGroupConflictBatch(conflictGroups, "groups:all")
       };
     }
+    if (currentOwnerChoices.length > 0) return null;
     if (currentFeishuDuplicateGroup) {
       const key = `accounts:feishu:${currentFeishuDuplicateGroup.name}`;
       return {
@@ -1900,6 +1955,7 @@ function SourceDetail({
       />
       <Alert type="info" showIcon message="旧版本导致 DSM 与 SMB 密码不一致时，请执行一次全量同步。符合条件的同步账号将重置为本身份源的 DSM 初始密码，可在身份源配置中查看；日常使用增量同步保留已有密码。" />
       {syncError && !operationDisplaysError() && <Alert type="error" showIcon closable message={syncError} onClose={() => setSyncError(null)} />}
+      {approvalLogin && <LoginApprovalDialog key={approvalLogin.id} record={approvalLogin} onClose={() => setApprovalLogin(null)} />}
       {approvalGroup && <GroupApprovalDialog key={approvalGroup.id} group={approvalGroup} onClose={() => setApprovalGroup(null)} onApproved={syncAfterGroupApproval} />}
       <Modal
         title={operationModalTitle}
@@ -1954,7 +2010,7 @@ function SourceDetail({
                 loading={savingConflictKey === activeConflictSaveAction.key}
                 onClick={activeConflictSaveAction.save}
               >
-                保存并开通本组
+                {source.provider_type === "dingtalk" ? "保存本组映射" : "保存并开通本组"}
               </Button>
             )}
           </Space>
@@ -1988,7 +2044,7 @@ function SourceDetail({
             type="error"
             showIcon
             message={`还有 ${conflictGroups.length} 个部门冲突、${conflictAccounts.length} 个用户冲突未处理`}
-            description="请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"
+            description={currentOwnerChoices.length > 0 ? "已有 DSM 账号的归属只需选择一次。" : source.provider_type === "dingtalk" ? "请为当前冲突选择 DSM 名称。保存后可继续处理下一组，点击同步时会写入 DSM。" : "请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"}
           />
           {conflictGroups.length > 0 && (
             <Card
@@ -2015,7 +2071,18 @@ function SourceDetail({
               />
             </Card>
           )}
-          {conflictGroups.length === 0 && currentFeishuDuplicateGroup && (
+          {conflictGroups.length === 0 && currentOwnerChoices.length > 0 && (
+            <Card title={currentOwnerChoices[0].conflict_reason}>
+              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
+              <Table size="small" rowKey="id" dataSource={currentOwnerChoices} pagination={false} columns={[
+                { title: "员工", dataIndex: "display_name" },
+                { title: "员工 ID", dataIndex: "external_subjects" },
+                { title: "邮箱", render: (_, record) => record.primary_email || record.external_emails || "—" },
+                { title: "归属", render: (_, record) => <Button disabled={Boolean(savingConflictKey)} loading={savingConflictKey === record.id} onClick={() => void chooseDirectoryOwner(record)}>选择此人</Button> }
+              ]} />
+            </Card>
+          )}
+          {conflictGroups.length === 0 && currentOwnerChoices.length === 0 && currentFeishuDuplicateGroup && (
             <Card
               className="conflict-step-card"
               title={(
@@ -2041,7 +2108,7 @@ function SourceDetail({
               </div>
             </Card>
           )}
-          {conflictGroups.length === 0 && !currentFeishuDuplicateGroup && nonFeishuDuplicateConflictAccounts.length > 0 && (
+          {conflictGroups.length === 0 && currentOwnerChoices.length === 0 && !currentFeishuDuplicateGroup && nonFeishuDuplicateConflictAccounts.length > 0 && (
             <Card
               className="conflict-step-card"
               title={<Space><span>第 1 / {conflictStepCount} 组：其他用户命名冲突</span><Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag></Space>}
@@ -2227,7 +2294,9 @@ function SourceDetail({
                         width: 220,
                         render: (_, record: DSMAccount) => (
                           <Space>
-                            {record.provision_status === "conflict" && <Button size="small" onClick={() => editAccountUsername(record)}>修改用户名</Button>}
+                            {record.provision_status === "conflict" && (accountConflictKind(record) === "owner_choice"
+                              ? <Button size="small" onClick={() => setConflictModalOpen(true)}>选择归属员工</Button>
+                              : <Button size="small" onClick={() => editAccountUsername(record)}>修改用户名</Button>)}
                             {record.provision_status === "pending" && <Button size="small" onClick={() => provisionAccount(record)}>开通</Button>}
                             {record.allow_login ? (
                               <Button size="small" danger loading={accountLoginAction === accountLoginActionKey([record.id], false)} onClick={() => void setAccountLogin([record.id], false)}>禁止登录</Button>
@@ -2438,6 +2507,18 @@ function SourceDetail({
                         { label: "拒绝", value: "denied" }
                       ]}
                     />
+                    {source.provider_type === "dingtalk" && <Button onClick={() => {
+                      const sourceArg = "'" + source.slug.replace(/'/g, "'\\''") + "'";
+                      const command = "sudo /usr/local/libexec/dsmpass/dsmpass-helper bind-dingtalk-logins " + sourceArg;
+                      modal.info({
+                        title: "批量关联已有账号",
+                        width: 580,
+                        content: <>
+                          <Typography.Paragraph>在 DSM 管理员终端运行一次。已有唯一映射的普通账号将获得登录及后续全量改密权限，重名和冲突项会跳过。</Typography.Paragraph>
+                          <Typography.Text code copyable={{ text: command }}>{command}</Typography.Text>
+                        </>
+                      });
+                    }}>批量关联已有账号</Button>}
                   </Space>
                 }
                 table={
@@ -2456,6 +2537,9 @@ function SourceDetail({
                             <span>访问 IP</span><strong>{record.ip_address ?? "-"}</strong>
                           </div>
                           <LogBlock title="错误内容" value={record.error_code} empty="无错误" tone="danger" />
+                          {record.result === "failed" && record.dsm_username &&
+                            /LOGIN_OWNER_VERIFICATION_REQUIRED|仅用于同步群组成员|已获通讯录同步授权|钉钉同名用户保留 DSM\/SMB 密码/.test(record.error_code ?? "") &&
+                            <Button onClick={() => setApprovalLogin(record)}>核实登录归属</Button>}
                         </div>
                       )
                     }}

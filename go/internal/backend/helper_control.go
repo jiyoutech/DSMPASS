@@ -49,7 +49,7 @@ func (s *Server) restartHelperProcess(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision) != nil {
+		if helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision, buildinfo.BuildEpoch) != nil {
 			if err := runHelperControl(cmdCtx, script, "upgrade"); err != nil {
 				return fmt.Errorf("Helper 自动更新未完成；首次迁移或未签名套件需管理员执行 setup-helper-sudo.sh 一次: %w", err)
 			}
@@ -57,7 +57,7 @@ func (s *Server) restartHelperProcess(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			return helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision)
+			return helperclient.CheckCompatibility(health, buildinfo.Version, buildinfo.Revision, buildinfo.BuildEpoch)
 		}
 	}
 	return nil

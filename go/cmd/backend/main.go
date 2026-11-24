@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -49,6 +50,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer database.Close()
+	if err := restoreManualSync(context.Background(), database, cfg.DataDir); err != nil {
+		log.Fatalf("restore retained sync settings: %v", err)
+	}
 	logDatabaseURL := os.Getenv("DSMPASS_LOG_DATABASE_URL")
 	if logDatabaseURL == "" {
 		logDatabaseURL = backend.LogDatabaseURL(cfg.DatabaseURL)
@@ -104,6 +108,24 @@ func main() {
 		log.Printf("idp tls disabled")
 	}
 	serve(server, listener, actualListen, cfg.AdminRedirectListen, cfg.PublicBaseURL, cfg.TLSEnabled, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.IDPTLSCertFile, cfg.IDPTLSKeyFile)
+}
+
+// The installer leaves this one-shot marker only for a reinstall with saved
+// data. Consume it before the scheduler starts, including after an interrupted install.
+func restoreManualSync(ctx context.Context, database *sql.DB, dataDir string) error {
+	marker := filepath.Join(dataDir, "restore-manual-sync")
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE identity_sources
+		SET config_json=json_set(config_json,'$.sync_interval_minutes',0)
+		WHERE provider_type='dingtalk' AND json_valid(config_json)
+		  AND json_extract(config_json,'$.sync_interval_minutes')>0`); err != nil {
+		return err
+	}
+	return os.Remove(marker)
 }
 
 func serve(server *backend.Server, adminListener net.Listener, adminListen, adminRedirectListen, publicBaseURL string, tlsEnabled bool, certFile, keyFile, idpCertFile, idpKeyFile string) {

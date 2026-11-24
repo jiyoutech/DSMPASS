@@ -39,6 +39,7 @@ const actionLabels: Record<string, string> = {
   disable_local_group_member: "禁用本地成员关系",
   disable_missing_dsm_user: "禁用已删除用户",
   create_or_update: "创建或更新",
+  initialize_password: "建号时设置 DSM/SMB 密码",
   reset_password: "重置 DSM/SMB 密码",
   reset_dsm_smb_password: "重置 DSM/SMB 密码",
   sync_mode: "同步模式",

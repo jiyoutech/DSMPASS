@@ -13,11 +13,38 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
 	"github.com/dsmpass/dsmpass/go/internal/config"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/diaglog"
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
 var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
+
+// GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
+const GroupMemberBatchSize = db.MaxGroupMembers
+
+var ErrGroupBatchUnsupported = errors.New("DSM group member batching is unavailable")
+
+type GroupMemberBatchClient interface {
+	AddGroupMembers(context.Context, string, string, []string) ([]string, error)
+}
+
+// GroupWithMembersClient can leave a missing group for its first member batch.
+type GroupWithMembersClient interface {
+	PrepareGroupForMembers(context.Context, string, string) (bool, error)
+	GroupMemberBatchClient
+}
+
+// ProvisionUserResult distinguishes a fresh native creation with an explicitly
+// supplied password from a reconciliation of an existing DSM account.
+type ProvisionUserResult struct {
+	Created                bool
+	InitialPasswordApplied bool
+}
+
+type UserProvisionResultClient interface {
+	ProvisionUserWithResult(ctx context.Context, requestID, username, displayName, email, initialPassword string) (ProvisionUserResult, error)
+}
 
 type Client interface {
 	HealthCheck(ctx context.Context) (map[string]any, error)
@@ -197,6 +224,11 @@ func relayCookiesFromResponse(response map[string]any) []RelayCookie {
 }
 
 func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username, displayName, email, initialPassword string) (bool, error) {
+	result, err := c.ProvisionUserWithResult(ctx, requestID, username, displayName, email, initialPassword)
+	return result.Created, err
+}
+
+func (c UnixSocketClient) ProvisionUserWithResult(ctx context.Context, requestID, username, displayName, email, initialPassword string) (ProvisionUserResult, error) {
 	response, err := c.send(ctx, map[string]any{
 		"action":           "scoped_provision_user",
 		"request_id":       requestID,
@@ -205,7 +237,14 @@ func (c UnixSocketClient) ProvisionUser(ctx context.Context, requestID, username
 		"email":            email,
 		"initial_password": initialPassword,
 	})
-	return boolResponse(response, err)
+	return provisionUserResult(response, initialPassword, err)
+}
+
+func provisionUserResult(response map[string]any, initialPassword string, err error) (ProvisionUserResult, error) {
+	created, err := boolResponse(response, err)
+	explicit, _ := response["created"].(bool)
+	applied, _ := response["initial_password_applied"].(bool)
+	return ProvisionUserResult{Created: created, InitialPasswordApplied: err == nil && explicit && applied && initialPassword != ""}, err
 }
 
 func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
@@ -251,6 +290,25 @@ func (c UnixSocketClient) ProvisionGroup(ctx context.Context, requestID, groupna
 	return boolResponse(response, err)
 }
 
+func (c UnixSocketClient) PrepareGroupForMembers(ctx context.Context, requestID, groupname string) (bool, error) {
+	response, err := c.send(ctx, map[string]any{
+		"action": "scoped_provision_group", "request_id": requestID,
+		"dsm_groupname": groupname, "defer_if_missing": true,
+	})
+	return boolResponse(response, err)
+}
+
+type LoginApprovalClient interface {
+	WebLoginApproval(ctx context.Context, requestID string, owner db.CredentialIdentity, identityID string, verify bool) (map[string]any, error)
+}
+
+func (c UnixSocketClient) WebLoginApproval(ctx context.Context, requestID string, owner db.CredentialIdentity, identityID string, verify bool) (map[string]any, error) {
+	if c.Timeout < 15*time.Second {
+		c.Timeout = 15 * time.Second
+	}
+	return c.send(ctx, map[string]any{"action": "scoped_web_login_approval", "request_id": requestID, "dsm_username": owner.Username, "source_slug": owner.SourceSlug, "subject": owner.Subject, "identity_id": identityID, "verify": verify})
+}
+
 func (c UnixSocketClient) WebGroupApproval(ctx context.Context, requestID, groupname string, verify bool) (map[string]any, error) {
 	if c.Timeout < 15*time.Second {
 		c.Timeout = 15 * time.Second
@@ -266,6 +324,41 @@ func (c UnixSocketClient) AddGroupMember(ctx context.Context, requestID, groupna
 		"dsm_username":  username,
 	})
 	return boolResponse(response, err)
+}
+
+// AddGroupMembers returns only names the Helper confirmed by reading the group.
+func (c UnixSocketClient) AddGroupMembers(ctx context.Context, requestID, groupname string, usernames []string) ([]string, error) {
+	response, err := c.send(ctx, map[string]any{
+		"action": "scoped_add_group_members", "request_id": requestID,
+		"dsm_groupname": groupname, "dsm_usernames": usernames,
+	})
+	if err != nil {
+		return nil, err
+	}
+	values, ok := response["confirmed"].([]any)
+	if !ok {
+		return nil, errors.New("missing confirmed DSM group members")
+	}
+	wanted := make(map[string]bool, len(usernames))
+	for _, name := range usernames {
+		wanted[name] = true
+	}
+	confirmed := make([]string, 0, len(values))
+	for _, value := range values {
+		name, ok := value.(string)
+		if !ok || !wanted[name] {
+			return nil, errors.New("invalid confirmed DSM group members")
+		}
+		delete(wanted, name)
+		confirmed = append(confirmed, name)
+	}
+	if message, _ := response["batch_error"].(string); message != "" {
+		return confirmed, errors.New(message)
+	}
+	if len(wanted) != 0 {
+		return confirmed, errors.New("DSM did not confirm all requested group members")
+	}
+	return confirmed, nil
 }
 
 func (c UnixSocketClient) RemoveGroupMember(ctx context.Context, requestID, groupname, username string) (bool, error) {
@@ -286,7 +379,7 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		if err != nil {
 			return nil, fmt.Errorf("Helper 不可连接，请在管理页面检查安装或升级状态: %w", err)
 		}
-		if err := CheckCompatibility(health, buildinfo.Version, buildinfo.Revision); err != nil {
+		if err := CheckCompatibility(health, buildinfo.Version, buildinfo.Revision, buildinfo.BuildEpoch); err != nil {
 			return nil, err
 		}
 	}
@@ -318,10 +411,20 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		return nil, err
 	}
 	defer conn.Close()
+	if action == "scoped_reset_synced_user_passwords" {
+		stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		defer stop()
+	}
 	// Include account/global lock waits, hashing and (for relay) DSM HTTP and
 	// recovery. Health checks and unrelated actions retain their short timeout.
 	timeout := c.Timeout
 	switch action {
+	case "capture_directory_snapshot", "scoped_directory_snapshot":
+		timeout = max(timeout, 3*time.Minute)
+	case "scoped_provision_users":
+		timeout = max(timeout, 16*time.Minute)
+	case "scoped_add_group_members":
+		timeout = max(timeout, 120*time.Second)
 	case "scoped_prepare_browser_login", "complete_browser_login":
 		if timeout < 75*time.Second {
 			timeout = 75 * time.Second
@@ -361,6 +464,15 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 	if success, _ := response["success"].(bool); !success {
 		diaglog.Append(c.DataDir, requestID, "backend.helper.socket.response.failure", c.DiagnosticsEnabled, diaglog.Event{"action": action, "response": response})
 		if code, _ := response["error_code"].(string); code != "" {
+			if action == "scoped_provision_users" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
+				return nil, ErrUserBatchUnsupported
+			}
+			if action == "scoped_add_group_members" && (code == "GROUP_BATCH_UNSUPPORTED" || (code == "BAD_REQUEST" && response["error"] == "unsupported action")) {
+				return nil, ErrGroupBatchUnsupported
+			}
+			if action == "scoped_reset_synced_user_passwords" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
+				return nil, ErrPasswordBatchUnsupported
+			}
 			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
 				return nil, ErrDingTalkMembershipOnly
 			}

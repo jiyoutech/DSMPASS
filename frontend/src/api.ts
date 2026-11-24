@@ -108,6 +108,10 @@ export const api = {
   listAllDSMGroups: (params?: ListParams) => listAllPaged<DSMGroup>(api.listDSMGroups, { ...params, limit: params?.limit ?? MAX_PAGE_LIMIT }),
   listGroupMembers: (provider?: string) => request<{ items: GroupMember[] }>(`/api/admin/group-members${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   provisionAccount: (id: string) => request<DSMAccount>(`/api/admin/dsm-accounts/${id}/provision`, { method: "POST" }),
+  chooseDirectoryOwner: (source: string, account: DSMAccount) =>
+    request<{ run_id: string }>(`/api/admin/providers/${encodeURIComponent(source)}/accounts/${encodeURIComponent(account.id)}/owner-choice`, {
+      method: "POST", body: JSON.stringify({ subject: account.external_subjects, reason: account.conflict_reason })
+    }),
   setDSMAccountUsername: (id: string, dsm_username: string) =>
     request<DSMAccount>(`/api/admin/dsm-accounts/${id}/username`, { method: "PUT", body: JSON.stringify({ dsm_username }) }),
   setDSMAccountLogin: (id: string, allow_login: boolean) =>
@@ -119,6 +123,10 @@ export const api = {
   provisionGroup: (id: string) => request<DSMGroup>(`/api/admin/dsm-groups/${id}/provision`, { method: "POST" }),
   setDSMGroupName: (id: string, dsm_groupname: string) =>
     request<DSMGroup>(`/api/admin/dsm-groups/${id}/name`, { method: "PUT", body: JSON.stringify({ dsm_groupname }) }),
+  webLoginApproval: (source: string, auditID: string, verify: boolean) =>
+    request<{ approved: boolean; subject: string; code?: string; expires_at?: string }>(`/api/admin/providers/${encodeURIComponent(source)}/login-audit/${encodeURIComponent(auditID)}/login-approval`, {
+      method: "POST", body: JSON.stringify({ verify })
+    }),
   webGroupApproval: (id: string, groupname: string, verify: boolean) =>
     request<{ approved: boolean; groupname: string; gid: number; code?: string; expires_at?: string }>(`/api/admin/dsm-groups/${encodeURIComponent(id)}/web-approval`, {
       method: "POST", body: JSON.stringify({ groupname, verify })

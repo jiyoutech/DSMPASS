@@ -193,7 +193,7 @@ func TestSyncProviderUsesDirectorySnapshot(t *testing.T) {
 	}
 }
 
-func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
+func TestSyncProviderNumbersDuplicateUsers(t *testing.T) {
 	ctx := context.Background()
 	database, queries := openSyncTestDB(t, ctx)
 	defer database.Close()
@@ -208,8 +208,8 @@ func TestSyncProviderMarksAllDuplicateUsersConflict(t *testing.T) {
 	if _, err := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries).SyncProvider(ctx, directory); err != nil {
 		t.Fatal(err)
 	}
-	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 2)
-	assertProvisionCount(t, ctx, database, "dsm_accounts", "pending", 0)
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 0)
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "pending", 2)
 }
 
 func TestSyncProviderMarksReservedDSMNamesConflictForEveryProvider(t *testing.T) {
@@ -301,8 +301,8 @@ func TestSyncProviderKeepsExistingMappedUserWhenFeishuNameLaterDuplicates(t *tes
 		t.Fatal(err)
 	}
 	assertAccountStatusForSubject(t, ctx, database, "u1", "pending")
-	assertAccountStatusForSubject(t, ctx, database, "u2", "conflict")
-	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 1)
+	assertAccountStatusForSubject(t, ctx, database, "u2", "pending")
+	assertProvisionCount(t, ctx, database, "dsm_accounts", "conflict", 0)
 }
 
 func TestSyncProviderLinksCrossSourceSameNameUser(t *testing.T) {

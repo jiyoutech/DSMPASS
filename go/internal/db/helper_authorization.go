@@ -2,31 +2,142 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
+
+const MaxGroupMembers = 200
+const MaxProvisionUsers = 200
+
+// These constraints are populated from the Helper's local UID/GID policy.
+type HelperMemberScope struct {
+	Username   string               `json:"username"`
+	DingTalk   *DingTalkUserBinding `json:"dingtalk,omitempty"`
+	OtherGroup bool                 `json:"other_group,omitempty"`
+}
 
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
-	DatabasePath string `json:"database_path"`
-	Action       string `json:"action"`
-	RunID        string `json:"run_id,omitempty"`
-	Subject      string `json:"subject,omitempty"`
-	Username     string `json:"username"`
-	Groupname    string `json:"groupname,omitempty"`
-	IdentityID   string `json:"identity_id,omitempty"`
-	SourceSlug   string `json:"source_slug,omitempty"`
-	AccountID    string `json:"account_id,omitempty"`
+	LocalUID        int                 `json:"local_uid,omitempty"`
+	Usernames       []string            `json:"usernames,omitempty"`
+	Members         []HelperMemberScope `json:"members,omitempty"`
+	CredentialOwner *CredentialIdentity `json:"credential_owner,omitempty"`
+	VerifiedEmail   string              `json:"verified_email,omitempty"`
+	DatabasePath    string              `json:"database_path"`
+	Action          string              `json:"action"`
+	RunID           string              `json:"run_id,omitempty"`
+	Subject         string              `json:"subject,omitempty"`
+	Username        string              `json:"username"`
+	Groupname       string              `json:"groupname,omitempty"`
+	IdentityID      string              `json:"identity_id,omitempty"`
+	SourceSlug      string              `json:"source_slug,omitempty"`
+	AccountID       string              `json:"account_id,omitempty"`
 }
 
 type HelperAuthorizationResult struct {
+	LoginRoster     map[string]string         `json:"login_roster,omitempty"`
 	DingTalkBinding *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
 	Allowed         bool                      `json:"allowed"`
 	Error           string                    `json:"error,omitempty"`
 	Enrollment      *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
 }
 
+const provisionIdentityScope = `
+ FROM dsm_accounts a
+ JOIN app_identities i ON i.id=a.app_identity_id
+ JOIN external_accounts e ON e.app_identity_id=i.id
+ JOIN identity_sources src ON src.slug=e.provider_slug
+ WHERE i.status='active' AND e.active=1 AND src.enabled=1 AND src.directory_sync_enabled=1`
+
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if request.Action == "directory_account_match" {
+		if request.LocalUID < 1024 || request.LocalUID >= 65536 || request.Username == "" || q == nil {
+			return false, nil
+		}
+		var ok bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dsm_accounts a
+ JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+ JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
+ JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=i.id AND e.provider_slug=m.provider_slug AND e.active=1
+ JOIN identity_sources s ON s.slug=e.provider_slug AND s.enabled=1 AND s.directory_sync_enabled=1
+ LEFT JOIN directory_owner_choices c ON c.account_id=a.id
+ WHERE a.dsm_username=? AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.dsm_account_id=a.id AND x.id<>m.id)
+ AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
+ OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username AND e.subject<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
+		return ok, err
+	}
+	if request.Action == "provision_users" {
+		if q == nil || len(request.Usernames) == 0 || len(request.Usernames) > MaxProvisionUsers {
+			return false, errors.New("invalid account provisioning authorization batch")
+		}
+		names, err := json.Marshal(request.Usernames)
+		if err != nil {
+			return false, err
+		}
+		// All candidates were checked against the root-owned policy under the
+		// writer lock. Apply the same live identity scope as individual provisioning.
+		var allowed bool
+		err = q.DBTX().QueryRowContext(ctx, `SELECT NOT EXISTS (
+ SELECT 1 FROM json_each(?) AS requested WHERE NOT EXISTS (
+ SELECT 1 `+provisionIdentityScope+` AND a.dsm_username=requested.value))`, string(names)).Scan(&allowed)
+		return allowed, err
+	}
+	if request.Action == "directory_member_batch" {
+		if q == nil || request.Groupname == "" || len(request.Members) == 0 || len(request.Members) > MaxGroupMembers {
+			return false, errors.New("invalid directory membership query")
+		}
+		for _, m := range request.Members {
+			if m.Username == "" || (m.DingTalk == nil && !m.OtherGroup) || (m.DingTalk != nil && (m.DingTalk.SourceSlug == "" || m.DingTalk.Subject == "")) {
+				return false, errors.New("invalid directory membership constraint")
+			}
+		}
+		members, err := json.Marshal(request.Members)
+		if err != nil {
+			return false, err
+		}
+		var allowed bool
+		err = q.DBTX().QueryRowContext(ctx, `
+WITH wanted AS (
+ SELECT json_extract(value,'$.username') AS username, json_extract(value,'$.dingtalk.source_slug') AS slug,
+        json_extract(value,'$.dingtalk.subject') AS subject, json_extract(value,'$.other_group') AS other_group
+ FROM json_each(?)
+)
+SELECT NOT EXISTS (
+ SELECT 1 FROM wanted w WHERE NOT EXISTS (
+   SELECT 1 `+directoryMembershipScope+` AND a.dsm_username=w.username AND g.dsm_groupname=?
+   AND ((src.provider_type <> 'dingtalk' AND w.other_group=1)
+     OR ((`+uniqueDingTalkName+`) AND (w.slug IS NULL OR (src.slug=w.slug AND e.subject=w.subject))))
+ )
+)`, string(members), request.Groupname).Scan(&allowed)
+		return allowed, err
+	}
+	if owner := request.CredentialOwner; owner != nil {
+		if q == nil || request.Username != owner.Username || owner.Username == "" || owner.SourceSlug == "" || owner.Subject == "" || (request.SourceSlug != "" && request.SourceSlug != owner.SourceSlug) || (request.Subject != "" && request.Subject != owner.Subject) {
+			return false, nil
+		}
+		switch request.Action {
+		case "login", "password_reset":
+			if request.SourceSlug != owner.SourceSlug {
+				return false, nil
+			}
+			return verifiedOwnerAllowed(ctx, q, request, *owner)
+		case "verify_existing_owner":
+			if request.VerifiedEmail == "" {
+				return false, nil
+			}
+			return verifiedOwnerAllowed(ctx, q, request, *owner)
+		case "provision", "mapped":
+			valid, err := verifiedOwnerAllowed(ctx, q, request, *owner)
+			if err != nil || !valid {
+				return false, err
+			}
+		}
+		// Offboarding separately checks the historical source/subject and completed directory evidence.
+	}
+
 	if q != nil && request.Action == "dingtalk_offboard" {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+dingTalkOffboardingScope+`
@@ -99,12 +210,7 @@ SELECT EXISTS (
 	if request.Action == "provision" {
 		err := q.DBTX().QueryRowContext(ctx, `
 SELECT EXISTS (
- SELECT 1 FROM dsm_accounts a
- JOIN app_identities i ON i.id = a.app_identity_id
- JOIN external_accounts e ON e.app_identity_id = i.id
- JOIN identity_sources src ON src.slug = e.provider_slug
- WHERE a.dsm_username = ? AND i.status = 'active' AND e.active = 1
-   AND src.enabled = 1 AND src.directory_sync_enabled = 1
+ SELECT 1 `+provisionIdentityScope+` AND a.dsm_username=?
 )`, request.Username).Scan(&allowed)
 		return allowed, err
 	}
@@ -115,4 +221,24 @@ SELECT EXISTS (
  WHERE a.dsm_username = ?
 )`, request.Username).Scan(&allowed)
 	return allowed, err
+}
+
+func verifiedOwnerAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery, owner CredentialIdentity) (bool, error) {
+	var valid bool
+	err := q.DBTX().QueryRowContext(ctx, `
+SELECT EXISTS (
+ SELECT 1 FROM dsm_accounts a JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+ JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
+ JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=i.id AND e.provider_slug=m.provider_slug AND e.active=1
+ JOIN identity_sources s ON s.slug=m.provider_slug AND s.enabled=1
+ WHERE a.dsm_username=? AND COALESCE(a.conflict_reason,'')='' AND a.provision_status IN ('created','linked_existing','pending','failed')
+ AND m.provider_slug=? AND e.subject=? AND (?='' OR (s.directory_sync_enabled=1 AND e.email_verified=1 AND e.email_norm=?
+ AND NOT EXISTS (SELECT 1 FROM external_accounts x WHERE x.active=1 AND x.email_norm=e.email_norm AND x.id<>e.id)))
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other JOIN external_accounts x ON x.id=other.external_account_id AND x.active=1
+ JOIN identity_sources src ON src.slug=other.provider_slug AND src.enabled=1
+ WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>m.id)
+  AND (? <> 'login' OR (s.login_enabled=1 AND i.id=? AND a.allow_login=1 AND a.manual_login_blocked=0 AND a.provision_status IN ('created','linked_existing')))
+ AND (? <> 'password_reset' OR (s.directory_sync_enabled=1 AND a.id=? AND a.provision_status IN ('created','linked_existing')))
+ )`, request.Username, owner.SourceSlug, owner.Subject, request.VerifiedEmail, request.VerifiedEmail, request.Action, request.IdentityID, request.Action, request.AccountID).Scan(&valid)
+	return valid, err
 }

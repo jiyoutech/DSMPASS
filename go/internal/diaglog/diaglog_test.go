@@ -15,6 +15,8 @@ func TestAppendRedactsOAuthSecretsAndProfilePII(t *testing.T) {
 		"authorize_url": "https://open.work.weixin.qq.com/wwopen/sso/qrConnect?appid=corp&state=launch-state",
 		"code":          "login-code",
 		"code_present":  true,
+		"payload":       map[string]any{"dsm_usernames": []string{"batch-request-name"}, "dsm_users": []any{map[string]any{"extra": "batch-import-profile"}}},
+		"response":      map[string]any{"confirmed": []any{"batch-confirmed-name"}, "batch_error": "batch-failed-name was rejected", "user_results": []any{map[string]any{"error": "batch-import-identity"}}},
 		"status_code":   200,
 		"profile": Event{
 			"userid": "zhangsan",
@@ -31,6 +33,11 @@ func TestAppendRedactsOAuthSecretsAndProfilePII(t *testing.T) {
 	line := string(raw)
 	for _, leaked := range []string{
 		"login-code",
+		"batch-request-name",
+		"batch-confirmed-name",
+		"batch-failed-name",
+		"batch-import-profile",
+		"batch-import-identity",
 		"oauth-state",
 		"launch-state",
 		"zhang@example.com",

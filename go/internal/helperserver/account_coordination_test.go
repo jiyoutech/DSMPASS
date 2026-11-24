@@ -332,7 +332,7 @@ func TestProvisionAccountUsesGlobalWriterLock(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "created")
 	cfg.SynoUserPath = filepath.Join(dir, "synouser")
-	script := "#!/bin/sh\ncase \"$1\" in\n--get) [ -e '" + marker + "' ] || exit 1;;\n--add) printf created > '" + marker + "';;\nesac\n"
+	script := "#!/bin/sh\ncase \"$1\" in\n--get) [ -e '" + marker + "' ] || { echo 'synoerr=[0x1D00]' >&2; exit 255; };;\n--add) printf created > '" + marker + "';;\nesac\n"
 	if err := os.WriteFile(cfg.SynoUserPath, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestProvisionAccountUsesGlobalWriterLock(t *testing.T) {
 	result := make(chan map[string]any, 1)
 	if err := withFileLock(cfg.ShadowLockPath, func() error {
 		go func() {
-			result <- s.provisionAccount(cfg, map[string]any{"dsm_username": "new-account", "initial_password": "test-password"})
+			result <- s.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": "new-account", "initial_password": "test-password"})
 		}()
 		select {
 		case <-result:

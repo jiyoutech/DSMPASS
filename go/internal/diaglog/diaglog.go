@@ -94,7 +94,12 @@ func isSensitiveKey(key string) bool {
 		"name",
 		"display_name",
 		"username",
-		"dsm_username":
+		"dsm_username",
+		"dsm_usernames",
+		"dsm_users",
+		"user_results",
+		"confirmed", // Member names read back from a group batch.
+		"batch_error":
 		return true
 	}
 	for _, marker := range []string{

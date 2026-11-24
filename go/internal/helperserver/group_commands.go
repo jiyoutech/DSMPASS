@@ -77,6 +77,12 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 				response["created"] = true
 				return nil
 			}
+			// An existing group went through the usual GID/enrollment checks above.
+			// The first batch can create a missing group with all its members.
+			if deferMissing, _ := payload["defer_if_missing"].(bool); deferMissing && cfg.AccountPolicyPath != "" && cfg.GroupPath != "" {
+				response["deferred"] = true
+				return nil
+			}
 			if err := target.begin(); err != nil {
 				return err
 			}

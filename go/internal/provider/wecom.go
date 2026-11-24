@@ -187,12 +187,14 @@ func (w WeCom) ListUsersAndGroups() ([]User, []Group, error) {
 
 func (w WeCom) usersFromGroups(token string, groups []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
-	for _, group := range groups {
-		items, err := w.departmentUsers(token, group.Subject)
-		if err != nil {
-			return nil, err
-		}
-		for _, raw := range items {
+	pages, err := readDirectoryItems(groups, func(group Group) ([]map[string]any, error) {
+		return w.departmentUsers(token, group.Subject)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, group := range groups {
+		for _, raw := range pages[i] {
 			w.upsertUserFromRaw(usersBySubject, raw, []string{group.Subject})
 		}
 	}
@@ -236,11 +238,13 @@ func (w WeCom) visibleUsers(token string) ([]User, error) {
 
 func (w WeCom) usersByIDs(token string, userIDs []string, departmentsByUser map[string][]string) ([]User, error) {
 	usersBySubject := map[string]User{}
-	for _, userID := range uniqueStrings(userIDs) {
-		raw, err := w.user(token, userID)
-		if err != nil {
-			return nil, err
-		}
+	ids := uniqueStrings(userIDs)
+	details, err := readDirectoryItems(ids, func(id string) (map[string]any, error) { return w.user(token, id) })
+	if err != nil {
+		return nil, err
+	}
+	for i, userID := range ids {
+		raw := details[i]
 		if firstStringish(raw, "userid", "UserId", "user_id") == "" {
 			raw["userid"] = userID
 		}
@@ -427,11 +431,24 @@ func (w WeCom) visibleUserIDs(token string) ([]map[string]any, error) {
 		if cursor != "" {
 			body["cursor"] = cursor
 		}
-		var out map[string]any
-		if err := w.postJSON(endpoint, body, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := w.postJSON(endpoint, body, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
-		all = append(all, mapItems(out, "dept_user")...)
+		items, err := directoryPageItems(out, "dept_user")
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if next, present := out["next_cursor"]; present {
+			if _, ok := next.(string); !ok {
+				return nil, errors.New("企业微信分页游标格式错误")
+			}
+		}
 		nextCursor := strings.TrimSpace(firstStringish(out, "next_cursor"))
 		if nextCursor == "" {
 			return all, nil
@@ -518,7 +535,7 @@ func decodeWeComResponse(response *http.Response, out any) error {
 		return err
 	}
 	if response.StatusCode >= 400 {
-		return formatWeComHTTPError(response.StatusCode, body)
+		return directoryHTTPError(response, formatWeComHTTPError(response.StatusCode, body))
 	}
 	if err := weComAPIError(response.StatusCode, body); err != nil {
 		return err

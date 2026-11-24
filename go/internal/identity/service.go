@@ -111,34 +111,45 @@ func (s *Service) ResolveOrCreateIdentityWithLinkedExisting(ctx context.Context,
 			if err != nil {
 				return db.AppIdentity{}, false, err
 			}
-			hasDifferentProvider, err := s.identityHasDifferentProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
+			canLinkFromOtherProvider, err := s.hasLinkableOtherProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
 			if err != nil {
 				return db.AppIdentity{}, false, err
 			}
-			if hasDifferentProvider && !hasSameProvider {
-				if err := s.linkExternalToIdentity(ctx, external.ID, existing.AppIdentityID); err != nil {
+			if canLinkFromOtherProvider && !hasSameProvider {
+				owner, err := s.getIdentity(ctx, existing.AppIdentityID)
+				if err != nil {
 					return db.AppIdentity{}, false, err
 				}
-				identity, err := s.getIdentity(ctx, existing.AppIdentityID)
-				return identity, true, err
+				// A generated numeric suffix can also be somebody else's literal name.
+				natural, nameErr := s.allocateUsernameForDisplayName(owner.DisplayName)
+				if existing.Managed == 0 || (nameErr == nil && Normalize(natural) == Normalize(username)) {
+					if err := s.linkExternalToIdentity(ctx, external.ID, owner.ID); err != nil {
+						return db.AppIdentity{}, false, err
+					}
+					return owner, true, nil
+				}
 			}
 		} else if !errors.Is(existingErr, sql.ErrNoRows) {
 			return db.AppIdentity{}, false, existingErr
 		}
 	}
+	owner, err := s.createIdentity(ctx, external)
+	return owner, false, err
+}
+
+func (s *Service) createIdentity(ctx context.Context, external db.ExternalAccount) (db.AppIdentity, error) {
 	id := uuid.NewString()
 	_, err := s.q.DBTX().ExecContext(ctx, `
 	INSERT INTO app_identities (id, display_name, primary_email, primary_email_norm, status, created_by, created_at, updated_at)
 	VALUES (?, ?, ?, ?, 'active', 'system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 	`, id, external.DisplayName, external.Email, external.EmailNorm)
 	if err != nil {
-		return db.AppIdentity{}, false, err
+		return db.AppIdentity{}, err
 	}
 	if err := s.linkExternalToIdentity(ctx, external.ID, id); err != nil {
-		return db.AppIdentity{}, false, err
+		return db.AppIdentity{}, err
 	}
-	identity, err := s.getIdentity(ctx, id)
-	return identity, false, err
+	return s.getIdentity(ctx, id)
 }
 
 func (s *Service) EnsureDSMAccount(ctx context.Context, identity db.AppIdentity) (db.DSMAccount, error) {
@@ -685,9 +696,10 @@ func (s *Service) identityHasProvider(ctx context.Context, identityID, providerS
 	return count > 0, err
 }
 
-func (s *Service) identityHasDifferentProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
+func (s *Service) hasLinkableOtherProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
 	var count int
-	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts WHERE app_identity_id = ? AND provider_slug <> ?`, identityID, providerSlug).Scan(&count)
+	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts e WHERE e.app_identity_id = ? AND e.provider_slug <> ?
+    AND NOT EXISTS (SELECT 1 FROM directory_owner_choices c JOIN dsm_accounts a ON a.id=c.account_id WHERE a.app_identity_id=e.app_identity_id AND a.dsm_username=c.username)`, identityID, providerSlug).Scan(&count)
 	return count > 0, err
 }
 

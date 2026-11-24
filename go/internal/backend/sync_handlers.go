@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
+	"github.com/dsmpass/dsmpass/go/internal/provider"
 	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
 
@@ -25,18 +29,31 @@ func (s *Server) startProviderSyncRun(c *gin.Context) {
 		return
 	}
 	sourceSlug := c.Param("slug")
-	if _, ok := s.directoryProvider(sourceSlug); !ok {
+	directory, ok := s.directoryProvider(sourceSlug)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
 	}
+	if !s.beginSourceSync(sourceSlug) {
+		c.JSON(http.StatusConflict, gin.H{"detail": "sync already running"})
+		return
+	}
+	s.enqueueLockedProviderSync(c, directory, mode)
+}
+
+// Receives the source lock from the request and releases it after the queued work.
+func (s *Server) enqueueLockedProviderSync(c *gin.Context, directory provider.Directory, mode syncMode) {
+	sourceSlug := directory.Slug()
 	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", mode.label()+"任务已创建", 0)
 	if err != nil {
+		s.endSourceSync(sourceSlug)
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	go func() {
+		defer s.endSourceSync(sourceSlug)
 		ctx := context.Background()
-		_, err := s.runSyncProviderModeWithProgress(ctx, sourceSlug, mode, progress)
+		_, err := s.runLockedProviderSync(ctx, directory, mode, progress)
 		if err != nil {
 			progress.fail(ctx, err)
 			return
@@ -76,7 +93,6 @@ func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug s
 }
 
 func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (result syncsvc.Result, runErr error) {
-	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
 		return syncsvc.Result{}, errUnknownProvider
@@ -85,6 +101,11 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return syncsvc.Result{}, errSyncAlreadyRunning
 	}
 	defer s.endSourceSync(directory.Slug())
+	return s.runLockedProviderSync(ctx, directory, mode, progress)
+}
+
+func (s *Server) runLockedProviderSync(ctx context.Context, directory provider.Directory, mode syncMode, progress *operationProgress) (result syncsvc.Result, runErr error) {
+	defer s.maybeCleanupLogs(ctx)
 	if mode == syncFull {
 		health, err := s.helper.HealthCheck(ctx)
 		if err != nil {
@@ -123,6 +144,13 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return result, err
 	}
 	policy.FullSync = mode == syncFull
+	startedDSM := time.Now()
+	if err = s.captureSyncDirectory(ctx, runID, progress); err != nil {
+		logBuffer.Log(runID, directory.Slug(), "directory", directory.Slug(), "", "read_dsm_snapshot", "failed", "", "", err.Error())
+		return result, err
+	}
+	logBuffer.Log(runID, directory.Slug(), "directory", directory.Slug(), "", "read_dsm_snapshot", "success", "", "", fmt.Sprintf("读取 DSM 目录用时 %s", time.Since(startedDSM).Round(time.Millisecond)))
+	defer s.releaseSyncDirectory(ctx, runID)
 	var scopeCheck func() (bool, error)
 	if policy.DingTalk && policy.FullSync && policy.DisableMissingUsers && policy.DeactivateMissingData {
 		if directoryScope, ok := directory.(interface{ WholeDirectoryVisible() (bool, error) }); ok {
@@ -140,58 +168,62 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 	if progress != nil {
 		progress.message(ctx, "读取身份源", "正在读取身份源通讯录")
 	}
-	q := s.store
-	var tx *sql.Tx
-	if s.database != nil {
-		var err error
-		tx, err = s.database.BeginTx(ctx, nil)
-		if err != nil {
-			return syncsvc.Result{}, err
-		}
-		q = db.New(tx)
-	}
-	result, err = syncsvc.NewEngineWithOptions(s.cfg, q, syncsvc.Options{
-		TrackAccountSuspensions: policy.DingTalk && policy.DisableMissingUsers,
-		DeactivateMissingData:   policy.DeactivateMissingData,
-		SyncStart:               syncStart,
-		Progress: func(phase string, current, total int, message string) {
-			if progress == nil {
-				return
-			}
-			progress.report(ctx, phase, current, total, message)
-		},
-	}).SyncProvider(ctx, directory)
-	if tx != nil {
-		if err != nil {
-			_ = tx.Rollback()
-		} else if commitErr := tx.Commit(); commitErr != nil {
-			err = commitErr
-		}
-	}
+	startedSource := time.Now()
+	users, groups, err := syncsvc.ReadDirectorySnapshot(directory)
 	if err != nil {
 		logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "read_directory", "failed", "running", "failed", err.Error())
 		return result, err
 	}
+	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "read_directory", "success", "", "", fmt.Sprintf("读取 %d 个用户、%d 个部门，用时 %s", len(users), len(groups), time.Since(startedSource).Round(time.Millisecond)))
+	if visibleBefore && len(groups) > 0 {
+		policy.confirmDingTalkAbsence, err = scopeCheck()
+		if err != nil {
+			return result, err
+		}
+	}
+	startedMapping := time.Now()
+	err = s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		engine := syncsvc.NewEngineWithOptions(s.cfg, db.New(tx), syncsvc.Options{
+			TrackAccountSuspensions: policy.DingTalk && policy.DisableMissingUsers,
+			Progress: func(phase string, current, total int, message string) {
+				if progress != nil {
+					progress.report(ctx, phase, current, total, message)
+				}
+			},
+		})
+		var mappingErr error
+		result, mappingErr = engine.MapSnapshot(ctx, directory, users, groups)
+		return mappingErr
+	})
+	if err != nil {
+		logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "map_directory", "failed", "running", "failed", err.Error())
+		return result, err
+	}
+	logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "map_directory", "success", "", "", fmt.Sprintf("整理目录映射用时 %s", time.Since(startedMapping).Round(time.Millisecond)))
 	if progress != nil {
 		progress.message(ctx, "写入同步日志", "正在记录映射结果")
 	}
 	s.logDirectoryLinkPlanWithBuffer(logBuffer, runID, directory.Slug(), result.Items)
-	if syncResultHasDirectoryWarning(result) {
-		policy.PreserveMissingGroups = true
-	}
+	policy.PreserveMissingGroups = syncResultHasDirectoryWarning(result)
 	if policy.DingTalk && policy.DisableMissingUsers {
 		policy.dingTalkUsers = result.AccountSuspensions
-		if visibleBefore && !policy.PreserveMissingGroups {
-			policy.confirmDingTalkAbsence, err = scopeCheck()
-			if err != nil {
-				return result, err
-			}
-		}
 		if policy.FullSync && !policy.confirmDingTalkAbsence {
 			logBuffer.Log(runID, directory.Slug(), "identity_source", directory.Slug(), "", "offboarding_scope", "skipped", "", "", "未确认完整组织通讯录，仅处理企业账号明确停用状态")
 		}
 	}
-	operations, err := s.syncSourceToDSMWithBuffer(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress)
+	plan, err := s.readSyncAccountPlan(ctx, runID, directory.Slug(), policy, logBuffer, progress)
+	if err != nil {
+		return result, err
+	}
+	if err := s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		engine := syncsvc.NewEngineWithOptions(s.cfg, db.New(tx), syncsvc.Options{
+			DeactivateMissingData: policy.DeactivateMissingData, SyncStart: syncStart,
+		})
+		return engine.FinalizeMappings(ctx, directory.Slug(), policy.PreserveMissingGroups)
+	}); err != nil {
+		return result, err
+	}
+	operations, err := s.applySyncAccountPlan(ctx, runID, directory.Slug(), syncStart, policy, logBuffer, progress, plan)
 	result.Items = append(result.Items, operations...)
 	return result, err
 }
@@ -282,14 +314,19 @@ func (s *Server) sourceSyncPolicy(ctx context.Context, sourceSlug string) (sourc
 }
 
 func (s *Server) syncSourceToDSM(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy) ([]syncsvc.PlanItem, error) {
-	return s.syncSourceToDSMWithBuffer(ctx, runID, sourceSlug, syncStart, policy, nil, nil)
+	if err := s.captureSyncDirectory(ctx, runID, nil); err != nil {
+		return nil, err
+	}
+	defer s.releaseSyncDirectory(ctx, runID)
+	plan, err := s.readSyncAccountPlan(ctx, runID, sourceSlug, policy, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.applySyncAccountPlan(ctx, runID, sourceSlug, syncStart, policy, nil, nil, plan)
 }
 
-func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+func (s *Server) applySyncAccountPlan(ctx context.Context, runID, sourceSlug, syncStart string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress, plan map[pendingAccountProvision]helperclient.DirectoryAccountState) ([]syncsvc.PlanItem, error) {
 	var operations []syncsvc.PlanItem
-	if err := s.ensureRealDSMProvisioning(ctx); err != nil {
-		return operations, err
-	}
 	if policy.DeactivateMissingData {
 		if err := s.markMissingSourceData(ctx, sourceSlug, syncStart, policy.PreserveMissingGroups); err != nil {
 			return operations, err
@@ -301,11 +338,11 @@ func (s *Server) syncSourceToDSMWithBuffer(ctx context.Context, runID, sourceSlu
 	} else if policy.DisableMissingUsers {
 		operations, disableErr = s.disableMissingAccounts(ctx, runID, sourceSlug, logBuffer, progress)
 	}
-	provisioned, err := s.provisionSourceToDSM(ctx, runID, sourceSlug, policy, logBuffer, progress)
+	provisioned, err := s.provisionSourceToDSM(ctx, runID, sourceSlug, policy, logBuffer, progress, plan)
 	return append(operations, provisioned...), errors.Join(disableErr, err)
 }
 
-func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress) ([]syncsvc.PlanItem, error) {
+func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug string, policy sourceSyncPolicy, logBuffer *syncLogBuffer, progress *operationProgress, plan map[pendingAccountProvision]helperclient.DirectoryAccountState) ([]syncsvc.PlanItem, error) {
 	var operations []syncsvc.PlanItem
 	var groupConflicts, accountConflicts int
 	if err := s.store.DBTX().QueryRowContext(ctx, `
@@ -320,7 +357,8 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 	SELECT COUNT(*)
 	FROM dsm_accounts a
 	JOIN external_accounts e ON e.app_identity_id = a.app_identity_id
-	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'`, sourceSlug).Scan(&accountConflicts); err != nil {
+	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'
+	  AND instr(COALESCE(a.conflict_reason,''),?)<>1`, sourceSlug, identity.OwnerChoicePrefix).Scan(&accountConflicts); err != nil {
 		return operations, err
 	}
 	providerName := s.providerDisplayNameForSourceSlug(ctx, sourceSlug)
@@ -369,108 +407,152 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		return operations, err
 	}
 	groupRows.Close()
-	if progress != nil {
-		progress.setTotal(ctx, "同步 DSM 部门", "正在同步 DSM 部门", len(pendingGroups))
-	}
-	for _, item := range pendingGroups {
-		id, groupname, status := item.id, item.groupname, item.status
-		created, err := s.helper.ProvisionGroup(ctx, "sync_group_"+randomHex(8), groupname)
-		if err != nil {
-			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, err
+	withMembers, _ := s.helper.(helperclient.GroupWithMembersClient)
+	prepareGroups := func(groupHasManagedMembers map[string]bool) error {
+		if progress != nil {
+			progress.setTotal(ctx, "同步 DSM 部门", "正在同步 DSM 部门", len(pendingGroups))
 		}
-		if !created {
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "success", status, "pending", "DSM CLI deferred empty group creation until first member is added")
-			operations = append(operations, syncsvc.PlanItem{Action: "defer_dsm_group_until_member", ProviderSlug: sourceSlug, Subject: id, DSMGroupname: groupname, ProvisionStatus: "pending"})
+		for _, item := range pendingGroups {
+			id, groupname, status := item.id, item.groupname, item.status
+			prepare := s.helper.ProvisionGroup
+			if withMembers != nil && groupHasManagedMembers[groupname] {
+				prepare = withMembers.PrepareGroupForMembers
+			}
+			created, err := prepare(ctx, "sync_group_"+randomHex(8), groupname)
+			if err != nil {
+				err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
+				s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "failed", status, "failed", err.Error())
+				return err
+			}
+			if !created {
+				s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "success", status, "pending", "DSM group creation deferred until the first member batch")
+				operations = append(operations, syncsvc.PlanItem{Action: "defer_dsm_group_until_member", ProviderSlug: sourceSlug, Subject: id, DSMGroupname: groupname, ProvisionStatus: "pending"})
+				if progress != nil {
+					progress.step(ctx, "同步 DSM 部门", groupname)
+				}
+				continue
+			}
 			if progress != nil {
 				progress.step(ctx, "同步 DSM 部门", groupname)
 			}
-			continue
+			if err := saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+				return err
+			}
+			s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "success", status, "created", "")
+			operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group", ProviderSlug: sourceSlug, Subject: id, DSMGroupname: groupname, ProvisionStatus: "created"})
 		}
-		if progress != nil {
-			progress.step(ctx, "同步 DSM 部门", groupname)
-		}
-		if err := saveObjectState(ctx, s.store.DBTX(), groupname, `UPDATE dsm_groups SET provision_status = 'created', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id); err != nil {
+
+		return nil
+	}
+	if withMembers == nil {
+		if err := prepareGroups(nil); err != nil {
 			return operations, err
 		}
-		s.writeSyncOperation(logBuffer, runID, sourceSlug, "group", id, groupname, "create_or_update", "success", status, "created", "")
-		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group", ProviderSlug: sourceSlug, Subject: id, DSMGroupname: groupname, ProvisionStatus: "created"})
 	}
 
-	accountRows, err := s.store.DBTX().QueryContext(ctx, `
-	SELECT DISTINCT a.id, a.dsm_username, COALESCE(i.display_name, ''), COALESCE(i.primary_email, ''), a.provision_status
-		FROM dsm_accounts a
-		JOIN app_identities i ON i.id = a.app_identity_id
-		JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id
-		WHERE me.provider_slug = ? AND me.mapping_type = 'user' AND me.active = 1 AND a.provision_status IN ('pending', 'failed', 'created', 'linked_existing', 'disabled')
-		AND (NOT ? OR EXISTS (SELECT 1 FROM external_accounts e WHERE e.id=me.external_account_id AND e.provider_slug=me.provider_slug AND e.app_identity_id=i.id AND e.active=1))
-        ORDER BY a.created_at`, sourceSlug, policy.DingTalk)
+	pendingAccounts, err := s.pendingSourceAccounts(ctx, sourceSlug, policy)
 	if err != nil {
 		return operations, err
 	}
-	type pendingAccountProvision struct {
-		id          string
-		username    string
-		displayName string
-		email       string
-		status      string
+	if plan != nil {
+		// Existence is a scheduling hint. The Helper rechecks before every mutation.
+		slices.SortStableFunc(pendingAccounts, func(a, b pendingAccountProvision) int {
+			return int(plan[a]) - int(plan[b])
+		})
 	}
-	var pendingAccounts []pendingAccountProvision
-	for accountRows.Next() {
-		var item pendingAccountProvision
-		if err := accountRows.Scan(&item.id, &item.username, &item.displayName, &item.email, &item.status); err != nil {
-			accountRows.Close()
-			return operations, err
-		}
-		pendingAccounts = append(pendingAccounts, item)
-	}
-	if err := accountRows.Err(); err != nil {
-		accountRows.Close()
-		return operations, err
-	}
-	accountRows.Close()
 	if progress != nil {
 		progress.setTotal(ctx, "同步 DSM 用户", "正在同步 DSM 用户", len(pendingAccounts))
 	}
 	var accountErrors []error
-	for _, item := range pendingAccounts {
-		id, username, displayName, email, status := item.id, item.username, item.displayName, item.email, item.status
-		err := error(nil)
+	failedUsers := make(map[string]bool)
+	var createdUserCount int
+	var createdPasswords syncCreatedPasswords
+	managedMembers := make(map[string]bool)
+	startedUsers := time.Now()
+	var userCount int
+	if len(pendingAccounts) > 0 {
 		password, err := s.provisionUserInitialPassword(ctx, sourceSlug)
 		if err != nil {
-			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, errors.Join(append(accountErrors, err)...)
+			item := pendingAccounts[0]
+			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), item.username, `UPDATE dsm_accounts SET provision_status='failed',updated_at=CURRENT_TIMESTAMP WHERE id=?`, item.id))
+			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", item.id, item.username, "create_or_update", "failed", item.status, "failed", err.Error())
+			return operations, err
 		}
-		created, err := s.helper.ProvisionUser(ctx, "sync_user_"+randomHex(8), username, displayName, email, password)
-		if err != nil {
-			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "failed", status, "failed", err.Error())
-			accountErrors = append(accountErrors, err)
-			if progress != nil {
-				progress.step(ctx, "同步 DSM 用户", username)
+		createdPasswords.password = password
+		batchClient, _ := s.helper.(helperclient.UserBatchClient)
+		totalAccounts := len(pendingAccounts)
+		userCount = totalAccounts
+		for len(pendingAccounts) > 0 {
+			n := 1
+			if batchClient != nil {
+				n = min(len(pendingAccounts), helperclient.UserProvisionBatchSize)
+				if plan != nil {
+					for i := 1; i < n; i++ {
+						if plan[pendingAccounts[i]] != plan[pendingAccounts[0]] {
+							n = i
+							break
+						}
+					}
+				}
+				if progress != nil {
+					start := totalAccounts - len(pendingAccounts) + 1
+					progress.message(ctx, "同步 DSM 用户", fmt.Sprintf("正在处理第 %d 至 %d 个用户，共 %d 个", start, start+n-1, totalAccounts))
+				}
 			}
-			continue
-		}
-		nextStatus := "created"
-		action := "sync_dsm_user"
-		if !created {
-			nextStatus = "linked_existing"
-			action = "link_existing_dsm_user"
-		}
-		if err := saveObjectState(ctx, s.store.DBTX(), username, `UPDATE dsm_accounts SET provision_status = ?, conflict_reason = NULL, allow_login = (manual_login_blocked = 0), updated_at = CURRENT_TIMESTAMP WHERE id = ?`, nextStatus, id); err != nil {
-			return operations, errors.Join(append(accountErrors, err)...)
-		}
-		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", id, username, "create_or_update", "success", status, nextStatus, "")
-		operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, ProvisionStatus: nextStatus})
-		if progress != nil {
-			progress.step(ctx, "同步 DSM 用户", username)
+			batch := pendingAccounts[:n]
+			var results []helperclient.UserProvisionOutcome
+			if plan[batch[0]] == helperclient.DirectoryUnchanged && !policy.DisableMissingUsers {
+				results = make([]helperclient.UserProvisionOutcome, len(batch))
+			} else {
+				results, err = s.provisionUserBatch(ctx, batchClient, batch, password, policy.FullSync)
+			}
+			if batchClient != nil && errors.Is(err, helperclient.ErrUserBatchUnsupported) {
+				batchClient = nil
+				continue
+			}
+			if err != nil {
+				return operations, errors.Join(append(accountErrors, err)...)
+			}
+			if err := s.saveSyncUserBatch(ctx, batch, results); err != nil {
+				return operations, errors.Join(append(accountErrors, err)...)
+			}
+			for i, item := range batch {
+				result := results[i]
+				if progress != nil {
+					progress.step(ctx, "同步 DSM 用户", item.username)
+				}
+				if result.Err != nil {
+					failedUsers[item.username] = true
+					accountErrors = append(accountErrors, result.Err)
+					s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", item.id, item.username, "create_or_update", "failed", item.status, "failed", result.Err.Error())
+					continue
+				}
+				nextStatus, action := "linked_existing", "link_existing_dsm_user"
+				if result.Created {
+					createdUserCount++
+					nextStatus, action = "created", "sync_dsm_user"
+				}
+				if result.Created || (!policy.DisableMissingUsers && plan[item] == helperclient.DirectoryUnchanged) {
+					managedMembers[item.username] = true
+				}
+				if result.Created && result.InitialPasswordApplied {
+					if createdPasswords.accounts == nil {
+						createdPasswords.accounts = map[string]string{}
+					}
+					createdPasswords.accounts[item.id] = item.username
+				}
+				s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", item.id, item.username, "create_or_update", "success", item.status, nextStatus, "")
+				operations = append(operations, syncsvc.PlanItem{Action: action, ProviderSlug: sourceSlug, Subject: item.id, DSMUsername: item.username, ProvisionStatus: nextStatus})
+			}
+			pendingAccounts = pendingAccounts[n:]
 		}
 	}
+	s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "sync_dsm_users_elapsed", "info", "", "", fmt.Sprintf("处理 %d 人，新建 %d 人，用时 %s", userCount, createdUserCount, time.Since(startedUsers).Round(time.Millisecond)))
 	if policy.FullSync {
-		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress)
+		startedPassword := time.Now()
+		passwordOperations, err := s.resetFullSyncPasswords(ctx, runID, sourceSlug, logBuffer, progress, createdPasswords)
 		operations = append(operations, passwordOperations...)
+		s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "sync_password_elapsed", "info", "", "", fmt.Sprintf("处理 %d 条密码记录，用时 %s", len(passwordOperations), time.Since(startedPassword).Round(time.Millisecond)))
 		if err != nil {
 			accountErrors = append(accountErrors, err)
 		}
@@ -490,22 +572,21 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 			  AND me.dsm_group_id = m.dsm_group_id
 			  AND me.dsm_account_id = m.dsm_account_id
 		  )
-		ORDER BY m.created_at`, sourceSlug)
+		ORDER BY g.dsm_groupname, m.created_at, m.id`, sourceSlug)
 	if err != nil {
 		return operations, errors.Join(append(accountErrors, err)...)
 	}
-	type pendingMemberProvision struct {
-		id        string
-		groupname string
-		username  string
-		status    string
-	}
-	var pendingMembers []pendingMemberProvision
+	var pendingMembers []syncMember
 	for memberRows.Next() {
-		var item pendingMemberProvision
+		var item syncMember
 		if err := memberRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
 			memberRows.Close()
 			return operations, errors.Join(append(accountErrors, err)...)
+		}
+		if failedUsers[item.username] {
+			// The user failure is already recorded for this run. Leave this
+			// membership for reconciliation and continue with confirmed users.
+			continue
 		}
 		pendingMembers = append(pendingMembers, item)
 	}
@@ -514,24 +595,27 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		return operations, errors.Join(append(accountErrors, err)...)
 	}
 	memberRows.Close()
+	startedGroups := time.Now()
+	if withMembers != nil {
+		// Every seed member must be newly created or positively verified as a
+		// fully managed ordinary account. Directory-only users cannot create groups.
+		groupHasManagedMembers := make(map[string]bool)
+		for _, m := range pendingMembers {
+			allManaged, seen := groupHasManagedMembers[m.groupname]
+			groupHasManagedMembers[m.groupname] = (!seen || allManaged) && managedMembers[m.username]
+		}
+		if err := prepareGroups(groupHasManagedMembers); err != nil {
+			return operations, errors.Join(append(accountErrors, err)...)
+		}
+	}
 	if progress != nil {
 		progress.setTotal(ctx, "同步 DSM 成员", "正在同步 DSM 成员", len(pendingMembers))
 	}
-	for _, item := range pendingMembers {
-		id, groupname, username, status := item.id, item.groupname, item.username, item.status
-		if _, err := s.helper.AddGroupMember(ctx, "sync_member_"+randomHex(8), groupname, username); err != nil {
-			err = errors.Join(err, saveObjectState(ctx, s.store.DBTX(), groupname+":"+username, `UPDATE group_members SET provision_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id))
-			s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "failed", status, "failed", err.Error())
-			return operations, errors.Join(append(accountErrors, err)...)
-		}
-		if err := s.saveGroupMembership(ctx, id, groupname+":"+username); err != nil {
-			return operations, errors.Join(append(accountErrors, err)...)
-		}
-		s.writeSyncOperation(logBuffer, runID, sourceSlug, "member", id, groupname+":"+username, "create_or_update", "success", status, "created", "")
-		operations = append(operations, syncsvc.PlanItem{Action: "sync_dsm_group_member", ProviderSlug: sourceSlug, Subject: id, DSMUsername: username, DSMGroupname: groupname, ProvisionStatus: "created"})
-		if progress != nil {
-			progress.step(ctx, "同步 DSM 成员", groupname+":"+username)
-		}
+	memberOps, err := s.syncGroupMembers(ctx, runID, sourceSlug, pendingMembers, logBuffer, progress)
+	operations = append(operations, memberOps...)
+	s.writeSyncOperation(logBuffer, runID, sourceSlug, "directory", sourceSlug, "", "sync_groups_elapsed", "info", "", "", fmt.Sprintf("处理 %d 个组，核对 %d 条成员关系，用时 %s", len(pendingGroups), len(memberOps), time.Since(startedGroups).Round(time.Millisecond)))
+	if err != nil {
+		return operations, errors.Join(append(accountErrors, err)...)
 	}
 
 	if policy.DeactivateMissingData {

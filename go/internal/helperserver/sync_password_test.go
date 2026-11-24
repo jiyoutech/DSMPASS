@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
 func syncedPasswordTestStore(t *testing.T, username string) *db.Queries {
@@ -220,5 +222,139 @@ func TestNativeAccountCommandHasDeadlineAndRedactsOutput(t *testing.T) {
 	err := runAccountCommand(ctx, command)
 	if err == nil || strings.Contains(err.Error(), "secret-password") || time.Since(started) > 3*time.Second {
 		t.Fatalf("command timeout or redaction failed: %v", err)
+	}
+}
+
+func TestPasswordBatchHoldsWriterAndPreservesIndependentReceipts(t *testing.T) {
+	ctx := context.Background()
+	q := syncedPasswordTestStore(t, "alice")
+	for _, n := range []string{"bob", "carol", "dora"} {
+		for _, stmt := range []string{
+			"INSERT INTO app_identities (id,status) VALUES (?1,'active')",
+			"INSERT INTO external_accounts (id,provider_slug,subject,subject_norm,subject_type,app_identity_id) VALUES (?1,'source',?1,?1,'directory_subject',?1)",
+			"INSERT INTO dsm_accounts (id,app_identity_id,dsm_username,dsm_username_norm,managed,provision_status) VALUES (?1,?1,?1,?1,1,'created')",
+			"INSERT INTO dsm_mapping_entries (id,mapping_type,provider_slug,external_account_id,provider_group_id,dsm_account_id) VALUES (?1,'user','source',?1,'',?1)",
+		} {
+			if _, err := q.DBTX().ExecContext(ctx, stmt, n); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	dir := t.TempDir()
+	t.Setenv("RESET_FIXTURE", dir)
+	cfg := config.HelperConfig{LockDir: filepath.Join(dir, "locks"), JournalDir: filepath.Join(dir, "journal"), ShadowLockPath: filepath.Join(dir, "writer"), SynoUserPath: filepath.Join(dir, "synouser")}
+	command := "#!/bin/sh\n" + `set -eu
+[ "$1" = --setpw ]
+printf 'run\n' >> "$RESET_FIXTURE/$2.calls"
+i=0
+while [ ! -f "$RESET_FIXTURE/release" ] && [ "$i" -lt 250 ]; do sleep 0.02; i=$((i+1)); done
+[ -f "$RESET_FIXTURE/release" ] && [ "$2" != carol ]
+`
+	if err := os.WriteFile(cfg.SynoUserPath, []byte(command), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := NewWithStore(cfg, q)
+	names := []string{"bob", "dora", "alice", "carol"}
+	var rows []any
+	for _, n := range names {
+		id := n
+		if n == "alice" {
+			id = "account"
+		}
+		rows = append(rows, map[string]any{"dsm_username": n, "account_id": id})
+	}
+	payload := map[string]any{"request_id": "batch", "source_slug": "source", "password": "fixture", "dsm_users": rows}
+	done := make(chan map[string]any, 1)
+	go func() { done <- s.resetSyncedPasswordBatch(ctx, cfg, payload) }()
+	release := func() {
+		if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer release()
+	until := time.Now().Add(4 * time.Second)
+	for {
+		files, err := filepath.Glob(filepath.Join(dir, "*.calls"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) == 4 {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("four authorized resets did not start together")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, path := range []string{cfg.ShadowLockPath, lockPath(cfg.LockDir, "alice")} {
+		short, cancel := context.WithTimeout(ctx, 60*time.Millisecond)
+		err := withFileLockContext(short, path, func() error { return nil })
+		cancel()
+		if !errors.Is(err, errAccountBusy) {
+			t.Fatalf("reset did not exclude other account writers: %v", err)
+		}
+	}
+	release()
+	for _, response := range []map[string]any{<-done, s.resetSyncedPasswordBatch(ctx, cfg, payload)} {
+		out, ok := response["user_results"].([]map[string]any)
+		if !ok || len(out) != 4 {
+			t.Fatal(response)
+		}
+		for i, n := range names {
+			rec, err := loadPasswordReset(cfg, n)
+			if err != nil || out[i]["dsm_username"] != n || out[i]["success"] != (n != "carol") || (rec.Status == "completed") != (n != "carol") {
+				t.Fatalf("bad receipt for %s: %v %v", n, out[i], err)
+			}
+			count, err := os.ReadFile(filepath.Join(dir, n+".calls"))
+			if err != nil || string(count) != "run\n" {
+				t.Fatalf("%s was replayed", n)
+			}
+		}
+	}
+	// A valid row with the wrong source account ID cannot use another row's authorization.
+	payload["request_id"] = "next"
+	payload["dsm_users"] = []any{map[string]any{"dsm_username": "carol", "account_id": "unrelated"}, rows[0]}
+	out := s.resetSyncedPasswordBatch(ctx, cfg, payload)["user_results"].([]map[string]any)
+	if out[0]["success"] != false || out[1]["success"] != true {
+		t.Fatal(out)
+	}
+	for _, invalid := range [][]any{nil, {rows[0], rows[0]}, append(append([]any(nil), rows...), rows[0]), {"bad"}} {
+		payload["dsm_users"] = invalid
+		if got := s.resetSyncedPasswordBatch(ctx, cfg, payload); got["success"] != false {
+			t.Fatal(got)
+		}
+	}
+}
+
+func TestPasswordBatchThroughSignedSocket(t *testing.T) {
+	q := syncedPasswordTestStore(t, "alice")
+	dir := t.TempDir()
+	cfg := config.HelperConfig{SocketPath: shortSocketPath(t), HMACSecret: "fixture-secret", TimestampSkewSeconds: 60, LockDir: filepath.Join(dir, "locks"), JournalDir: filepath.Join(dir, "journal"), ShadowLockPath: filepath.Join(dir, "writer"), SynoUserPath: filepath.Join(dir, "synouser")}
+	if err := os.WriteFile(cfg.SynoUserPath, []byte("#!/bin/sh\n[ \"$1\" = --setpw ] && [ \"$2\" = alice ] && [ \"$3\" = fixture ]\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", cfg.SocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	s := NewWithStore(cfg, q)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			s.handle(conn)
+		}
+	}()
+	client := helperclient.UnixSocketClient{SocketPath: cfg.SocketPath, Secret: cfg.HMACSecret, Timeout: time.Second}
+	users := []helperclient.PasswordResetTarget{{AccountID: "account", Username: "alice"}, {AccountID: "outside", Username: "root"}}
+	results, err := client.ResetSyncedUserPasswords(context.Background(), "signed-batch", "source", users, "fixture")
+	if err != nil || len(results) != 2 || results[0] != nil || results[1] == nil {
+		t.Fatalf("batch results %v, %v", results, err)
+	}
+	<-done
+	if _, err := loadPasswordReset(cfg, "root"); !os.IsNotExist(err) {
+		t.Fatalf("unexpected reserved-account receipt: %v", err)
 	}
 }

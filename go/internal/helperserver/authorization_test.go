@@ -216,23 +216,46 @@ func TestAuthorizationOutputIsBounded(t *testing.T) {
 }
 
 func TestProvisionOnlyEnrollsSuccessfullyCreatedAccounts(t *testing.T) {
-	for _, existing := range []bool{false, true} {
-		t.Run(map[bool]string{true: "existing", false: "new"}[existing], func(t *testing.T) {
+	for _, tc := range []struct {
+		name, password               string
+		existing, pending, confirmed bool
+	}{
+		{name: "new", password: "private-test", confirmed: true},
+		{name: "existing", password: "private-test", existing: true},
+		{name: "generated password"},
+		{name: "pending repair", password: "private-test", pending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := policyTestConfig(t)
 			username := "new-user"
+			existing := tc.existing
 			if existing {
 				username = "alice"
 			}
+			if tc.pending {
+				if err := savePasswordReset(cfg, passwordResetRecord{Username: username, RequestID: "previous-reset", PasswordDigest: lineHash("test"), Status: "unknown"}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			cfg.SynoUserPath = filepath.Join(t.TempDir(), "synouser")
 			marker := cfg.SynoUserPath + ".mutation"
-			body := "#!/bin/sh\ncase \"$1\" in\n--get) /usr/bin/grep -q \"^$2:\" '" + cfg.PasswdPath + "';;\n--add) printf 'new-user:x:1030:100:New:/:/bin/sh\\n' >> '" + cfg.PasswdPath + "'; printf called > '" + marker + "';;\n--modify) printf called > '" + marker + "';;\nesac\n"
+			body := "#!/bin/sh\ncase \"$1\" in\n--get) /usr/bin/grep -q \"^$2:\" '" + cfg.PasswdPath + "' || { echo 'synoerr=[0x1D00]' >&2; exit 255; };;\n--add) printf 'new-user:x:1030:100:New:/:/bin/sh\\n' >> '" + cfg.PasswdPath + "'; printf called > '" + marker + "';;\n--modify) printf called > '" + marker + "';;\nesac\n"
 			if err := os.WriteFile(cfg.SynoUserPath, []byte(body), 0700); err != nil {
 				t.Fatal(err)
 			}
 			s := NewWithStore(cfg, syncedPasswordTestStore(t, username))
-			response := s.provisionAccount(cfg, map[string]any{"dsm_username": username, "display_name": "New", "initial_password": "private-test"})
+			response := s.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": username, "display_name": "New", "initial_password": tc.password})
 			if (response["success"] == true) == existing {
 				t.Fatalf("existing=%v response=%v", existing, response)
+			}
+			if (response["initial_password_applied"] == true) != tc.confirmed {
+				t.Fatalf("unexpected fresh-password confirmation: %v", response)
+			}
+			if response["created"] == true {
+				again := s.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": username})
+				if again["success"] != true || again["created"] != false || again["initial_password_applied"] != false {
+					t.Fatalf("existing account reused creation confirmation: %v", again)
+				}
 			}
 			_, err := os.Stat(marker)
 			if existing && !os.IsNotExist(err) {

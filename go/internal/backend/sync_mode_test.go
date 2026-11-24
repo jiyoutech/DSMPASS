@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -257,7 +258,7 @@ func TestFullSyncEmptySourceDoesNotResetPasswords(t *testing.T) {
 	defer database.Close()
 	h := &syncPasswordHelper{}
 	s := NewWithDB(config.BackendConfig{}, h, database, q)
-	if _, err := s.resetFullSyncPasswords(context.Background(), "run", "empty", nil, nil); err != nil {
+	if _, err := s.resetFullSyncPasswords(context.Background(), "run", "empty", nil, nil, syncCreatedPasswords{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.resets) != 0 {
@@ -312,5 +313,127 @@ func TestFullSyncRecordsDirectoryOnlyPasswordAsSkipped(t *testing.T) {
 		if err := database.QueryRow("SELECT status FROM sync_operation_logs WHERE sync_run_id='dir-only' AND action='reset_password' AND dsm_name=?", name).Scan(&status); err != nil || status != want {
 			t.Fatalf("%s: %s %v", name, status, err)
 		}
+	}
+}
+
+type confirmedCreationHelper struct {
+	syncPasswordHelper
+	results map[string]helperclient.ProvisionUserResult
+}
+
+func (h *confirmedCreationHelper) ProvisionUserWithResult(_ context.Context, _, name, _, _, _ string) (helperclient.ProvisionUserResult, error) {
+	result := h.results[name]
+	delete(h.results, name)
+	return result, nil
+}
+
+func TestFreshPasswordConfirmationOnlyAppliesToThisCreation(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	h := &confirmedCreationHelper{results: map[string]helperclient.ProvisionUserResult{
+		"fresh":       {Created: true, InitialPasswordApplied: true},
+		"unconfirmed": {Created: true},
+		"existing":    {InitialPasswordApplied: true},
+	}}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, h, database, q)
+	if _, err := database.Exec("INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"fresh", "existing", "unconfirmed"} {
+		seedSyncedAccount(t, ctx, database, "a", name, "external-"+name, name, name, "2999-01-01")
+	}
+	for _, run := range []string{"first", "repeat"} {
+		h.resets = nil
+		if _, err := s.syncSourceToDSM(ctx, run, "a", "2000-01-01", sourceSyncPolicy{FullSync: true}); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"a:existing", "a:unconfirmed"}
+		if run == "repeat" {
+			want = []string{"a:existing", "a:fresh", "a:unconfirmed"}
+		}
+		if !slices.Equal(h.resets, want) {
+			t.Fatalf("%s reset %v want %v", run, h.resets, want)
+		}
+	}
+	var n int
+	if err := database.QueryRow("SELECT count(*) FROM sync_operation_logs WHERE action='initialize_password' AND status='success' AND sync_run_id='first' AND dsm_name='fresh'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("creation audit %d, %v", n, err)
+	}
+	for _, created := range []syncCreatedPasswords{{accounts: map[string]string{"account-fresh": "fresh"}, password: "outdated"}, {accounts: map[string]string{"account-fresh": "other"}, password: h.passwords[0]}} {
+		h.resets = nil
+		if _, err := s.resetFullSyncPasswords(ctx, "changed", "a", nil, nil, created); err != nil {
+			t.Fatal(err)
+		}
+		if len(h.resets) != 3 {
+			t.Fatalf("stale receipt suppressed a reset: %v", h.resets)
+		}
+	}
+}
+
+type passwordBatchHelper struct {
+	syncPasswordHelper
+	sizes    []int
+	response string
+}
+
+func (h *passwordBatchHelper) ResetSyncedUserPasswords(_ context.Context, _ string, _ string, targets []helperclient.PasswordResetTarget, _ string) ([]error, error) {
+	h.sizes = append(h.sizes, len(targets))
+	switch h.response {
+	case "old":
+		return nil, helperclient.ErrPasswordBatchUnsupported
+	case "unknown":
+		return nil, errors.New("connection closed")
+	case "short":
+		return []error{}, nil
+	}
+	out := make([]error, len(targets))
+	for i, u := range targets {
+		if u.Username == "bob" {
+			out[i] = helperclient.ErrDingTalkMembershipOnly
+		}
+	}
+	return out, nil
+}
+
+func TestFullSyncUsesBoundedPasswordBatchesAndNeverReplaysUncertainWrites(t *testing.T) {
+	for _, mode := range []string{"ok", "old", "unknown", "short"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			h := &passwordBatchHelper{response: mode}
+			s := NewWithDB(config.BackendConfig{AdminJWTSecret: "fixture"}, h, database, q)
+			if _, err = database.Exec("INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')"); err != nil {
+				t.Fatal(err)
+			}
+			names := []string{"alice", "bob", "carol", "dora", "ethan", "fred", "grace", "helen", "iris", "jules"}
+			for _, n := range names {
+				seedSyncedAccount(t, ctx, database, "a", n, "ext-"+n, n, n, "2999-01-01")
+			}
+			pwd, err := s.provisionUserInitialPassword(ctx, "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations, err := s.resetFullSyncPasswords(ctx, "full", "a", nil, nil, syncCreatedPasswords{accounts: map[string]string{"account-jules": "jules"}, password: pwd})
+			wantBatches, wantSingles, wantOps := []int{4, 4}, 1, 9
+			switch mode {
+			case "old":
+				wantBatches = []int{4}
+				wantSingles = 9
+				wantOps = 10
+			case "unknown", "short":
+				wantOps = 2
+			}
+			if (err != nil) != (mode == "unknown" || mode == "short") || !slices.Equal(h.sizes, wantBatches) || len(h.resets) != wantSingles || len(operations) != wantOps {
+				t.Fatalf("mode=%s batches=%v singles=%v ops=%d err=%v", mode, h.sizes, h.resets, len(operations), err)
+			}
+		})
 	}
 }

@@ -30,20 +30,30 @@ type dingTalkDirectoryScope struct {
 	Users   map[string]int `json:"users"`
 }
 
+type verifiedAccountCandidate struct {
+	UID   int                   `json:"uid"`
+	Email string                `json:"email"`
+	Owner db.CredentialIdentity `json:"owner"`
+}
+
 type accountPolicy struct {
-	DingTalkScope           *dingTalkDirectoryScope       `json:"dingtalk_scope,omitempty"`
-	DirectoryUsers          map[string]directoryUserGrant `json:"directory_users,omitempty"`
-	Users                   map[string]int                `json:"users"`
-	Groups                  map[string]int                `json:"groups"`
-	ReusableGroups          map[string]int                `json:"reusable_groups,omitzero"`
-	WebApprovals            map[string]groupWebApproval   `json:"pending_web_group_approvals,omitempty"`
-	LegacyMigrationComplete bool                          `json:"legacy_migration_complete,omitempty"`
+	LoginApprovals          map[string]loginApprovalTicket      `json:"pending_login_approvals,omitempty"`
+	CredentialCandidates    map[string]verifiedAccountCandidate `json:"credential_candidates,omitempty"`
+	CredentialOwners        map[string]db.CredentialIdentity    `json:"credential_owners,omitempty"`
+	DingTalkScope           *dingTalkDirectoryScope             `json:"dingtalk_scope,omitempty"`
+	DirectoryUsers          map[string]directoryUserGrant       `json:"directory_users,omitempty"`
+	Users                   map[string]int                      `json:"users"`
+	Groups                  map[string]int                      `json:"groups"`
+	ReusableGroups          map[string]int                      `json:"reusable_groups,omitzero"`
+	WebApprovals            map[string]groupWebApproval         `json:"pending_web_group_approvals,omitempty"`
+	LegacyMigrationComplete bool                                `json:"legacy_migration_complete,omitempty"`
 }
 
 type systemAccount struct {
-	name    string
-	id, gid int
-	members []string
+	name        string
+	description string
+	id, gid     int
+	members     []string
 }
 
 func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
@@ -75,6 +85,7 @@ func systemAccounts(path string, group bool) (map[string]systemAccount, error) {
 		if group {
 			a.members = strings.Split(fields[3], ",")
 		} else {
+			a.description = fields[4]
 			a.gid, err = strconv.Atoi(fields[3])
 			if err != nil || a.gid < 0 {
 				return nil, errors.New("invalid system account group")
@@ -201,7 +212,9 @@ const revokedUserID = -1
 
 var errUserNotEnrolled = errors.New("尚未登记")
 
-var errDingTalkMembershipOnly = errors.New("钉钉同名用户保留 DSM/SMB 密码，停用需有同步确认记录")
+var errDingTalkMembershipOnly = errors.New("此账号已关联钉钉通讯录，仅用于同步群组成员。现有绑定没有 DSM 登录及改密授权")
+
+var errDirectoryMembershipOnly = errors.New("已获通讯录同步授权，登录、改密和停用需独立核实账号归属")
 
 func requireManagedUser(cfg config.HelperConfig, username string) error {
 	grant, err := userEnrollment(cfg, username)
@@ -209,7 +222,7 @@ func requireManagedUser(cfg config.HelperConfig, username string) error {
 		if grant.DingTalk != nil {
 			return fmt.Errorf("DSM 用户 %q: %w", username, errDingTalkMembershipOnly)
 		}
-		return fmt.Errorf("DSM 用户 %q 已获通讯录同步授权，登录、改密和停用需独立核实账号归属", username)
+		return fmt.Errorf("DSM 用户 %q %w", username, errDirectoryMembershipOnly)
 	}
 	return err
 }
@@ -218,11 +231,26 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 	if cfg.AccountPolicyPath == "" && !cfg.Privileged {
 		return nil, nil
 	} // Isolated legacy tests only; production configuration always sets a policy.
-	a, err := normalUser(cfg, username)
+	if err := assertAllowed(cfg, username); err != nil {
+		return nil, err
+	}
+	users, err := systemAccounts(cfg.PasswdPath, false)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := systemAccounts(cfg.GroupPath, true)
 	if err != nil {
 		return nil, err
 	}
 	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return enrolledLocalUser(p, username, users, groups)
+}
+
+func enrolledLocalUser(p accountPolicy, username string, users, groups map[string]systemAccount) (*directoryUserGrant, error) {
+	a, err := normalLocalUser(username, users, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -233,10 +261,6 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 				return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d", username, grant.UID, a.id)
 			}
 			if grant.DingTalk != nil {
-				groups, err := systemAccounts(cfg.GroupPath, true)
-				if err != nil {
-					return nil, err
-				}
 				if !ordinaryInstallUser(a, groups) {
 					return nil, errors.New("仅普通本地用户可按钉钉姓名关联")
 				}
@@ -250,6 +274,11 @@ func userEnrollment(cfg config.HelperConfig, username string) (*directoryUserGra
 	}
 	if id != a.id {
 		return nil, fmt.Errorf("DSM 用户 %q 的 UID 已从 %d 变为 %d，请管理员核实是否为同一账号", username, id, a.id)
+	}
+	if _, bound := p.CredentialOwners[username]; bound {
+		if !ordinaryInstallUser(a, groups) {
+			return nil, errors.New("统一登录和改密仅适用于已核实的普通 DSM 账号")
+		}
 	}
 	return nil, nil
 }
@@ -336,6 +365,9 @@ func updateAccountPolicy(cfg config.HelperConfig, name string, group, revoke boo
 		delete(p.WebApprovals, name)
 	} else {
 		delete(p.DirectoryUsers, name)
+		delete(p.LoginApprovals, name)
+		delete(p.CredentialOwners, name)
+		delete(p.CredentialCandidates, name)
 	}
 	if err := (creationTarget{cfg: cfg, name: name, group: group}).clear(); err != nil {
 		return err
@@ -428,10 +460,20 @@ func verifyAccountAbsent(cfg config.HelperConfig, name string) error {
 	if err != nil {
 		return err
 	}
+	return verifyNewAccountPolicy(p, name)
+}
+
+func verifyNewAccountPolicy(p accountPolicy, name string) error {
+	if _, bound := p.CredentialOwners[name]; bound {
+		return fmt.Errorf("DSM 用户 %q 已绑定来源身份", name)
+	}
 	_, limited := p.DirectoryUsers[name]
 	captured := false
 	if p.DingTalkScope != nil {
 		_, captured = p.DingTalkScope.Users[name]
+	}
+	if _, ok := p.CredentialCandidates[name]; ok {
+		captured = true
 	}
 	if _, bound := p.Users[name]; bound || limited || captured {
 		return fmt.Errorf("DSM 用户 %q 已有授权或撤销记录，请管理员核实后再重建", name)

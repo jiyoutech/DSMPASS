@@ -155,12 +155,14 @@ func (f Feishu) ListUsersAndGroups() ([]User, []Group, error) {
 
 func (f Feishu) listUsers(token string, departments []Group) ([]User, error) {
 	usersBySubject := map[string]User{}
-	for _, department := range departments {
-		items, err := f.departmentUsers(token, department.Subject)
-		if err != nil {
-			return nil, err
-		}
-		for _, raw := range items {
+	pages, err := readDirectoryItems(departments, func(department Group) ([]map[string]any, error) {
+		return f.departmentUsers(token, department.Subject)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, department := range departments {
+		for _, raw := range pages[i] {
 			subject, subjectType := feishuUserSubject(raw)
 			if subject == "" {
 				continue
@@ -309,18 +311,29 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 		if pageToken != "" {
 			endpoint += "&page_token=" + url.QueryEscape(pageToken)
 		}
-		var out map[string]any
-		if err := f.getJSON(endpoint, token, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := f.getJSON(endpoint, token, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, _ := data["items"].([]any)
+		items, err := directoryPageItems(data, "items")
+		if err != nil {
+			return nil, err
+		}
 		for _, item := range items {
-			if raw, ok := item.(map[string]any); ok {
-				result = append(result, raw)
+			if subject, _ := feishuUserSubject(item); strings.TrimSpace(subject) == "" {
+				return nil, errors.New("飞书部门用户缺少身份标识，无法确认通讯录完整")
 			}
 		}
-		hasMore, _ := data["has_more"].(bool)
+		result = append(result, items...)
+		hasMore, err := directoryPageHasMore(data, "page_token")
+		if err != nil {
+			return nil, err
+		}
 		pageToken, _ = data["page_token"].(string)
 		if !hasMore {
 			break
@@ -345,18 +358,29 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 		if pageToken != "" {
 			endpoint += "&page_token=" + url.QueryEscape(pageToken)
 		}
-		var out map[string]any
-		if err := f.getJSON(endpoint, token, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := f.getJSON(endpoint, token, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, _ := data["items"].([]any)
+		items, err := directoryPageItems(data, "items")
+		if err != nil {
+			return nil, err
+		}
 		for _, item := range items {
-			if raw, ok := item.(map[string]any); ok {
-				result = append(result, raw)
+			if strings.TrimSpace(firstString(item, "open_department_id", "department_id")) == "" {
+				return nil, errors.New("飞书部门缺少身份标识，无法确认通讯录完整")
 			}
 		}
-		hasMore, _ := data["has_more"].(bool)
+		result = append(result, items...)
+		hasMore, err := directoryPageHasMore(data, "page_token")
+		if err != nil {
+			return nil, err
+		}
 		pageToken, _ = data["page_token"].(string)
 		if !hasMore {
 			break
@@ -452,7 +476,7 @@ func decodeResponse(response *http.Response, out any) error {
 		return err
 	}
 	if response.StatusCode >= 400 {
-		return formatFeishuHTTPError(response.StatusCode, body)
+		return directoryHTTPError(response, formatFeishuHTTPError(response.StatusCode, body))
 	}
 	if err := feishuAPIError(response.StatusCode, body); err != nil {
 		return err
