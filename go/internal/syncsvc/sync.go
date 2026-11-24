@@ -86,14 +86,15 @@ func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory)
 			subjectType = "directory_subject"
 		}
 		external, err := identityService.UpsertProfile(ctx, identity.ExternalProfile{
-			ProviderSlug:  user.ProviderSlug,
-			Subject:       user.Subject,
-			SubjectType:   subjectType,
-			DisplayName:   user.DisplayName,
-			Email:         user.Email,
-			EmailVerified: &verified,
-			Mobile:        user.Mobile,
-			Active:        &active,
+			ProviderSlug:     user.ProviderSlug,
+			Subject:          user.Subject,
+			SubjectType:      subjectType,
+			DisplayName:      user.DisplayName,
+			Email:            user.Email,
+			EmailVerified:    &verified,
+			DingTalkOrgEmail: user.DingTalkOrgEmail,
+			Mobile:           user.Mobile,
+			Active:           &active,
 		})
 		if err != nil {
 			return result, err

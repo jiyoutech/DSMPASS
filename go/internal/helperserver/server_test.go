@@ -1089,3 +1089,17 @@ func skipIfSocketServeBlocked(t *testing.T, errCh <-chan error) {
 func isSocketSandboxError(err error) bool {
 	return err != nil && (errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "operation not permitted"))
 }
+
+// Existing low-level relay tests exercise ordinary, explicitly managed accounts.
+func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayLoginResult, error) {
+	return relayLoginWithAuthorization(cfg, requestID, username, func() error { return requireManagedUser(cfg, username) })
+}
+
+func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (browserLoginResult, error) {
+	return prepareBrowserLoginWithAuthorization(cfg, requestID, username, func() error { return requireManagedUser(cfg, username) })
+}
+
+func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any) error {
+	_, err := s.loginAuthorization(cfg, payload)
+	return err
+}

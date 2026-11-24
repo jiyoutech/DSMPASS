@@ -35,23 +35,58 @@ func (s *Server) mappingAllowed(cfg config.HelperConfig, request db.HelperAuthor
 	return db.HelperAccountAllowed(context.Background(), s.store, request)
 }
 
-func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any) error {
+// loginAuthorization returns the same account check for each lock boundary.
+func (s *Server) loginAuthorization(cfg config.HelperConfig, payload map[string]any) (func() error, error) {
 	username, err := requiredString(payload, "dsm_username")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	identityID, err := requiredString(payload, "identity_id")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	source, err := requiredString(payload, "login_source")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := requireManagedUser(cfg, username); err != nil {
-		return err
+	request := db.HelperAuthorizationQuery{Action: "login", Username: username, IdentityID: identityID, SourceSlug: source}
+	grant, err := userEnrollment(cfg, username)
+	if err != nil {
+		return nil, err
 	}
-	return s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "login", Username: username, IdentityID: identityID, SourceSlug: source})
+	if grant == nil {
+		return func() error { return requireManagedUser(cfg, username) }, s.authorizeAccount(cfg, request)
+	}
+	if grant.DingTalk == nil {
+		return nil, fmt.Errorf("DSM 用户 %q 只有通讯录同步授权", username)
+	}
+	if grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject == "" {
+		return nil, errors.New("登录身份源与已登记的钉钉绑定不匹配")
+	}
+	if grant.LoginEmail == "" {
+		return nil, fmt.Errorf("DSM 用户 %q 仅已关联通讯录，请同步钉钉企业邮箱并由 NAS 管理员批量登记登录绑定", username)
+	}
+	request.Action = "dingtalk_login"
+	request.Subject = grant.DingTalk.Subject
+	request.LoginEmail = grant.LoginEmail
+	check := func() error {
+		current, err := userEnrollment(cfg, username)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.UID != grant.UID || current.DingTalk == nil || *current.DingTalk != *grant.DingTalk || current.LoginEmail != grant.LoginEmail {
+			return errors.New("钉钉登录绑定已变更，请重新登录")
+		}
+		info, err := getSynoUser(cfg.SynoUserPath, username)
+		if err != nil {
+			return fmt.Errorf("读取 DSM 登录账号资料: %w", err)
+		}
+		if info.Expired || !strings.EqualFold(strings.TrimSpace(info.Mail), grant.LoginEmail) {
+			return errors.New("DSM 账号已停用或已有邮箱与钉钉企业邮箱不符")
+		}
+		return s.authorizeAccount(cfg, request)
+	}
+	return check, check()
 }
 
 func queryAccountAsPackage(cfg config.HelperConfig, request db.HelperAuthorizationQuery) (bool, error) {

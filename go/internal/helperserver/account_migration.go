@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"net/mail"
 	"os"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ type LegacyGroupReview func(map[string]int) (map[string]int, error)
 
 type enrollmentMigrationResult struct {
 	Users, DirectoryUsers, UpdatedDirectoryUsers, Groups, Skipped int
+	LoginEmails                                                   int
 	AlreadyComplete                                               bool
 	ReviewedGroupCount                                            *int
 }
@@ -95,17 +97,33 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 		// Only this explicit root action may add existing users. Keep the UID
 		// from the system snapshot so a concurrent replacement cannot inherit it.
 		for _, name := range snapshot.Users {
-			enrollMappedUser(cfg, policy, users, groups, name, "", false, snapshot.Departments[name], &result)
+			enrollMappedUser(cfg, policy, users, groups, name, snapshot, &result)
 		}
-		for name, email := range snapshot.RetryUsers {
-			enrollMappedUser(cfg, policy, users, groups, name, email, true, snapshot.Departments[name], &result)
+		for name := range snapshot.RetryUsers {
+			enrollMappedUser(cfg, policy, users, groups, name, snapshot, &result)
 		}
 		for name, binding := range snapshot.DingTalkUsers {
 			grant, exists := policy.DirectoryUsers[name]
-			if !exists || grant.DingTalk != nil || grant.UID != users[name].id {
+			if !exists || grant.UID != users[name].id || binding.SourceSlug == "" || binding.Subject == "" {
+				continue
+			}
+			if grant.DingTalk != nil && *grant.DingTalk != binding {
+				continue
+			}
+			email := snapshot.DingTalkLoginEmails[name]
+			if email != "" {
+				if address, err := mail.ParseAddress(email); err != nil || address.Address != email {
+					email = ""
+				}
+			}
+			if grant.DingTalk != nil && (email == "" || grant.LoginEmail != "") {
 				continue
 			}
 			grant.DingTalk = &binding
+			if email != "" {
+				grant.LoginEmail = email
+				result.LoginEmails++
+			}
 			policy.DirectoryUsers[name] = grant
 			result.UpdatedDirectoryUsers++
 		}
@@ -141,7 +159,7 @@ func migrateAccountPolicy(cfg config.HelperConfig, review LegacyGroupReview, can
 	return result, nil
 }
 
-func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, groups map[string]systemAccount, name, email string, retry bool, departments []string, result *enrollmentMigrationResult) {
+func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, groups map[string]systemAccount, name string, snapshot *db.HelperEnrollmentSnapshot, result *enrollmentMigrationResult) {
 	skip := func(reason error) {
 		log.Printf("跳过 DSM 用户 %q：%v", name, reason)
 		result.Skipped++
@@ -181,7 +199,7 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 			skip(fmt.Errorf("原 UID %d，当前 UID %d", grant.UID, account.id))
 			return
 		}
-		if pinDirectoryDepartments(&grant, policy, groups, departments) {
+		if pinDirectoryDepartments(&grant, policy, groups, snapshot.Departments[name]) {
 			policy.DirectoryUsers[name] = grant
 			result.UpdatedDirectoryUsers++
 		}
@@ -189,6 +207,7 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 	}
 	target := creationTarget{cfg: cfg, name: name}
 	id, found, err := target.receiptID()
+	email, retry := snapshot.RetryUsers[name]
 	switch {
 	case err != nil:
 		skip(err)
@@ -202,14 +221,18 @@ func enrollMappedUser(cfg config.HelperConfig, policy accountPolicy, users, grou
 			skip(fmt.Errorf("读取 DSM 账号资料失败: %w", err))
 			return
 		}
+		_, dingTalkDirectoryUser := snapshot.DingTalkUsers[name]
+		if orgEmail := snapshot.DingTalkLoginEmails[name]; dingTalkDirectoryUser && orgEmail != "" {
+			email = orgEmail
+		}
 		mail := strings.TrimSpace(info.Mail)
 		if info.Expired || (mail != "" && email != "" && !strings.EqualFold(mail, email)) {
 			skip(errors.New("DSM 账号已停用或邮箱与通讯录不匹配"))
 			return
 		}
-		if mail == "" || email == "" {
+		if dingTalkDirectoryUser || mail == "" || email == "" {
 			grant := directoryUserGrant{UID: account.id}
-			pinDirectoryDepartments(&grant, policy, groups, departments)
+			pinDirectoryDepartments(&grant, policy, groups, snapshot.Departments[name])
 			policy.DirectoryUsers[name] = grant
 			result.DirectoryUsers++
 			return

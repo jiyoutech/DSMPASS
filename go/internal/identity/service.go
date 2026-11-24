@@ -14,15 +14,16 @@ import (
 )
 
 type ExternalProfile struct {
-	ProviderSlug  string
-	Subject       string
-	SubjectType   string
-	DisplayName   string
-	Email         string
-	EmailVerified *bool
-	Mobile        string
-	AvatarURL     string
-	Active        *bool
+	ProviderSlug     string
+	Subject          string
+	SubjectType      string
+	DisplayName      string
+	Email            string
+	EmailVerified    *bool
+	DingTalkOrgEmail string
+	Mobile           string
+	AvatarURL        string
+	Active           *bool
 }
 
 type Service struct {
@@ -56,9 +57,9 @@ func (s *Service) UpsertProfile(ctx context.Context, profile ExternalProfile) (d
 	_, err = s.q.DBTX().ExecContext(ctx, `
 INSERT INTO external_accounts (
 	id, provider_slug, subject, subject_norm, subject_type, app_identity_id,
-	display_name, email, email_norm, email_verified, mobile_masked, avatar_url,
+	display_name, email, email_norm, email_verified, dingtalk_org_email, mobile_masked, avatar_url,
 	active, last_seen_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 	subject = excluded.subject,
 	subject_type = excluded.subject_type,
@@ -66,6 +67,7 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 	email = excluded.email,
 	email_norm = excluded.email_norm,
 	email_verified = excluded.email_verified,
+	dingtalk_org_email = excluded.dingtalk_org_email,
 	mobile_masked = excluded.mobile_masked,
 	avatar_url = excluded.avatar_url,
 	active = excluded.active,
@@ -82,6 +84,7 @@ ON CONFLICT(provider_slug, subject_norm) DO UPDATE SET
 		nullString(profile.Email),
 		nullString(emailNorm),
 		emailVerified,
+		nullString(Normalize(profile.DingTalkOrgEmail)),
 		nullString(maskMobile(profile.Mobile)),
 		nullString(profile.AvatarURL),
 		active,

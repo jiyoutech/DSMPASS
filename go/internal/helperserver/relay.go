@@ -79,7 +79,7 @@ type browserLoginResult struct {
 	TTLSeconds   int    `json:"ttl_seconds"`
 }
 
-func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayLoginResult, error) {
+func relayLoginWithAuthorization(cfg config.HelperConfig, requestID, username string, authorize func() error) (relayLoginResult, error) {
 	diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.start", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 		"dsm_username":     username,
 		"lock_dir":         cfg.LockDir,
@@ -90,7 +90,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 	})
 	var result relayLoginResult
 	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
-		if err := requireManagedUser(cfg, username); err != nil {
+		if err := authorize(); err != nil {
 			return err
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.lock.user.acquired", cfg.LoginDiagnosticsEnabled, diaglog.Event{"lock_path": lockPath(cfg.LockDir, username)})
@@ -105,7 +105,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 		var tempPassword string
 		var j journal
 		if err := withShadowWrite(cfg, func() error {
-			if err := requireManagedUser(cfg, username); err != nil {
+			if err := authorize(); err != nil {
 				return err
 			}
 			diaglog.Append(cfg.DataDir, requestID, "helper.lock.shadow.acquired", cfg.LoginDiagnosticsEnabled, diaglog.Event{
@@ -196,9 +196,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 		}
 
 		restoreErr := withShadowWrite(cfg, func() error {
-			if err := requireManagedUser(cfg, username); err != nil {
-				return err
-			}
+			// Restore the recorded UID and original credential even if login was revoked.
 			diaglog.Append(cfg.DataDir, requestID, "helper.lock.shadow.acquired", cfg.LoginDiagnosticsEnabled, diaglog.Event{
 				"lock_path": cfg.ShadowLockPath,
 				"phase":     "restore",
@@ -221,7 +219,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			return restoreErr
 		}
 		validateDSMDesktopSession(cfg, requestID, result, "after_shadow_restore")
-		return nil
+		return authorize()
 	})
 	if err != nil {
 		diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.finish.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error()})
@@ -235,7 +233,7 @@ func restoreRelayPassword(cfg config.HelperConfig, requestID, username, original
 	return restoreJournalPasswordLocked(cfg, *j, "relay_complete")
 }
 
-func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (browserLoginResult, error) {
+func prepareBrowserLoginWithAuthorization(cfg config.HelperConfig, requestID, username string, authorize func() error) (browserLoginResult, error) {
 	ttlSeconds := cfg.DSMBrowserLoginTTLSeconds
 	if ttlSeconds <= 0 {
 		ttlSeconds = 30
@@ -246,7 +244,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 	})
 	var result browserLoginResult
 	err := withLoginAccountLock(lockPath(cfg.LockDir, username), func() error {
-		if err := requireManagedUser(cfg, username); err != nil {
+		if err := authorize(); err != nil {
 			return err
 		}
 		existing, found, err := browserLeaseForUser(cfg, username)
@@ -261,6 +259,9 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 			return err
 		}
 		return withShadowWrite(cfg, func() error {
+			if err := authorize(); err != nil {
+				return err
+			}
 			if err := ensureNewLoginJournal(cfg, requestID, username); err != nil {
 				return err
 			}

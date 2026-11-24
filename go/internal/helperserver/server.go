@@ -210,7 +210,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			"synogroup_status":           helperCommandStatus(cfg.SynoGroupPath),
 		}
 	case "scoped_relay_login":
-		if err := s.authorizeLogin(cfg, payload); err != nil {
+		authorize, err := s.loginAuthorization(cfg, payload)
+		if err != nil {
 			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 		}
 		username, err := requiredString(payload, "dsm_username")
@@ -227,7 +228,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 			diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.missing_request_id", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "payload": payload})
 			return errorResponse("BAD_REQUEST", err.Error())
 		}
-		result, err := relayLoginReal(cfg, requestID, username)
+		result, err := relayLoginWithAuthorization(cfg, requestID, username, authorize)
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.error_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "error": err.Error()})
 			if errors.Is(err, errBrowserLoginInProgress) {
@@ -241,7 +242,8 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		diaglog.Append(cfg.DataDir, requestID, "helper.relay_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "sid": result.SID, "cookies": result.Cookies})
 		return map[string]any{"success": true, "sid": result.SID, "cookies": result.Cookies}
 	case "scoped_prepare_browser_login":
-		if err := s.authorizeLogin(cfg, payload); err != nil {
+		authorize, err := s.loginAuthorization(cfg, payload)
+		if err != nil {
 			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 		}
 		username, err := requiredString(payload, "dsm_username")
@@ -257,7 +259,7 @@ func (s *Server) handlePayload(payload map[string]any) map[string]any {
 		if err != nil {
 			return errorResponse("BAD_REQUEST", err.Error())
 		}
-		result, err := prepareBrowserLogin(cfg, requestID, username)
+		result, err := prepareBrowserLoginWithAuthorization(cfg, requestID, username, authorize)
 		if err != nil {
 			diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.error_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{"dsm_username": username, "error": err.Error()})
 			if errors.Is(err, errBrowserLoginInProgress) {

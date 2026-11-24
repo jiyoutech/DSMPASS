@@ -13,10 +13,11 @@ type DingTalkUserBinding struct {
 
 // This snapshot is consumed only by the explicit root installer.
 type HelperEnrollmentSnapshot struct {
-	DingTalkSources []string                       `json:"dingtalk_sources,omitempty"`
-	DingTalkUsers   map[string]DingTalkUserBinding `json:"dingtalk_users,omitempty"`
-	Users           []string                       `json:"users"`
-	Groups          []string                       `json:"groups"`
+	DingTalkLoginEmails map[string]string              `json:"dingtalk_login_emails,omitempty"`
+	DingTalkSources     []string                       `json:"dingtalk_sources,omitempty"`
+	DingTalkUsers       map[string]DingTalkUserBinding `json:"dingtalk_users,omitempty"`
+	Users               []string                       `json:"users"`
+	Groups              []string                       `json:"groups"`
 	// RetryUsers need additional evidence from DSM before enrollment.
 	RetryUsers  map[string]string   `json:"retry_users,omitempty"`
 	Departments map[string][]string `json:"departments,omitempty"`
@@ -42,6 +43,12 @@ WHERE a.provision_status IN ('pending','failed','created','linked_existing') AND
 AND ` + uniqueDingTalkName + `
 GROUP BY a.id, a.dsm_username HAVING COUNT(DISTINCT e.id)=1`
 
+// A verified login uses only the organization-managed mailbox. A second
+// active external identity sharing the mailbox or the app identity is ambiguous.
+const uniqueDingTalkMailbox = `e.dingtalk_org_email IS NOT NULL AND e.dingtalk_org_email<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.active=1 AND other.id<>e.id
+ AND (other.dingtalk_org_email=e.dingtalk_org_email OR other.app_identity_id=e.app_identity_id))`
+
 const directoryMembershipScope = `
 FROM group_members m
 JOIN dsm_accounts a ON a.id = m.dsm_account_id
@@ -59,10 +66,21 @@ func HelperEnrollmentCandidates(ctx context.Context, q *Queries) (*HelperEnrollm
 	if q == nil {
 		return nil, errors.New("enrollment migration requires a database")
 	}
+	// The privileged installer can run before the upgraded backend migrates SQLite.
+	var hasOrgEmail bool
+	if err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('external_accounts') WHERE name='dingtalk_org_email')`).Scan(&hasOrgEmail); err != nil {
+		return nil, err
+	}
+	loginEmails := ""
+	if hasOrgEmail {
+		loginEmails = `UNION SELECT 'dingtalk_login_email', b.name, e.dingtalk_org_email, ''
+ FROM bindings b JOIN external_accounts e ON e.provider_slug=b.source AND e.subject=b.subject
+ WHERE e.active=1 AND ` + uniqueDingTalkMailbox
+	}
 	// A single statement gives both lists the same SQLite read snapshot. UNION
 	// also deduplicates accounts mapped through more than one identity source.
 	rows, err := q.DBTX().QueryContext(ctx, `
-WITH successful AS (
+WITH bindings AS (`+dingTalkBindings+`), successful AS (
  SELECT l.source_slug, l.object_key, l.dsm_name, MAX(l.created_at) AS last_success
  FROM sync_operation_logs l JOIN sync_runs r ON r.id = l.sync_run_id AND r.source_slug = l.source_slug
  WHERE r.dry_run = 0 AND l.object_type = 'user' AND l.action = 'create_or_update'
@@ -102,9 +120,10 @@ UNION
 SELECT 'member', a.dsm_username, g.dsm_groupname, ''
 `+directoryMembershipScope+`
 UNION
-SELECT 'dingtalk', name, source, subject FROM (`+dingTalkBindings+`)
+SELECT 'dingtalk', name, source, subject FROM bindings
+`+loginEmails+`
 UNION SELECT 'source', slug, '', '' FROM identity_sources WHERE provider_type='dingtalk' AND enabled=1 AND directory_sync_enabled=1
-ORDER BY kind, name LIMIT 121001`)
+ORDER BY kind, name LIMIT 131001`)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +135,7 @@ ORDER BY kind, name LIMIT 121001`)
 		if err := rows.Scan(&kind, &name, &detail, &subject); err != nil {
 			return nil, err
 		}
-		if kind != "member" && kind != "dingtalk" && kind != "source" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
+		if kind != "member" && kind != "dingtalk_login_email" && kind != "dingtalk" && kind != "source" && len(result.Users)+len(result.Groups)+len(result.RetryUsers) >= 10000 {
 			return nil, errors.New("too many enrollment candidates; migration was not applied")
 		}
 		switch kind {
@@ -125,6 +144,14 @@ ORDER BY kind, name LIMIT 121001`)
 				return nil, errors.New("too many DingTalk sources")
 			}
 			result.DingTalkSources = append(result.DingTalkSources, name)
+		case "dingtalk_login_email":
+			if len(result.DingTalkLoginEmails) >= 10000 {
+				return nil, errors.New("too many DingTalk login candidates")
+			}
+			if result.DingTalkLoginEmails == nil {
+				result.DingTalkLoginEmails = make(map[string]string)
+			}
+			result.DingTalkLoginEmails[name] = detail
 		case "dingtalk":
 			if len(result.DingTalkUsers) >= 10000 {
 				return nil, errors.New("too many DingTalk bindings")

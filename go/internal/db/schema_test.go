@@ -74,3 +74,33 @@ func TestLegacyLoginPreferenceMigratesOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyDirectoryEmailDoesNotBecomeDingTalkOrgEmail(t *testing.T) {
+	ctx := context.Background()
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := PrepareSchema(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DROP INDEX idx_active_dingtalk_org_email; ALTER TABLE external_accounts DROP COLUMN dingtalk_org_email;
+ INSERT INTO external_accounts(id,provider_slug,subject,subject_norm,subject_type,email_norm,email_verified)
+ VALUES('e','source','subject','subject','directory','employee@company.example',1)`); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := HelperEnrollmentCandidates(ctx, New(database))
+	if err != nil || len(snapshot.DingTalkLoginEmails) != 0 {
+		t.Fatalf("legacy snapshot: %v, %v", snapshot, err)
+	}
+	for range 2 {
+		if err := PrepareSchema(ctx, database); err != nil {
+			t.Fatal(err)
+		}
+		var email sql.NullString
+		if err := database.QueryRow("SELECT dingtalk_org_email FROM external_accounts WHERE id='e'").Scan(&email); err != nil || email.Valid {
+			t.Fatalf("legacy corporate email: %v, %v", email, err)
+		}
+	}
+}

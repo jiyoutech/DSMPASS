@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS external_accounts (
     email TEXT,
     email_norm TEXT,
     email_verified INTEGER,
+    dingtalk_org_email TEXT,
     mobile_masked TEXT,
     avatar_url TEXT,
     active INTEGER NOT NULL DEFAULT 1,
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS external_accounts (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(provider_slug, subject_norm)
 );
+
+CREATE INDEX IF NOT EXISTS idx_active_dingtalk_org_email
+    ON external_accounts(dingtalk_org_email) WHERE active=1 AND dingtalk_org_email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS app_identities (
     id TEXT PRIMARY KEY,

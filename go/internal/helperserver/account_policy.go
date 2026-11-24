@@ -20,9 +20,10 @@ import (
 // Existing DSM accounts are enrolled by the root install migration or an
 // explicit root action. The installer can also pin local groups for directory reuse.
 type directoryUserGrant struct {
-	DingTalk *db.DingTalkUserBinding `json:"dingtalk,omitempty"`
-	UID      int                     `json:"uid"`
-	Groups   map[string]int          `json:"groups,omitempty"`
+	LoginEmail string                  `json:"login_email,omitempty"` // Organization mailbox pinned by the root installer.
+	DingTalk   *db.DingTalkUserBinding `json:"dingtalk,omitempty"`
+	UID        int                     `json:"uid"`
+	Groups     map[string]int          `json:"groups,omitempty"`
 }
 
 type dingTalkDirectoryScope struct {

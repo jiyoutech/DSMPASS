@@ -8,6 +8,7 @@ import (
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
+	LoginEmail   string `json:"login_email,omitempty"`
 	DatabasePath string `json:"database_path"`
 	Action       string `json:"action"`
 	RunID        string `json:"run_id,omitempty"`
@@ -71,13 +72,26 @@ SELECT EXISTS (
 		}
 		return SyncedPasswordResetAllowed(ctx, q, request.SourceSlug, request.AccountID, request.Username)
 	}
-	if request.Action != "login" && request.Action != "provision" && request.Action != "mapped" {
+	if request.Action != "login" && request.Action != "dingtalk_login" && request.Action != "provision" && request.Action != "mapped" {
 		return false, errors.New("unsupported account authorization action")
 	}
 	var allowed bool
-	if request.Action == "login" {
+	if request.Action == "login" || request.Action == "dingtalk_login" {
 		if request.IdentityID == "" || request.SourceSlug == "" {
 			return false, errors.New("missing login identity or source")
+		}
+		scope := ""
+		args := []any{request.Username, request.IdentityID, request.SourceSlug}
+		if request.Action == "dingtalk_login" {
+			if request.Subject == "" || request.LoginEmail == "" {
+				return false, errors.New("missing pinned DingTalk login identity")
+			}
+			scope = ` AND src.provider_type='dingtalk' AND src.directory_sync_enabled=1
+ AND a.manual_login_blocked=0 AND COALESCE(a.conflict_reason,'')=''
+ AND e.subject=? AND e.dingtalk_org_email=? AND ` + uniqueDingTalkName + ` AND ` + uniqueDingTalkMailbox + `
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other
+ WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>me.id)`
+			args = append(args, request.Subject, request.LoginEmail)
 		}
 		err := q.DBTX().QueryRowContext(ctx, `
 SELECT EXISTS (
@@ -90,7 +104,7 @@ SELECT EXISTS (
    AND e.provider_slug = me.provider_slug AND e.active = 1 AND i.status = 'active'
    AND src.enabled = 1 AND src.login_enabled = 1 AND a.allow_login = 1
    AND a.provision_status IN ('created', 'linked_existing')
-)`, request.Username, request.IdentityID, request.SourceSlug).Scan(&allowed)
+`+scope+`)`, args...).Scan(&allowed)
 		return allowed, err
 	}
 	// Provisioning may precede final DSM mapping creation; it still requires a

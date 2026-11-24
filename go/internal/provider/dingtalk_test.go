@@ -166,6 +166,7 @@ func TestDingTalkListUsersMergesDepartmentIDs(t *testing.T) {
 				"unionid":      "union-1",
 				"name":         "张三",
 				"email":        "zhang@example.com",
+				"org_email":    "employee@company.example",
 				"mobile":       "13800000000",
 				"dept_id_list": []any{float64(1), float64(2)},
 				"active":       true,
@@ -182,6 +183,9 @@ func TestDingTalkListUsersMergesDepartmentIDs(t *testing.T) {
 		t.Fatalf("users length got %d", len(users))
 	}
 	user := users[0]
+	if user.DingTalkOrgEmail != "employee@company.example" || user.Email != "zhang@example.com" {
+		t.Fatal("organization and profile email must be retained separately")
+	}
 	if user.Subject != "union-1" || user.SubjectType != "dingtalk_unionid" || user.DisplayName != "张三" || !user.Active {
 		t.Fatalf("unexpected user: %#v", user)
 	}

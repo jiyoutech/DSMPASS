@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS external_accounts (
     email TEXT,
     email_norm TEXT,
     email_verified INTEGER,
+    dingtalk_org_email TEXT,
     mobile_masked TEXT,
     avatar_url TEXT,
     active INTEGER NOT NULL DEFAULT 1,
@@ -279,15 +280,30 @@ CREATE INDEX IF NOT EXISTS idx_operation_events_run_created
 	_, _ = database.ExecContext(ctx, `ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1`)
 	_, _ = database.ExecContext(ctx, `ALTER TABLE login_audit_logs ADD COLUMN ip_address TEXT`)
 	_, _ = database.ExecContext(ctx, `ALTER TABLE dsm_accounts ADD COLUMN conflict_reason TEXT`)
-	return migrateLoginPreference(ctx, database)
+	return migrateLoginColumns(ctx, database)
 }
 
-func migrateLoginPreference(ctx context.Context, database *sql.DB) error {
+func migrateLoginColumns(ctx context.Context, database *sql.DB) error {
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// A fresh directory response supplies the organization-managed address.
+	// Historical email_verified values also covered personal directory emails.
+	var orgEmailColumn bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('external_accounts') WHERE name='dingtalk_org_email')`).Scan(&orgEmailColumn); err != nil {
+		return err
+	}
+	if !orgEmailColumn {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE external_accounts ADD COLUMN dingtalk_org_email TEXT`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_active_dingtalk_org_email
+ ON external_accounts(dingtalk_org_email) WHERE active=1 AND dingtalk_org_email IS NOT NULL`); err != nil {
+		return err
+	}
 	var exists bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('dsm_accounts') WHERE name='manual_login_blocked')`).Scan(&exists); err != nil {
 		return err

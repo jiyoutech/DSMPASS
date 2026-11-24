@@ -5,6 +5,7 @@ type User struct {
 	Subject            string
 	SubjectType        string
 	DisplayName        string
+	DingTalkOrgEmail   string
 	Email              string
 	Mobile             string
 	DepartmentSubjects []string

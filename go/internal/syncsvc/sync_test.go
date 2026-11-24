@@ -764,3 +764,27 @@ WHERE p.subject = ? AND e.subject = ?`, groupSubject, userSubject).Scan(&id)
 	}
 	return id
 }
+
+func TestSyncDingTalkOrganizationEmailFollowsDirectory(t *testing.T) {
+	ctx := context.Background()
+	database, queries := openSyncTestDB(t, ctx)
+	defer database.Close()
+	engine := NewEngine(config.BackendConfig{UsernameReadableDelimiter: "_"}, queries)
+	directory := fakeDirectory{slug: "dingtalk", name: "钉钉",
+		users:  []provider.User{{ProviderSlug: "dingtalk", Subject: "employee", DisplayName: "alice", Email: "personal@example.org", Active: true, DepartmentSubjects: []string{"g"}}},
+		groups: []provider.Group{{ProviderSlug: "dingtalk", Subject: "g", Name: "engineering"}},
+	}
+	for _, mail := range []string{"Employee@Company.Example", ""} {
+		directory.users[0].DingTalkOrgEmail = mail
+		if _, err := engine.SyncProvider(ctx, directory); err != nil {
+			t.Fatal(err)
+		}
+		var stored, personal string
+		if err := database.QueryRow("SELECT COALESCE(dingtalk_org_email,''),email_norm FROM external_accounts WHERE subject='employee'").Scan(&stored, &personal); err != nil {
+			t.Fatal(err)
+		}
+		if stored != strings.ToLower(mail) || personal != "personal@example.org" {
+			t.Fatalf("org=%q personal=%q", stored, personal)
+		}
+	}
+}

@@ -467,14 +467,15 @@ func (d DingTalk) upsertUserFromRaw(usersBySubject map[string]User, raw map[stri
 	}
 	existing := usersBySubject[subject]
 	user := User{
-		ProviderSlug: d.slug,
-		Subject:      subject,
-		SubjectType:  subjectType,
-		DisplayName:  displayName,
-		Email:        firstString(raw, "email", "org_email"),
-		Mobile:       firstString(raw, "mobile"),
-		Disabled:     disabled,
-		Active:       !disabled && dingTalkUserActive(raw),
+		ProviderSlug:     d.slug,
+		Subject:          subject,
+		SubjectType:      subjectType,
+		DisplayName:      displayName,
+		Email:            firstString(raw, "email", "org_email"),
+		DingTalkOrgEmail: firstString(raw, "org_email"),
+		Mobile:           firstString(raw, "mobile"),
+		Disabled:         disabled,
+		Active:           !disabled && dingTalkUserActive(raw),
 	}
 	if existing.Subject != "" {
 		user.DepartmentSubjects = uniqueStrings(append(existing.DepartmentSubjects, departmentSubjects...))
