@@ -387,15 +387,25 @@ func (d DingTalk) departmentUsers(token, departmentID string) ([]map[string]any,
 			"cursor":  cursor,
 			"size":    d.pageSize(),
 		}
-		var out map[string]any
-		if err := d.postJSON(endpoint, body, "", &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := d.postJSON(endpoint, body, "", &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		result, _ := out["result"].(map[string]any)
-		items := mapItems(result, "list")
+		items, err := directoryPageItems(result, "list")
+		if err != nil {
+			return nil, err
+		}
 		all = append(all, items...)
-		hasMore, moreOK := result["has_more"].(bool)
-		if raw, listOK := result["list"].([]any); d.cfg.CheckAccountStatus && (!moreOK || !listOK || len(raw) != len(items)) {
+		hasMore, err := directoryPageHasMore(result, "next_cursor")
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := result["has_more"].(bool); d.cfg.CheckAccountStatus && !ok {
 			return nil, errors.New("钉钉成员分页结果不完整")
 		}
 		if !hasMore {

@@ -311,18 +311,24 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 		if pageToken != "" {
 			endpoint += "&page_token=" + url.QueryEscape(pageToken)
 		}
-		var out map[string]any
-		if err := f.getJSON(endpoint, token, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := f.getJSON(endpoint, token, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, _ := data["items"].([]any)
-		for _, item := range items {
-			if raw, ok := item.(map[string]any); ok {
-				result = append(result, raw)
-			}
+		items, err := directoryPageItems(data, "items")
+		if err != nil {
+			return nil, err
 		}
-		hasMore, _ := data["has_more"].(bool)
+		result = append(result, items...)
+		hasMore, err := directoryPageHasMore(data, "page_token")
+		if err != nil {
+			return nil, err
+		}
 		pageToken, _ = data["page_token"].(string)
 		if !hasMore {
 			break
@@ -347,18 +353,24 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 		if pageToken != "" {
 			endpoint += "&page_token=" + url.QueryEscape(pageToken)
 		}
-		var out map[string]any
-		if err := f.getJSON(endpoint, token, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := f.getJSON(endpoint, token, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
 		data, _ := out["data"].(map[string]any)
-		items, _ := data["items"].([]any)
-		for _, item := range items {
-			if raw, ok := item.(map[string]any); ok {
-				result = append(result, raw)
-			}
+		items, err := directoryPageItems(data, "items")
+		if err != nil {
+			return nil, err
 		}
-		hasMore, _ := data["has_more"].(bool)
+		result = append(result, items...)
+		hasMore, err := directoryPageHasMore(data, "page_token")
+		if err != nil {
+			return nil, err
+		}
 		pageToken, _ = data["page_token"].(string)
 		if !hasMore {
 			break

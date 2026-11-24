@@ -81,3 +81,37 @@ func TestDirectoryReadFailureAndRetryAfter(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectoryPageRetriesTransientErrorWithoutDuplicatingRows(t *testing.T) {
+	calls := 0
+	page, err := readDirectoryPage(func() (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return map[string]any{"partial": true}, directoryHTTPError(&http.Response{StatusCode: 503}, errors.New("busy"))
+		}
+		return map[string]any{"items": []any{}}, nil
+	})
+	if err != nil || calls != 2 || page["partial"] != nil {
+		t.Fatal(page, calls, err)
+	}
+	for _, tc := range []struct {
+		name string
+		data map[string]any
+		ok   bool
+	}{
+		{"short terminal", map[string]any{}, true},
+		{"full terminal", map[string]any{"has_more": false}, true},
+		{"legacy terminal", map[string]any{}, true},
+		{"orphan cursor", map[string]any{"page_token": "2"}, false},
+		{"malformed flag", map[string]any{"has_more": "false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := directoryPageHasMore(tc.data, "page_token"); (err == nil) != tc.ok {
+				t.Fatal(err)
+			}
+		})
+	}
+	if _, err := directoryPageItems(map[string]any{"items": []any{map[string]any{}, "bad"}}, "items"); err == nil {
+		t.Fatal("malformed row accepted")
+	}
+}

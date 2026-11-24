@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -62,6 +65,9 @@ type directoryRateLimit struct {
 func (e *directoryRateLimit) Unwrap() error { return e.error }
 
 func directoryHTTPError(response *http.Response, err error) error {
+	if response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusGatewayTimeout {
+		return &temporaryDirectoryError{err}
+	}
 	if response.StatusCode != http.StatusTooManyRequests {
 		return err
 	}
@@ -73,4 +79,43 @@ func directoryHTTPError(response *http.Response, err error) error {
 		delay = max(time.Millisecond, time.Until(until))
 	}
 	return &directoryRateLimit{err, delay}
+}
+
+// Retry the failed read-only page at the same cursor. Rate limits are handled
+// by the bounded directory reader using the provider's Retry-After delay.
+type temporaryDirectoryError struct{ error }
+
+func (e *temporaryDirectoryError) Unwrap() error { return e.error }
+
+func readDirectoryPage(read func() (map[string]any, error)) (map[string]any, error) {
+	page, err := read()
+	var network net.Error
+	var temporary *temporaryDirectoryError
+	if err != nil && !errors.Is(err, context.Canceled) && (errors.As(err, &temporary) || errors.As(err, &network) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)) {
+		return read()
+	}
+	return page, err
+}
+
+func directoryPageItems(data map[string]any, key string) ([]map[string]any, error) {
+	raw, ok := data[key].([]any)
+	if !ok {
+		return nil, errors.New("通讯录分页缺少记录列表")
+	}
+	items := mapItems(data, key)
+	if len(raw) != len(items) {
+		return nil, errors.New("通讯录分页包含无效记录")
+	}
+	return items, nil
+}
+
+// Some older responses omit has_more on a terminal page.
+func directoryPageHasMore(data map[string]any, cursor string) (bool, error) {
+	if more, ok := data["has_more"].(bool); ok {
+		return more, nil
+	}
+	if _, invalid := data["has_more"]; invalid || firstStringish(data, cursor) != "" {
+		return false, errors.New("通讯录分页缺少有效的结束标志")
+	}
+	return false, nil
 }

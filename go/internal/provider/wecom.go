@@ -431,11 +431,24 @@ func (w WeCom) visibleUserIDs(token string) ([]map[string]any, error) {
 		if cursor != "" {
 			body["cursor"] = cursor
 		}
-		var out map[string]any
-		if err := w.postJSON(endpoint, body, &out); err != nil {
+		out, err := readDirectoryPage(func() (map[string]any, error) {
+			var data map[string]any
+			err := w.postJSON(endpoint, body, &data)
+			return data, err
+		})
+		if err != nil {
 			return nil, err
 		}
-		all = append(all, mapItems(out, "dept_user")...)
+		items, err := directoryPageItems(out, "dept_user")
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if next, present := out["next_cursor"]; present {
+			if _, ok := next.(string); !ok {
+				return nil, errors.New("企业微信分页游标格式错误")
+			}
+		}
 		nextCursor := strings.TrimSpace(firstStringish(out, "next_cursor"))
 		if nextCursor == "" {
 			return all, nil
