@@ -1,7 +1,10 @@
 package helperserver
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -42,6 +45,75 @@ func captureVerifiedDirectory(cfg config.HelperConfig, p *accountPolicy, emails 
 		changed = true
 	}
 	return changed
+}
+
+func (s *Server) dingTalkLoginBinding(cfg config.HelperConfig, name string, uid int) (*db.DingTalkUserBinding, error) {
+	if cfg.Privileged {
+		result, err := queryHelperAsPackage(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_login_binding", Username: name, LocalUID: uid, DatabasePath: strings.TrimPrefix(cfg.DatabaseURL, "sqlite://")})
+		return result.DingTalkBinding, err
+	}
+	return db.DingTalkLoginBinding(context.Background(), s.store, name, uid)
+}
+
+// The account and policy locks cover both enrollment paths. On first login
+// we only query DSM once a candidate exists. Provisioning has already read it.
+func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.HelperAuthorizationQuery, grant *directoryUserGrant, info *synoUserInfo) (bool, error) {
+	name := req.Username
+	local, err := normalUser(cfg, name)
+	if err != nil {
+		return false, err
+	}
+	binding, err := s.dingTalkLoginBinding(cfg, name, local.id)
+	if err != nil {
+		return false, err
+	}
+	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		return false, err
+	}
+	candidate, hasEmail := p.CredentialCandidates[name]
+	if binding == nil && (!hasEmail || (req.SourceSlug != "" && candidate.Owner.SourceSlug != req.SourceSlug)) {
+		return false, nil
+	}
+	if info == nil {
+		current, err := getSynoUser(cfg.SynoUserPath, name)
+		if err != nil {
+			return false, err
+		}
+		info = &current
+	}
+	if req.Action == "login" && !info.ExpiryKnown {
+		return false, errors.New("无法确认 DSM 账号是否启用")
+	}
+	if info.Expired {
+		return false, fmt.Errorf("DSM 用户 %q 已停用", name)
+	}
+	if binding != nil && info.ExpiryKnown {
+		owner := db.CredentialIdentity{Username: name, SourceSlug: binding.SourceSlug, Subject: binding.Subject}
+		if hasEmail && (candidate.UID != local.id || candidate.Owner != owner) {
+			return false, nil
+		}
+		if _, err := os.Lstat((creationTarget{cfg: cfg, name: name}).path()); err == nil {
+			return false, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+		for other, g := range p.DirectoryUsers {
+			if other != name && g.DingTalk != nil && *g.DingTalk == *binding {
+				return false, nil
+			}
+		}
+		for other, c := range p.CredentialCandidates {
+			if other != name && c.Owner.SourceSlug == owner.SourceSlug && c.Owner.Subject == owner.Subject {
+				return false, nil
+			}
+		}
+		return s.bindCredentialOwner(cfg, p, owner, local.id, grant, req)
+	}
+	if req.Action == "provision" {
+		req.Action = "verify_existing_owner"
+	}
+	return s.linkVerifiedDirectoryUser(cfg, name, info.Mail, grant, req)
 }
 
 // Called under both account locks, using the email read from DSM itself.
