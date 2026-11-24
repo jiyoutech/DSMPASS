@@ -166,7 +166,7 @@ AND ((? AND a.provision_status IN ('pending','failed','disabled','conflict'))
 			request.SourceSlug, request.RunID, request.AccountID, request.Username, request.Action == "cleanup_absent", request.Action == "cleanup_conflict", request.Action == "cleanup_user", subject, subject).Scan(&ok)
 		return ok, err
 	}
-	if q != nil && (request.Action == "restore_sync_disable" || request.Action == "disable_missing_user") {
+	if q != nil && (request.Action == "restore_sync_disable" || request.Action == "disable_missing_user" || request.Action == "disable_missing_absent") {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dsm_accounts a
 JOIN app_identities i ON i.id=a.app_identity_id
@@ -177,9 +177,9 @@ WHERE a.id=? AND a.dsm_username=? AND s.slug=? AND e.subject=? AND e.subject<>''
 AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other WHERE other.mapping_type='user' AND other.dsm_account_id=a.id AND other.active=1 AND other.id<>m.id)
 AND ((? AND m.active=1 AND e.active=1 AND i.status='active' AND a.manual_login_blocked=0
  AND a.provision_status IN ('disabled','pending','failed','created','linked_existing'))
- OR (? AND m.active=0 AND s.provider_type<>'dingtalk' AND COALESCE(json_extract(s.config_json,'$.disable_missing_users'),1)=1
+ OR (? AND (NOT ? OR a.provision_status IN ('pending','failed')) AND m.active=0 AND s.provider_type<>'dingtalk' AND COALESCE(json_extract(s.config_json,'$.disable_missing_users'),1)=1
  AND EXISTS (SELECT 1 FROM sync_runs r WHERE r.id=? AND r.source_slug=s.slug AND r.status='running' AND r.dry_run=0))))`,
-			request.AccountID, request.Username, request.SourceSlug, request.Subject, request.Action == "restore_sync_disable", request.Action == "disable_missing_user", request.RunID).Scan(&allowed)
+			request.AccountID, request.Username, request.SourceSlug, request.Subject, request.Action == "restore_sync_disable", request.Action != "restore_sync_disable", request.Action == "disable_missing_absent", request.RunID).Scan(&allowed)
 		return allowed, err
 	}
 	if q != nil && (request.Action == "dingtalk_offboard" || request.Action == "dingtalk_offboard_absent") {

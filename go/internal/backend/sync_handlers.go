@@ -733,7 +733,8 @@ func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug s
 		} else {
 			_, err = s.helper.DisableUser(ctx, id, username)
 		}
-		if err != nil {
+		skipped := errors.Is(err, helperclient.ErrAccountAbsent) || errors.Is(err, helperclient.ErrMembershipOnly)
+		if err != nil && !skipped {
 			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "failed", "active", "active", err.Error())
 			accountErrors = append(accountErrors, fmt.Errorf("停用 %s: %w", username, err))
 			continue
@@ -742,11 +743,15 @@ func (s *Server) disableMissingAccounts(ctx context.Context, runID, sourceSlug s
 			accountErrors = append(accountErrors, err)
 			continue
 		}
+		if progress != nil {
+			progress.step(ctx, "核对缺失用户", username)
+		}
+		if skipped {
+			s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "skipped", "", "", err.Error())
+			continue
+		}
 		s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", accountID, username, "disable_missing", "success", "active", "disabled", "")
 		operations = append(operations, syncsvc.PlanItem{Action: "disable_missing_dsm_user", ProviderSlug: sourceSlug, Subject: accountID, DSMUsername: username, ProvisionStatus: "disabled"})
-		if progress != nil {
-			progress.step(ctx, "禁用缺失用户", username)
-		}
 	}
 	return operations, errors.Join(accountErrors...)
 }

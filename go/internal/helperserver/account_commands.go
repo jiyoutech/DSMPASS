@@ -187,7 +187,9 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	}
 	dingTalk := payload["action"] == "scoped_disable_dingtalk_user"
 	scoped := dingTalk || payload["action"] == "scoped_disable_missing_user"
+	outcome := "disabled"
 	authorize := func() error {
+		outcome = "disabled"
 		if !scoped {
 			if err := requireManagedUser(cfg, username); err != nil {
 				return err
@@ -202,20 +204,25 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 			return errors.New("钉钉停用请求缺少身份或同步记录")
 		}
 		request := db.HelperAuthorizationQuery{Action: "dingtalk_offboard", SourceSlug: source, Subject: subject, AccountID: accountID, Username: username, RunID: runID}
+		grant, err := userEnrollment(cfg, username)
 		if !dingTalk {
 			request.Action = "disable_missing_user"
-			if err := requireManagedUser(cfg, username); err != nil {
-				return err
-			}
-			return s.authorizeAccount(cfg, request)
 		}
-		grant, err := userEnrollment(cfg, username)
 		if errors.Is(err, os.ErrNotExist) {
-			request.Action = "dingtalk_offboard_absent"
+			outcome = "absent"
+			if dingTalk {
+				request.Action = "dingtalk_offboard_absent"
+			} else {
+				request.Action = "disable_missing_absent"
+			}
 			return s.authorizeAccount(cfg, request)
 		}
 		if err != nil {
 			return err
+		}
+		if !dingTalk && grant != nil {
+			outcome = "membership_only"
+			return s.authorizeAccount(cfg, request)
 		}
 		if grant != nil {
 			if grant.DingTalk == nil || grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject {
@@ -228,13 +235,23 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	if err := authorize(); err != nil {
 		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 	}
+	expected := outcome
 	disabled, absent := false, false
-	err = withAccountMutation(cfg, username, true, func() error {
+	err = withAccountMutation(cfg, username, expected == "disabled", func() error {
 		if err := authorize(); err != nil {
 			return err
 		}
+		if outcome != expected {
+			return errors.New("DSM 账号归属已变化，请重试")
+		}
+		if outcome == "membership_only" {
+			return nil
+		}
 		info, err := getSynoUser(cfg.SynoUserPath, username)
-		if dingTalk && dsmUserNotFound(err) {
+		if outcome == "absent" {
+			if !dsmUserNotFound(err) {
+				return errors.New("DSM 未确认账号不存在")
+			}
 			if err := verifyAccountAbsent(cfg, username); err != nil {
 				return err
 			}
@@ -283,5 +300,5 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	if err != nil {
 		return errorResponse("SYNOUSER_FAILED", err.Error())
 	}
-	return map[string]any{"success": true, "disabled": disabled, "absent": absent}
+	return map[string]any{"success": true, "disabled": disabled, "absent": absent, "membership_only": outcome == "membership_only"}
 }

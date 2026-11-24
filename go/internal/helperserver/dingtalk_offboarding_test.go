@@ -70,6 +70,11 @@ func TestDingTalkDisableChecksBoundSourceAndCurrentRunInsideHelper(t *testing.T)
 }
 
 func TestOffboardNeverCreatedAccountNeedsConfirmedAbsence(t *testing.T) {
+	for _, sourceType := range []string{"feishu", "wecom", "dingtalk"} {
+		t.Run(sourceType, func(t *testing.T) { checkAbsentDeparted(t, sourceType) })
+	}
+}
+func checkAbsentDeparted(t *testing.T, sourceType string) {
 	cfg := policyTestConfig(t)
 	cfg.SynoUserPath = filepath.Join(t.TempDir(), "synouser")
 	name := "never-created"
@@ -80,8 +85,18 @@ INSERT INTO sync_runs(id,source_slug,status,dry_run) VALUES('run','source','runn
 INSERT INTO dingtalk_offboarding VALUES('source','account','subject','run','departed')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := q.DBTX().ExecContext(context.Background(), "UPDATE identity_sources SET provider_type=?; ", sourceType); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.DBTX().ExecContext(context.Background(), "UPDATE dsm_mapping_entries SET active=0"); err != nil {
+		t.Fatal(err)
+	}
+	action := "scoped_disable_dingtalk_user"
+	if sourceType != "dingtalk" {
+		action = "scoped_disable_missing_user"
+	}
 	s := NewWithStore(cfg, q)
-	payload := map[string]any{"action": "scoped_disable_dingtalk_user", "source_slug": "source", "dsm_username": name, "subject": "subject", "account_id": "account", "run_id": "run"}
+	payload := map[string]any{"action": action, "source_slug": "source", "dsm_username": name, "subject": "subject", "account_id": "account", "run_id": "run"}
 	for _, tc := range []struct {
 		message         string
 		pending, absent bool
@@ -99,6 +114,30 @@ INSERT INTO dingtalk_offboarding VALUES('source','account','subject','run','depa
 		got := s.disableAccount(cfg, payload)
 		if (got["absent"] == true) != tc.absent || (got["success"] == true) != tc.absent {
 			t.Fatal(got)
+		}
+	}
+}
+
+func TestDirectoryOnlyDeparturePreservesNativeUser(t *testing.T) {
+	cfg := policyTestConfig(t)
+	q := syncedPasswordTestStore(t, "alice")
+	_, err := q.DBTX().ExecContext(context.Background(), "UPDATE external_accounts SET active=0; UPDATE dsm_mapping_entries SET active=0; INSERT INTO sync_runs(id,source_slug,status,dry_run) VALUES('run','source','running',0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026}}
+	if err := saveAccountPolicy(cfg, p); err != nil {
+		t.Fatal(err)
+	}
+	s := NewWithStore(cfg, q)
+	for range 2 {
+		r := s.disableAccount(cfg, map[string]any{"action": "scoped_disable_missing_user", "source_slug": "source", "subject": "subject", "account_id": "account", "run_id": "run", "dsm_username": "alice"})
+		if r["success"] != true || r["membership_only"] != true || r["disabled"] != false {
+			t.Fatal(r)
 		}
 	}
 }
