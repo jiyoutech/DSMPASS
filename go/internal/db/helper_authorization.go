@@ -35,6 +35,7 @@ type HelperAuthorizationQuery struct {
 }
 
 type HelperAuthorizationResult struct {
+	LoginRoster     map[string]string         `json:"login_roster,omitempty"`
 	DingTalkBinding *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
 	Allowed         bool                      `json:"allowed"`
 	Error           string                    `json:"error,omitempty"`

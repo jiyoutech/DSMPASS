@@ -2470,6 +2470,18 @@ function SourceDetail({
                         { label: "拒绝", value: "denied" }
                       ]}
                     />
+                    {source.provider_type === "dingtalk" && <Button onClick={() => {
+                      const sourceArg = "'" + source.slug.replace(/'/g, "'\\''") + "'";
+                      const command = "sudo /usr/local/libexec/dsmpass/dsmpass-helper bind-dingtalk-logins " + sourceArg;
+                      modal.info({
+                        title: "批量关联已有账号",
+                        width: 580,
+                        content: <>
+                          <Typography.Paragraph>在 DSM 管理员终端运行一次。已有唯一映射的普通账号将获得登录及后续全量改密权限，重名和冲突项会跳过。</Typography.Paragraph>
+                          <Typography.Text code copyable={{ text: command }}>{command}</Typography.Text>
+                        </>
+                      });
+                    }}>批量关联已有账号</Button>}
                   </Space>
                 }
                 table={

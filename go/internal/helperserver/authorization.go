@@ -104,7 +104,7 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 
 func loginDeniedResponse(err error) map[string]any {
 	if errors.Is(err, errDingTalkMembershipOnly) {
-		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中核实这条绑定")
+		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中批量关联已有账号，或核实这条绑定")
 	}
 	return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 }
@@ -128,7 +128,7 @@ func queryHelperAsPackage(cfg config.HelperConfig, request db.HelperAuthorizatio
 		timeout = 20 * time.Second
 	}
 	var output limitedAuthorizationOutput
-	if request.Action == "enrollment_snapshot" {
+	if request.Action == "enrollment_snapshot" || request.Action == "dingtalk_login_roster" {
 		timeout = 30 * time.Second
 		output.limit = 8 << 20
 	}
