@@ -26,7 +26,7 @@ func TestDirectoryOwnerChoiceAcrossProviders(t *testing.T) {
 			e := NewEngine(config.BackendConfig{}, q)
 			e.localPasswd = filepath.Join(t.TempDir(), "passwd")
 			e.localGroup = filepath.Join(t.TempDir(), "group")
-			if err := os.WriteFile(e.localGroup, []byte("administrators:x:101:localadmin\n"), 0600); err != nil {
+			if err := os.WriteFile(e.localGroup, []byte("users:x:100:\nadministrators:x:101:localadmin\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			inventory := func(uid int) {
@@ -134,7 +134,7 @@ func TestUniqueDirectoryNamesRespectExistingCaseAndPrivileges(t *testing.T) {
 	dir := t.TempDir()
 	e.localGroup = filepath.Join(dir, "group")
 	passwd := filepath.Join(dir, "passwd")
-	if err := os.WriteFile(e.localGroup, []byte("administrators:x:101:Boss\n"), 0600); err != nil {
+	if err := os.WriteFile(e.localGroup, []byte("users:x:100:\nadministrators:x:101:\nadmins-alias:x:101:Boss\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(passwd, []byte("Boss:x:1800:100::/:/bin/sh\nBOSS1:x:1801:100::/:/bin/sh\nAlice:x:1802:100::/:/bin/sh\n"), 0600); err != nil {

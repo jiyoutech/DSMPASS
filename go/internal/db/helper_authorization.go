@@ -66,8 +66,8 @@ func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthori
  WHERE a.dsm_username=? AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
  AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.dsm_account_id=a.id AND x.id<>m.id)
  AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
- OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username COLLATE NOCASE AND e.subject<>''
- AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) COLLATE NOCASE AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
+ OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username COLLATE dsmpass_name AND e.subject<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) COLLATE dsmpass_name AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
 		return ok, err
 	}
 	if request.Action == "provision_users" {
@@ -179,7 +179,7 @@ AND ((? AND m.active=1 AND e.active=1 AND i.status='active' AND a.manual_login_b
         JOIN sync_runs r ON r.id=d.run_id AND r.source_slug=s.slug AND r.dry_run=0 AND r.status='running'
         AND r.rowid=(SELECT MAX(latest.rowid) FROM sync_runs latest WHERE latest.source_slug=s.slug AND latest.dry_run=0)
         WHERE `+dingTalkOffboardingEligible+` AND (NOT ? OR a.provision_status IN ('pending','failed'))
-        AND (? OR NOT EXISTS (SELECT 1 FROM external_accounts live WHERE live.provider_slug=s.slug AND live.active=1 AND lower(trim(live.display_name))=a.dsm_username_norm))
+        AND (? OR NOT EXISTS (SELECT 1 FROM external_accounts live WHERE live.provider_slug=s.slug AND live.active=1 AND live.display_name=a.dsm_username COLLATE dsmpass_name))
         AND d.run_id=? AND s.slug=? AND a.id=? AND a.dsm_username=? AND e.subject=?)`,
 			request.Action == "dingtalk_offboard_absent", request.CredentialOwner != nil || request.Action == "dingtalk_offboard_absent", request.RunID, request.SourceSlug, request.AccountID, request.Username, request.Subject).Scan(&allowed)
 		return allowed, err

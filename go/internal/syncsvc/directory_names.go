@@ -189,7 +189,7 @@ func nativeDirectoryUsers(passwdPath, groupPath string) (map[string]nativeUser, 
 		return nil, fmt.Errorf("读取 DSM 已有登录名: %w", err)
 	}
 	defer file.Close()
-	adminNames, adminGIDs, err := privilegedGroupMembers(groupPath)
+	groups, err := nativeDirectoryGroups(groupPath)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func nativeDirectoryUsers(passwdPath, groupPath string) (map[string]nativeUser, 
 			return nil, fmt.Errorf("读取 DSM 用户 GID: %w", err)
 		}
 		uidCounts[uid]++
-		native[key] = nativeUser{name: fields[0], uid: uid, ordinary: uid >= 1024 && uid < 65536 && !adminGIDs[gid] && !adminNames[key] && !identity.IsReservedDSMUsername(key)}
+		native[key] = nativeUser{name: fields[0], uid: uid, ordinary: uid >= 1024 && uid < 65536 && gid == groups.usersGID && groups.hasAdmins && !groups.privilegedGIDs[gid] && !groups.privilegedMembers[key] && !identity.IsReservedDSMUsername(key) && key != "guest" && key != "nobody" && key != "dsmpass"}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("读取 DSM 已有登录名: %w", err)
@@ -233,34 +233,49 @@ func nativeDirectoryUsers(passwdPath, groupPath string) (map[string]nativeUser, 
 	return native, nil
 }
 
-func privilegedGroupMembers(path string) (map[string]bool, map[int]bool, error) {
+type nativeGroupScope struct {
+	usersGID          int
+	hasAdmins         bool
+	privilegedMembers map[string]bool
+	privilegedGIDs    map[int]bool
+}
+
+func nativeDirectoryGroups(path string) (nativeGroupScope, error) {
+	scope := nativeGroupScope{usersGID: -1, privilegedGIDs: map[int]bool{0: true}, privilegedMembers: map[string]bool{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取 DSM 管理员组: %w", err)
+		return scope, fmt.Errorf("读取 DSM 本地组: %w", err)
 	}
-	members := map[string]bool{}
-	gids := map[int]bool{0: true}
+	members := map[int][]string{}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Split(line, ":")
 		if len(fields) != 4 {
-			return nil, nil, fmt.Errorf("DSM 本地组列表格式异常")
+			return scope, fmt.Errorf("DSM 本地组列表格式异常")
 		}
 		gid, err := strconv.Atoi(fields[2])
 		if err != nil {
-			return nil, nil, err
+			return scope, err
 		}
-		if gid != 0 && fields[0] != "administrators" && fields[0] != "admin" {
-			continue
-		}
-		gids[gid] = true
-		for _, name := range strings.Split(fields[3], ",") {
-			members[identity.Normalize(name)] = true
+		members[gid] = append(members[gid], strings.Split(fields[3], ",")...)
+		switch fields[0] {
+		case "users":
+			scope.usersGID = gid
+		case "administrators":
+			scope.hasAdmins = true
+			scope.privilegedGIDs[gid] = true
+		case "admin", "docker", "lxd", "incus-admin", "sudo", "wheel", "disk", "libvirt":
+			scope.privilegedGIDs[gid] = true
 		}
 	}
-	return members, gids, nil
+	for gid := range scope.privilegedGIDs {
+		for _, member := range members[gid] {
+			scope.privilegedMembers[identity.Normalize(member)] = true
+		}
+	}
+	return scope, nil
 }
 
 func (e *Engine) claimedDSMNames(ctx context.Context, source string) (map[string]bool, error) {
