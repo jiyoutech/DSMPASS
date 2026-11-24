@@ -139,14 +139,16 @@ SELECT NOT EXISTS (
 		// Offboarding separately checks the historical source/subject and completed directory evidence.
 	}
 
-	if q != nil && request.Action == "dingtalk_offboard" {
+	if q != nil && (request.Action == "dingtalk_offboard" || request.Action == "dingtalk_offboard_absent") {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+dingTalkOffboardingScope+`
         JOIN dingtalk_offboarding d ON d.source_slug=s.slug AND d.account_id=a.id AND d.subject=e.subject
         JOIN sync_runs r ON r.id=d.run_id AND r.source_slug=s.slug AND r.dry_run=0 AND r.status='running'
         AND r.rowid=(SELECT MAX(latest.rowid) FROM sync_runs latest WHERE latest.source_slug=s.slug AND latest.dry_run=0)
-        WHERE `+dingTalkOffboardingEligible+` AND d.run_id=? AND s.slug=? AND a.id=? AND a.dsm_username=? AND e.subject=?)`,
-			request.RunID, request.SourceSlug, request.AccountID, request.Username, request.Subject).Scan(&allowed)
+        WHERE `+dingTalkOffboardingEligible+` AND (NOT ? OR a.provision_status IN ('pending','failed'))
+        AND (? OR NOT EXISTS (SELECT 1 FROM external_accounts live WHERE live.provider_slug=s.slug AND live.active=1 AND lower(trim(live.display_name))=a.dsm_username_norm))
+        AND d.run_id=? AND s.slug=? AND a.id=? AND a.dsm_username=? AND e.subject=?)`,
+			request.Action == "dingtalk_offboard_absent", request.CredentialOwner != nil || request.Action == "dingtalk_offboard_absent", request.RunID, request.SourceSlug, request.AccountID, request.Username, request.Subject).Scan(&allowed)
 		return allowed, err
 	}
 	if q != nil && request.Action == "dingtalk_member" {

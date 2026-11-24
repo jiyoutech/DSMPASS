@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
@@ -199,24 +200,42 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 		if source == "" || subject == "" || accountID == "" || runID == "" {
 			return errors.New("钉钉停用请求缺少身份或同步记录")
 		}
+		request := db.HelperAuthorizationQuery{Action: "dingtalk_offboard", SourceSlug: source, Subject: subject, AccountID: accountID, Username: username, RunID: runID}
 		grant, err := userEnrollment(cfg, username)
+		if errors.Is(err, os.ErrNotExist) {
+			request.Action = "dingtalk_offboard_absent"
+			return s.authorizeAccount(cfg, request)
+		}
 		if err != nil {
 			return err
 		}
-		if grant != nil && (grant.DingTalk == nil || grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject) {
-			return errors.New("DSM 用户缺少对应的钉钉身份绑定")
+		if grant != nil {
+			if grant.DingTalk == nil || grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject {
+				return errors.New("DSM 用户缺少对应的钉钉身份绑定")
+			}
+			request.CredentialOwner = &db.CredentialIdentity{Username: username, SourceSlug: source, Subject: subject}
 		}
-		return s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_offboard", SourceSlug: source, Subject: subject, AccountID: accountID, Username: username, RunID: runID})
+		return s.authorizeAccount(cfg, request)
 	}
 	if err := authorize(); err != nil {
 		return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 	}
-	disabled := false
+	disabled, absent := false, false
 	err = withAccountMutation(cfg, username, true, func() error {
 		if err := authorize(); err != nil {
 			return err
 		}
 		info, err := getSynoUser(cfg.SynoUserPath, username)
+		if dingTalk && dsmUserNotFound(err) {
+			if err := verifyAccountAbsent(cfg, username); err != nil {
+				return err
+			}
+			if _, found, err := (creationTarget{cfg: cfg, name: username}).receiptID(); err != nil || found {
+				return errors.Join(errors.New("DSM 账号创建回执待核实"), err)
+			}
+			absent = true
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -240,5 +259,5 @@ func (s *Server) disableAccount(cfg config.HelperConfig, payload map[string]any)
 	if err != nil {
 		return errorResponse("SYNOUSER_FAILED", err.Error())
 	}
-	return map[string]any{"success": true, "disabled": disabled}
+	return map[string]any{"success": true, "disabled": disabled, "absent": absent}
 }

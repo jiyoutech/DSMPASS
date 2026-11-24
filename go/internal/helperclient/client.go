@@ -18,6 +18,7 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
+var ErrAccountAbsent = errors.New("DSM 已确认账号不存在")
 var ErrAccountDisabled = errors.New("DSM 账号已停用，需核实后恢复")
 var ErrDirectoryMembershipOnly = errors.New("此账号仅同步部门成员，保留原密码")
 var ErrDingTalkMembershipOnly = ErrDirectoryMembershipOnly
@@ -253,6 +254,9 @@ func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, ru
 	response, err := c.send(ctx, map[string]any{"action": "scoped_disable_dingtalk_user", "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
 	if err != nil {
 		return err
+	}
+	if response["absent"] == true && response["disabled"] == false {
+		return ErrAccountAbsent
 	}
 	if confirmed, _ := response["disabled"].(bool); !confirmed {
 		return errors.New("Helper 未确认 DSM 账号已停用")

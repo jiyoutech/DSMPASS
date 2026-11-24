@@ -12,8 +12,7 @@ const dingTalkOffboardingEligible = `s.provider_type='dingtalk' AND s.enabled=1 
 AND COALESCE(json_extract(s.config_json,'$.disable_missing_users'),1)=1
 AND a.provision_status IN ('created','linked_existing','failed','pending') AND COALESCE(a.conflict_reason,'')=''
 AND e.active=0 AND e.subject<>'' AND NOT EXISTS (
- SELECT 1 FROM external_accounts live WHERE live.active=1 AND
- (live.app_identity_id=a.app_identity_id OR (live.provider_slug=s.slug AND trim(live.display_name)=a.dsm_username))
+ SELECT 1 FROM external_accounts live WHERE live.active=1 AND live.app_identity_id=a.app_identity_id
 )`
 
 type DingTalkOffboardingCandidate struct{ AccountID, Username, Subject string }
