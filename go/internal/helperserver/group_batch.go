@@ -108,7 +108,7 @@ func (s *Server) applyGroupMembers(cfg config.HelperConfig, group string, users 
 		if !isLocalDirectoryGroup(group, before.id) || (!pinned && grant.DingTalk == nil) {
 			return nil, errors.New("通讯录成员关系与当前 DSM 群组不符")
 		}
-		scopes = append(scopes, db.HelperMemberScope{Username: name, DingTalk: grant.DingTalk, OtherGroup: pinned})
+		scopes = append(scopes, db.HelperMemberScope{UID: grant.UID, Username: name, DingTalk: grant.DingTalk, OtherGroup: pinned})
 	}
 	if len(scopes) != 0 {
 		if err := s.authorizeAccount(cfg, db.HelperAuthorizationQuery{Action: "directory_member_batch", Groupname: group, Members: scopes}); err != nil {
