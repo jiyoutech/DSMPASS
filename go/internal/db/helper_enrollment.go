@@ -37,11 +37,11 @@ const memberDepartmentMatch = `(pg.subject = mm.provider_group_id OR pg.id = mm.
  AND NOT EXISTS (SELECT 1 FROM provider_groups alt WHERE alt.provider_slug=pg.provider_slug
  AND alt.id<>pg.id AND (alt.id=mm.provider_group_id OR alt.subject=mm.provider_group_id))`
 
-const unresolvedDingTalkNamesake = `src.provider_type='dingtalk' AND trim(coalesce(e.display_name,''))=a.dsm_username
+const unresolvedDingTalkNamesake = `src.provider_type='dingtalk' AND trim(coalesce(e.display_name,''))=a.dsm_username COLLATE dsmpass_name
  AND EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=e.provider_slug
- AND other.active=1 AND other.id<>e.id AND trim(other.display_name)=a.dsm_username COLLATE NOCASE)`
+ AND other.active=1 AND other.id<>e.id AND trim(other.display_name)=a.dsm_username COLLATE dsmpass_name)`
 
-const uniqueDingTalkName = `src.provider_type='dingtalk' AND trim(e.display_name)=a.dsm_username AND trim(e.subject)<>''
+const uniqueDingTalkName = `src.provider_type='dingtalk' AND trim(e.display_name)=a.dsm_username COLLATE dsmpass_name AND trim(e.subject)<>''
  AND NOT (` + unresolvedDingTalkNamesake + `)`
 
 const dingTalkBindings = `SELECT a.dsm_username AS name, MIN(src.slug) AS source, MIN(e.subject) AS subject

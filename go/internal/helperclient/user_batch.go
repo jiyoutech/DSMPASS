@@ -53,6 +53,10 @@ func (c UnixSocketClient) ProvisionUsers(ctx context.Context, requestID string, 
 			return nil, errors.New("invalid DSM user batch result")
 		}
 		if !success {
+			if row["error_code"] == "DSM_ACCOUNT_DISABLED" {
+				results[i].Err = ErrAccountDisabled
+				continue
+			}
 			message, _ := row["error"].(string)
 			if message == "" {
 				message = "DSM user provisioning failed"

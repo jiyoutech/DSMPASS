@@ -25,6 +25,10 @@ func TestDirectoryOwnerChoiceAcrossProviders(t *testing.T) {
 			}
 			e := NewEngine(config.BackendConfig{}, q)
 			e.localPasswd = filepath.Join(t.TempDir(), "passwd")
+			e.localGroup = filepath.Join(t.TempDir(), "group")
+			if err := os.WriteFile(e.localGroup, []byte("users:x:100:\nadministrators:x:101:localadmin\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			inventory := func(uid int) {
 				t.Helper()
 				if err := os.WriteFile(e.localPasswd, []byte(fmt.Sprintf("张三:x:%d:100::/:/bin/sh\n张三1:x:1802:100::/:/bin/sh\n王五:x:1803:100::/:/bin/sh\n", uid)), 0600); err != nil {
@@ -46,7 +50,7 @@ func TestDirectoryOwnerChoiceAcrossProviders(t *testing.T) {
 			sync()
 			checkDingTalkNames(t, database, map[string]string{"c": "王五", "d": "新人", "j": "同事1", "k": "同事2"})
 			ids := map[string]string{}
-			reason := nativeUser{"张三", 1801}.choiceReason()
+			reason := nativeUser{name: "张三", uid: 1801}.choiceReason()
 			for _, sub := range []string{"a", "b"} {
 				var id, stored string
 				var links int
@@ -64,7 +68,7 @@ func TestDirectoryOwnerChoiceAcrossProviders(t *testing.T) {
 				}
 				defer tx.Rollback()
 				worker := NewEngine(e.cfg, db.New(tx))
-				worker.localPasswd = e.localPasswd
+				worker.localPasswd, worker.localGroup = e.localPasswd, e.localGroup
 				if err := worker.ChooseDirectoryOwner(ctx, slug, id, sub, reason); err != nil {
 					return err
 				}
@@ -119,5 +123,26 @@ func TestDirectoryOwnerChoiceAcrossProviders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUniqueDirectoryNamesRespectExistingCaseAndPrivileges(t *testing.T) {
+	ctx := context.Background()
+	database, q := openSyncTestDB(t, ctx)
+	defer database.Close()
+	e := NewEngine(config.BackendConfig{}, q)
+	dir := t.TempDir()
+	e.localGroup = filepath.Join(dir, "group")
+	passwd := filepath.Join(dir, "passwd")
+	if err := os.WriteFile(e.localGroup, []byte("users:x:100:\nadministrators:x:101:\nadmins-alias:x:101:Boss\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(passwd, []byte("Boss:x:1800:100::/:/bin/sh\nBOSS1:x:1801:100::/:/bin/sh\nAlice:x:1802:100::/:/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	users := []provider.User{dingTalkEmployee("a", "alice"), dingTalkEmployee("b", "boss")}
+	result, err := e.directoryNames(ctx, dingTalkTestSource, "钉钉", users, passwd)
+	if err != nil || result["a"].username != "Alice" || result["b"].username != "boss2" {
+		t.Fatalf("%v %v", result, err)
 	}
 }

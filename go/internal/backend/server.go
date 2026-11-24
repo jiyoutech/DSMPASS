@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/buildinfo"
@@ -24,6 +25,8 @@ type Server struct {
 	stateMu          sync.Mutex
 	states           map[string]oauthState
 	adminMu          sync.Mutex
+	settingsUpdateMu sync.Mutex
+	idpAllowPublic   atomic.Bool
 	syncMu           sync.Mutex
 	syncRuns         map[string]bool
 	autoSync         map[string]time.Time

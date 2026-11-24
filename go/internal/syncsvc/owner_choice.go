@@ -31,12 +31,12 @@ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.app_identity_i
 	if err != nil {
 		return err
 	}
-	native, err := nativeDirectoryUsers(e.localPasswd)
+	native, err := nativeDirectoryUsers(e.localPasswd, e.localGroup)
 	if err != nil {
 		return err
 	}
 	target, exists := native[userNameKey(display, e.cfg)]
-	if !exists || target.uid < 1024 || target.uid >= 65536 || identity.IsReservedDSMUsername(target.name) || target.choiceReason() != reason {
+	if !exists || !target.ordinary || identity.IsReservedDSMUsername(target.name) || target.choiceReason() != reason {
 		return errors.New("DSM 账号或 UID 已变化，请刷新同步结果")
 	}
 	if username == target.name && managed == 0 && currentReason == "" {

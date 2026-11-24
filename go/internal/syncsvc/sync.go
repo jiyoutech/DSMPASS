@@ -35,6 +35,7 @@ type Engine struct {
 	q           *db.Queries
 	options     Options
 	localPasswd string
+	localGroup  string
 }
 
 type Options struct {
@@ -45,11 +46,11 @@ type Options struct {
 }
 
 func NewEngine(cfg config.BackendConfig, q *db.Queries) *Engine {
-	return &Engine{cfg: cfg, q: q, localPasswd: "/etc/passwd"}
+	return &Engine{cfg: cfg, q: q, localPasswd: "/etc/passwd", localGroup: "/etc/group"}
 }
 
 func NewEngineWithOptions(cfg config.BackendConfig, q *db.Queries, options Options) *Engine {
-	return &Engine{cfg: cfg, q: q, options: options, localPasswd: "/etc/passwd"}
+	return &Engine{cfg: cfg, q: q, options: options, localPasswd: "/etc/passwd", localGroup: "/etc/group"}
 }
 
 func (e *Engine) SyncProvider(ctx context.Context, directory provider.Directory) (Result, error) {

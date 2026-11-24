@@ -28,7 +28,7 @@ func (s *Server) startupStatus() (ready bool, startupError string) {
 // All other RPCs stay closed until migration and the initial recovery pass end.
 func (s *Server) initializeRecovery(ctx context.Context, cfg config.HelperConfig) {
 	for ctx.Err() == nil {
-		if err := ensureJournalStore(cfg); err != nil {
+		if err := reconcileJournalStore(cfg); err != nil {
 			s.setStartupState(true, err)
 			log.Printf("DSM Pass helper journal migration pending: %v", err)
 			select {

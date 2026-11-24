@@ -19,8 +19,9 @@ type directoryName struct {
 }
 
 type nativeUser struct {
-	name string
-	uid  int
+	name     string
+	uid      int
+	ordinary bool
 }
 
 func (u nativeUser) choiceReason() string {
@@ -105,18 +106,18 @@ JOIN dsm_accounts a ON a.id=c.account_id AND a.dsm_username=c.username WHERE c.s
 	for _, user := range active {
 		key := userNameKey(user.DisplayName, e.cfg)
 		recoverable, found := existing[identity.Normalize(user.Subject)]
-		if key != "" && !identity.IsReservedDSMUsername(key) && (recoverable || (!found && counts[key] > 1)) {
+		if key != "" && !identity.IsReservedDSMUsername(key) && (recoverable || !found) {
 			candidates = append(candidates, user)
 		}
 	}
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	native, err := nativeDirectoryUsers(passwdPath)
+	native, err := nativeDirectoryUsers(passwdPath, e.localGroup)
 	if err != nil {
 		return nil, err
 	}
-	claimed, err := e.claimedDSMNames(ctx)
+	claimed, err := e.claimedDSMNames(ctx, source)
 	if err != nil {
 		return nil, err
 	}
@@ -137,10 +138,15 @@ JOIN dsm_accounts a ON a.id=c.account_id AND a.dsm_username=c.username WHERE c.s
 	result := make(map[string]directoryName, len(candidates))
 	for _, user := range candidates {
 		key := userNameKey(user.DisplayName, e.cfg)
-		availableBase := !claimed[key] || releasable[key]
+		otherSource, occupiedBase := claimed[key]
+		availableBase := !occupiedBase || releasable[key]
 		local, foundNative := native[key]
 		subject := identity.Normalize(user.Subject)
-		if counts[key] == 1 && availableBase {
+		if counts[key] == 1 && !existing[subject] && ((!foundNative && !occupiedBase) || (otherSource && (!foundNative || local.ordinary))) {
+			// Preserve the identity resolver's existing cross-source linking rules.
+			continue
+		}
+		if counts[key] == 1 && availableBase && (!foundNative || local.ordinary) {
 			base, err := identity.SanitizeRequiredNameBase(user.DisplayName, identity.DSMUsernameMaxLength)
 			if err != nil {
 				return nil, err
@@ -151,7 +157,7 @@ JOIN dsm_accounts a ON a.id=c.account_id AND a.dsm_username=c.username WHERE c.s
 			result[subject] = directoryName{username: base}
 			continue
 		}
-		if availableBase && foundNative && local.uid >= 1024 && local.uid < 65536 {
+		if availableBase && foundNative && local.ordinary {
 			result[subject] = directoryName{choice: local.choiceReason()}
 			continue
 		}
@@ -175,7 +181,7 @@ JOIN dsm_accounts a ON a.id=c.account_id AND a.dsm_username=c.username WHERE c.s
 	return result, nil
 }
 
-func nativeDirectoryUsers(passwdPath string) (map[string]nativeUser, error) {
+func nativeDirectoryUsers(passwdPath, groupPath string) (map[string]nativeUser, error) {
 	// The SPK backend runs on the NAS. Read only login names from the local
 	// account list, including accounts that have never appeared in DSMPASS.
 	file, err := os.Open(passwdPath)
@@ -183,14 +189,19 @@ func nativeDirectoryUsers(passwdPath string) (map[string]nativeUser, error) {
 		return nil, fmt.Errorf("读取 DSM 已有登录名: %w", err)
 	}
 	defer file.Close()
+	groups, err := nativeDirectoryGroups(groupPath)
+	if err != nil {
+		return nil, err
+	}
 	native := make(map[string]nativeUser)
+	uidCounts := make(map[int]int)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.SplitN(line, ":", 4)
+		fields := strings.Split(line, ":")
 		if len(fields) < 4 || fields[0] == "" {
 			return nil, fmt.Errorf("DSM 本地账号列表格式异常")
 		}
@@ -202,28 +213,85 @@ func nativeDirectoryUsers(passwdPath string) (map[string]nativeUser, error) {
 		if _, exists := native[key]; exists {
 			return nil, fmt.Errorf("DSM 本地用户名重复：%s", fields[0])
 		}
-		native[key] = nativeUser{fields[0], uid}
+		gid, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return nil, fmt.Errorf("读取 DSM 用户 GID: %w", err)
+		}
+		uidCounts[uid]++
+		native[key] = nativeUser{name: fields[0], uid: uid, ordinary: uid >= 1024 && uid < 65536 && gid == groups.usersGID && groups.hasAdmins && !groups.privilegedGIDs[gid] && !groups.privilegedMembers[key] && !identity.IsReservedDSMUsername(key) && key != "guest" && key != "nobody" && key != "dsmpass"}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("读取 DSM 已有登录名: %w", err)
 	}
 
+	for key, user := range native {
+		if uidCounts[user.uid] > 1 {
+			user.ordinary = false
+			native[key] = user
+		}
+	}
 	return native, nil
 }
 
-func (e *Engine) claimedDSMNames(ctx context.Context) (map[string]bool, error) {
+type nativeGroupScope struct {
+	usersGID          int
+	hasAdmins         bool
+	privilegedMembers map[string]bool
+	privilegedGIDs    map[int]bool
+}
+
+func nativeDirectoryGroups(path string) (nativeGroupScope, error) {
+	scope := nativeGroupScope{usersGID: -1, privilegedGIDs: map[int]bool{0: true}, privilegedMembers: map[string]bool{}}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return scope, fmt.Errorf("读取 DSM 本地组: %w", err)
+	}
+	members := map[int][]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) != 4 {
+			return scope, fmt.Errorf("DSM 本地组列表格式异常")
+		}
+		gid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return scope, err
+		}
+		members[gid] = append(members[gid], strings.Split(fields[3], ",")...)
+		switch fields[0] {
+		case "users":
+			scope.usersGID = gid
+		case "administrators":
+			scope.hasAdmins = true
+			scope.privilegedGIDs[gid] = true
+		case "admin", "docker", "lxd", "incus-admin", "sudo", "wheel", "disk", "libvirt":
+			scope.privilegedGIDs[gid] = true
+		}
+	}
+	for gid := range scope.privilegedGIDs {
+		for _, member := range members[gid] {
+			scope.privilegedMembers[identity.Normalize(member)] = true
+		}
+	}
+	return scope, nil
+}
+
+func (e *Engine) claimedDSMNames(ctx context.Context, source string) (map[string]bool, error) {
 	occupied := make(map[string]bool)
-	rows, err := e.q.DBTX().QueryContext(ctx, "SELECT dsm_username_norm FROM dsm_accounts")
+	rows, err := e.q.DBTX().QueryContext(ctx, `SELECT a.dsm_username_norm, EXISTS (SELECT 1 FROM external_accounts e WHERE e.app_identity_id=a.app_identity_id AND e.provider_slug<>? AND e.active=1) AND NOT EXISTS (SELECT 1 FROM external_accounts e WHERE e.app_identity_id=a.app_identity_id AND e.provider_slug=?) FROM dsm_accounts a`, source, source)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		var otherSource bool
+		if err := rows.Scan(&name, &otherSource); err != nil {
 			return nil, err
 		}
-		occupied[name] = true
+		occupied[name] = otherSource
 	}
 	return occupied, rows.Err()
 }

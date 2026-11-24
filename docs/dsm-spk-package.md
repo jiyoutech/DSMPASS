@@ -112,11 +112,7 @@ DSMPASS_ACCESS_HOST=127.0.0.1
 DSMPASS_TLS_ENABLED=1
 ```
 
-编辑环境文件后，可以在 DSM 套件中心重启套件，也可以执行：
-
-```bash
-sudo /var/packages/DSMPASS/scripts/start-stop-status restart
-```
+编辑环境文件后，在 DSM 套件中心停止 DSMPASS，再启动套件。
 
 日志路径：
 

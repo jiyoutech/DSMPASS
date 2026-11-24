@@ -147,6 +147,65 @@ func ensureJournalStore(cfg config.HelperConfig) error {
 	})
 }
 
+// Startup owns the store until recovery completes. A crash between the body
+// and index writes may leave a complete record on an already migrated NAS.
+func reconcileJournalStore(cfg config.HelperConfig) error {
+	if err := ensureJournalStore(cfg); err != nil {
+		return err
+	}
+	indexed := make(map[string]string)
+	indexDir := filepath.Join(cfg.JournalDir, "active-index")
+	entries, err := os.ReadDir(indexDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		index, err := readJournalIndex(filepath.Join(indexDir, entry.Name()))
+		if err != nil || filepath.Base(journalIndexPath(cfg, index.Username)) != entry.Name() {
+			continue // Its own account guard will retain the failure.
+		}
+		for _, id := range index.Requests {
+			indexed[id] = index.Username
+		}
+	}
+	entries, err = os.ReadDir(cfg.JournalDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		j, err := loadJournal(cfg, id)
+		if err != nil || j.RequestID != id || safeName(id) != id || j.DSMUsername == "" {
+			if _, ok := indexed[id]; ok {
+				continue // Recovery reports this failure for the indexed account.
+			}
+			return fmt.Errorf("cannot identify unindexed recovery journal %q", id)
+		}
+		if strings.EqualFold(indexed[id], j.DSMUsername) {
+			continue
+		}
+		if terminalJournal(j.Status) {
+			if err := archiveJournal(cfg, id); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := readJournalIndex(journalIndexPath(cfg, j.DSMUsername)); err != nil && !os.IsNotExist(err) {
+			continue // The damaged index already blocks this account.
+		}
+		if err := updateJournalIndex(cfg, j, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Only completed records expire. Active/unresolved recovery material and
 // permanent password-reset request history are never pruned here.
 func pruneCompletedJournals(cfg config.HelperConfig, now time.Time) error {

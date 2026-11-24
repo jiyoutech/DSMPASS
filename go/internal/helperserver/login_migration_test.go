@@ -90,13 +90,25 @@ func TestLoginMigratesVerifiedBindingWithoutSync(t *testing.T) {
 }
 
 func TestLoginApprovalForRetainedDirectoryOnlyAccount(t *testing.T) {
+	for _, prior := range []string{"subject", "former-member"} {
+		t.Run(prior, func(t *testing.T) { checkRetainedLoginApproval(t, prior) })
+	}
+}
+
+func checkRetainedLoginApproval(t *testing.T, prior string) {
 	cfg := policyTestConfig(t)
 	q := syncedPasswordTestStore(t, "alice")
 	p, err := readAccountPolicy(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026, DingTalk: &db.DingTalkUserBinding{SourceSlug: "source", Subject: "subject"}}}
+	if prior != "subject" {
+		_, err := q.DBTX().ExecContext(context.Background(), "UPDATE identity_sources SET provider_type='dingtalk'; UPDATE dsm_accounts SET managed=0; INSERT INTO directory_owner_choices VALUES('account','external','source','subject','alice',1026)")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026, DingTalk: &db.DingTalkUserBinding{SourceSlug: "source", Subject: prior}}}
 	if err := saveAccountPolicy(cfg, p); err != nil {
 		t.Fatal(err)
 	}

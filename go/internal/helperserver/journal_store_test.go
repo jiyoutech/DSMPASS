@@ -200,3 +200,63 @@ func TestRecoveryFinishesInterruptedArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStartupRepairsInterruptedFirstIndexWrite(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if _, err := prepareBrowserLogin(cfg, "before-index", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(journalIndexPath(cfg, "bob")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	j, found, err := browserLeaseForUser(cfg, "bob")
+	if err != nil || !found || j.RequestID != "before-index" {
+		t.Fatalf("lost interrupted record: %v, %v", found, err)
+	}
+	if err := recoverPending(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalBodyWriteFailureLeavesNoNewIndex(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if err := ensureJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cfg.JournalDir, "blocked.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := saveJournal(cfg, journal{RequestID: "blocked", DSMUsername: "bob", Status: "pending"})
+	if err == nil {
+		t.Fatal("expected body write failure")
+	}
+	if _, err := os.Stat(journalIndexPath(cfg, "bob")); !os.IsNotExist(err) {
+		t.Fatalf("dangling account index: %v", err)
+	}
+}
+
+func TestOnlineIndexWriteFailureRetiresUnusedCredential(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if err := ensureJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	// A malformed index cannot be amended. The prepared body still needs a
+	// terminal receipt, since its password was never installed.
+	if err := os.WriteFile(journalIndexPath(cfg, "bob"), []byte("damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j := journal{RequestID: "unused", DSMUsername: "bob", Status: journalStatusPendingBrowser}
+	if err := savePreparedJournal(cfg, j); err == nil {
+		t.Fatal("expected index failure")
+	}
+	record, err := loadJournal(cfg, j.RequestID)
+	if err != nil || record.Status != journalStatusSuperseded {
+		t.Fatal(record.Status, err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.JournalDir, "unused.json")); !os.IsNotExist(err) {
+		t.Fatal("unused credential remained active", err)
+	}
+}

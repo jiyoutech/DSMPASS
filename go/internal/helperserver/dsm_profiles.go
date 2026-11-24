@@ -19,12 +19,34 @@ func (s *Server) unchangedAccounts(ctx context.Context, cfg config.HelperConfig,
 	if cfg.SynoWebAPIPath == "" || cfg.AccountPolicyPath == "" || cfg.GroupPath == "" || cfg.PasswdPath == "" || len(rows) < 2 {
 		return nil
 	}
-	// Recheck everything under the writer lock. Any incomplete read falls back
-	// to the individual path. This optimization never changes the NAS.
-	var confirmed map[string]bool
-	err := withFileLock(cfg.ShadowLockPath, func() error {
-		users, err := systemAccounts(cfg.PasswdPath, false)
-		if err != nil {
+	scan, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	before, err := readDirectoryStamp(cfg)
+	if err != nil {
+		return nil
+	}
+	users, err := systemAccounts(cfg.PasswdPath, false)
+	if err != nil {
+		return nil
+	}
+	candidates := make(map[string]map[string]any)
+	for _, row := range rows {
+		name := row["dsm_username"].(string)
+		if _, exists := users[name]; exists && assertAllowed(cfg, name) == nil {
+			candidates[name] = row
+		}
+	}
+	if len(candidates) < 2 {
+		return nil
+	}
+	eligible, err := readMatchingProfiles(scan, cfg.SynoWebAPIPath, users, candidates)
+	if err != nil || len(eligible) == 0 {
+		return nil
+	}
+	confirmed := make(map[string]bool)
+	err = withFileLockContext(scan, cfg.ShadowLockPath, func() error {
+		current, err := readDirectoryStamp(cfg)
+		if err != nil || !before.matches(current) {
 			return err
 		}
 		groups, err := systemAccounts(cfg.GroupPath, true)
@@ -35,34 +57,14 @@ func (s *Server) unchangedAccounts(ctx context.Context, cfg config.HelperConfig,
 		if err != nil {
 			return err
 		}
-		candidates := map[string]map[string]any{}
-		for _, row := range rows {
-			name := row["dsm_username"].(string)
-			if assertAllowed(cfg, name) != nil {
-				continue
-			}
-			if !s.canConfirmDirectoryUser(cfg, policy, name, users, groups) {
-				continue
-			}
-			candidates[name] = row
-		}
-		if len(candidates) < 2 {
-			return nil
-		}
-		// Keep this optional scan within the usual account mutation lock wait.
-		scan, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		eligible, err := readMatchingProfiles(scan, cfg.SynoWebAPIPath, users, candidates)
-		if err != nil || len(eligible) == 0 {
-			return err
-		}
 		ok, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "provision_users", Usernames: eligible})
 		if err != nil || !ok {
 			return err
 		}
-		confirmed = make(map[string]bool, len(eligible))
 		for _, name := range eligible {
-			confirmed[name] = true
+			if s.canConfirmDirectoryUser(cfg, policy, name, users, groups) {
+				confirmed[name] = true
+			}
 		}
 		return nil
 	})

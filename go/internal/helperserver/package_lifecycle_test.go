@@ -28,18 +28,22 @@ func TestUpgradeCannotRunUninstallCleanup(t *testing.T) {
 		}
 		for _, status := range []string{"UPGRADE", "INSTALL", "", "UNINSTALL"} {
 			t.Run(hook+"/"+status, func(t *testing.T) {
-				dir := t.TempDir()
+				dir, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
 				marker := filepath.Join(dir, "called")
 				controller := filepath.Join(dir, "controller")
 				if err := os.WriteFile(controller, []byte("#!/bin/sh\nprintf '%s' \"$1\" > \"$TEST_MARKER\"\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				pkgvar := filepath.Join(dir, "data")
-				if err := os.Mkdir(pkgvar, 0700); err != nil {
+				pkgvar := filepath.Join(dir, "volume2", "@appdata", "DSMPASS")
+				if err := os.MkdirAll(pkgvar, 0700); err != nil {
 					t.Fatal(err)
 				}
 				script := strings.ReplaceAll(body, "/usr/local/libexec/dsmpass/helper-control.sh", controller)
-				script = strings.ReplaceAll(script, `/volume1/@appdata/$PACKAGE_NAME`, filepath.Join(dir, "appdata"))
+				script = strings.ReplaceAll(script, "PACKAGE_NAME=\"$PACKAGE_NAME\"", "PACKAGE_NAME=DSMPASS")
+				script = strings.ReplaceAll(script, "/volume", filepath.Join(dir, "volume"))
 				cmd := exec.Command("/bin/sh", "-c", script)
 				cmd.Env = append(os.Environ(), "SYNOPKG_PKG_STATUS="+status, "SYNOPKG_PKGVAR="+pkgvar, "DSMPASS_DELETE_DATA=1", "TEST_MARKER="+marker)
 				output, err := cmd.CombinedOutput()
@@ -102,6 +106,8 @@ func TestRetainedReinstallHooks(t *testing.T) {
 		{"missing-database", "INSTALL", true, false, true, false, false, true},
 		{"missing-settings", "INSTALL", true, true, false, false, false, true},
 		{"restore-refused", "INSTALL", true, true, true, true, true, true},
+		{"changed-uid", "INSTALL", true, true, true, true, true, false},
+		{"unsigned", "INSTALL", true, true, true, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -119,7 +125,7 @@ func TestRetainedReinstallHooks(t *testing.T) {
 			if tc.retained {
 				writeFile(t, filepath.Join(dir, "retained"), "retained\n")
 			}
-			writeFile(t, filepath.Join(dir, "controller"), "#!/bin/sh\necho \"$1\" >> \"$SYNOPKG_PKGVAR/calls\"\n[ \"$1\" != upgrade ] || [ \"$FAIL_UPGRADE\" != yes ]\n")
+			writeFile(t, filepath.Join(dir, "controller"), "#!/bin/sh\necho \"$1\" >> \"$SYNOPKG_PKGVAR/calls\"\nif [ \"$1\" = upgrade ] && [ -n \"$UPGRADE_ERROR\" ]; then echo \"$UPGRADE_ERROR\" >&2; exit 1; fi\n")
 			// The real hook schedules an INFO refresh after installation. Keep that
 			// separate package-manager operation outside this test.
 			writeFile(t, filepath.Join(dir, "nohup"), "#!/bin/sh\nexit 0\n")
@@ -134,7 +140,14 @@ func TestRetainedReinstallHooks(t *testing.T) {
 				cmd := exec.Command("/bin/sh", "-ec", body)
 				cmd.Env = []string{"PATH=" + dir + ":" + os.Getenv("PATH"), "SYNOPKG_PKGVAR=" + dir, "SYNOPKG_PKGDEST=" + dir, "DEFAULT_MANAGEMENT_PORT=25000", "DEFAULT_IDP_PORT=24000", "PACKAGE_NAME=DSMPASS", "SYNOPKG_PKG_STATUS=" + tc.status}
 				if tc.failUpgrade {
-					cmd.Env = append(cmd.Env, "FAIL_UPGRADE=yes")
+					detail := "Helper release signature is invalid"
+					switch tc.name {
+					case "changed-uid":
+						detail = "reinstalled package UID/GID changed; run setup-helper-sudo.sh as root"
+					case "unsigned":
+						detail = "signed Helper manifest unavailable: no such file or directory"
+					}
+					cmd.Env = append(cmd.Env, "UPGRADE_ERROR="+detail)
 				}
 				cmd.Env = append(cmd.Env, extra...)
 				out, err := cmd.CombinedOutput()
@@ -193,5 +206,35 @@ func TestRetainedReinstallHooks(t *testing.T) {
 				t.Fatalf("reinstall actions %q", calls)
 			}
 		})
+	}
+}
+
+func TestRootLifecycleRefusesBeforePackageAccess(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/dsm/package-spk.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, part, ok := strings.Cut(string(data), "cat >> \"$work_dir/scripts/start-stop-status\" <<'EOF'\n")
+	if !ok {
+		t.Fatal("missing lifecycle body")
+	}
+	body, _, ok := strings.Cut(part, "\nEOF\n")
+	if !ok {
+		t.Fatal("incomplete lifecycle body")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "id"), []byte("#!/bin/sh\necho 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "status", "stop", "restart"} {
+		cmd := exec.Command("/bin/sh", "-c", "set -eu\nPACKAGE_NAME=DSMPASS\nDEFAULT_IDP_PORT=26000\n"+body, "test", action)
+		cmd.Env = []string{"PATH=" + dir, "SYNOPKG_PKGVAR=" + filepath.Join(dir, "untouched")}
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "synopkg") {
+			t.Fatal(action, err, string(out))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "untouched")); !os.IsNotExist(err) {
+		t.Fatal("package accessed", err)
 	}
 }

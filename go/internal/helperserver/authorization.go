@@ -24,6 +24,11 @@ func (s *Server) authorizeAccount(cfg config.HelperConfig, request db.HelperAuth
 		}
 		if owner, ok := p.CredentialOwners[request.Username]; ok {
 			request.CredentialOwner = &owner
+		} else if origin, ok := p.CreatedUsers[request.Username]; ok {
+			if request.AccountID != "" && request.AccountID != origin.AccountID {
+				return errors.New("DSM 创建归属与账号记录不符")
+			}
+			request.CredentialOwner = &origin.CredentialIdentity
 		}
 	}
 	allowed, err := s.mappingAllowed(cfg, request)
@@ -34,6 +39,14 @@ func (s *Server) authorizeAccount(cfg config.HelperConfig, request db.HelperAuth
 		return errors.New("DSM account is not authorized for this identity and operation")
 	}
 	return nil
+}
+
+func (s *Server) provisionOrigins(cfg config.HelperConfig, names []string) (map[string]db.AccountOrigin, error) {
+	if cfg.Privileged {
+		result, err := queryHelperAsPackage(cfg, db.HelperAuthorizationQuery{Action: "provision_origins", Usernames: names, DatabasePath: strings.TrimPrefix(cfg.DatabaseURL, "sqlite://")})
+		return result.Origins, err
+	}
+	return db.ProvisionOrigins(context.Background(), s.store, names)
 }
 
 func (s *Server) mappingAllowed(cfg config.HelperConfig, request db.HelperAuthorizationQuery) (bool, error) {
@@ -86,7 +99,7 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 
 func loginDeniedResponse(err error) map[string]any {
 	if errors.Is(err, errDingTalkMembershipOnly) {
-		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。请管理员在此身份源检查同名冲突并选择归属员工，或在登录审计中核实绑定")
+		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。请管理员在登录审计中核实凭据归属；有同名冲突时先选择对应员工")
 	}
 	if errors.Is(err, errDirectoryMembershipOnly) {
 		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中核实这条绑定")

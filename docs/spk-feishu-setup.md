@@ -90,6 +90,7 @@ https://<NAS-IP-or-domain>:25000/
 - `访问 IP / 域名`：用户和飞书回调能访问到的 NAS 域名或 IP，不包含协议和路径，例如 `nas.example.com`。
 - `IDP 入口端口`：建议 `26000`，必须大于 `1024` 且未被占用。
 - `管理端仅允许内网访问`：开启后管理后台只允许本机和内网访问；关闭时不按来源网段限制。
+- `认证端仅允许内网访问` 默认开启。需要公网直连时，在「系统设置 → 访问安全」关闭此项并保存，新登录和回调请求立即生效。使用反向代理时，内网限制以代理连接 DSMPASS 的来源 IP 为准。
 - IDP 入口只允许通过系统生成的 `IDP 地址` 访问；如果用其他 Host 或端口访问 `/idp/...`，后台会直接拒绝。
 - `IDP 地址`：自动生成，例如 `https://nas.example.com:26000`。
 - `DSM 地址`：自动生成，HTTPS 对应 `https://nas.example.com:5001/`。
@@ -296,11 +297,7 @@ sudo rm -f /etc/sudoers.d/DSMPASS-helper
 4. 重新发布飞书应用。
 5. 再做一次登录验证。
 
-修改 SPK 环境变量后，重启套件：
-
-```bash
-sudo /var/packages/DSMPASS/scripts/start-stop-status restart
-```
+修改 SPK 环境变量后，在 DSM 套件中心停止 DSMPASS，再启动套件。
 
 查看日志：
 

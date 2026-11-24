@@ -15,12 +15,14 @@ func TestDingTalkNameLogin(t *testing.T) {
 		name, change, identity, expiry string
 		selected, allowed              bool
 	}{
-		{name: "retained membership only", allowed: true},
-		{name: "unique despite inactive namesake", change: duplicate + "; UPDATE external_accounts SET active=0 WHERE id='second'", allowed: true},
+		{name: "retained membership only"},
+		{name: "unique despite inactive namesake", change: duplicate + "; UPDATE external_accounts SET active=0 WHERE id='second'"},
 		{name: "ambiguous even without mapping for second employee", change: duplicate},
-		{name: "administrator selected one of two", change: duplicate, selected: true, allowed: true},
+		{name: "administrator selected one of two", change: duplicate, selected: true},
 		{name: "different login identity", identity: "other-identity"},
-		{name: "selected employee supersedes old membership only", change: duplicate, selected: true, allowed: true},
+		{name: "selected employee needs independent confirmation", change: duplicate, selected: true},
+		{name: "trusted email conflicts"},
+		{name: "trusted email case difference", allowed: true},
 		{name: "selected UID changed", selected: true, change: "UPDATE directory_owner_choices SET uid=8000"},
 		{name: "changed employee ID", change: "UPDATE external_accounts SET subject='replacement'"},
 		{name: "blank directory name", change: "UPDATE external_accounts SET display_name=''"},
@@ -34,6 +36,7 @@ func TestDingTalkNameLogin(t *testing.T) {
 		{name: "disabled DSM user", expiry: "true"},
 		{name: "revoked"},
 		{name: "unregistered local account"},
+		{name: "captured UID without employee proof", selected: true},
 		{name: "generic grant without source pin"},
 		{name: "source removed from local scope"},
 		{name: "replacement DSM UID"},
@@ -73,8 +76,11 @@ func TestDingTalkNameLogin(t *testing.T) {
 			binding := db.DingTalkUserBinding{SourceSlug: "source", Subject: "subject"}
 			p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026, DingTalk: &binding}}
 			switch tc.name {
-			case "selected employee supersedes old membership only":
+			case "selected employee needs independent confirmation":
 				binding.Subject = "other"
+			case "captured UID without employee proof":
+				p.DingTalkScope = &dingTalkDirectoryScope{Sources: []string{"source"}, Users: map[string]int{"alice": 1026}}
+				delete(p.DirectoryUsers, "alice")
 			case "unregistered local account":
 				delete(p.DirectoryUsers, "alice")
 			case "generic grant without source pin":
@@ -92,6 +98,14 @@ func TestDingTalkNameLogin(t *testing.T) {
 				if err := target.begin(); err != nil {
 					t.Fatal(err)
 				}
+			case "trusted email conflicts", "trusted email case difference":
+				exec("UPDATE external_accounts SET email_verified=1,email_norm='alice@example.test' WHERE id='external'")
+				mail := "different@example.test"
+				if tc.allowed {
+					mail = " ALICE@example.test "
+				}
+				owner := db.CredentialIdentity{Username: "alice", SourceSlug: "source", Subject: "subject"}
+				p.CredentialCandidates = map[string]verifiedAccountCandidate{"alice": {Owner: owner, UID: 1026, Email: mail}}
 			case "email cannot decide between namesakes":
 				owner := db.CredentialIdentity{Username: "alice", SourceSlug: "source", Subject: "subject"}
 				p.CredentialCandidates = map[string]verifiedAccountCandidate{"alice": {Owner: owner, UID: 1026, Email: "alice@example.test"}}
@@ -120,7 +134,7 @@ func TestDingTalkNameLogin(t *testing.T) {
 				t.Fatalf("unexpected saved owner: %+v", owner)
 			}
 			if tc.allowed {
-				if tc.name == "retained membership only" {
+				if tc.name == "trusted email case difference" {
 					exec(duplicate)
 					if err := s.authorizeLogin(cfg, login); err != nil {
 						t.Fatal("new namesake displaced the existing employee", err)

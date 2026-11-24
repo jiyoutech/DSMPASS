@@ -144,6 +144,8 @@ func (s *Server) resetSyncedPasswordBatch(ctx context.Context, cfg config.Helper
 		row := map[string]any{"account_id": v["account_id"], "dsm_username": v["dsm_username"], "success": failures[i] == nil}
 		if errors.Is(failures[i], errDingTalkMembershipOnly) {
 			row["error_code"] = "DINGTALK_MEMBERSHIP_ONLY"
+		} else if errors.Is(failures[i], errDirectoryMembershipOnly) {
+			row["error_code"] = "DIRECTORY_MEMBERSHIP_ONLY"
 		} else if failures[i] != nil {
 			row["error_code"] = "SYNC_PASSWORD_RESET_FAILED"
 			row["error"] = failures[i].Error()

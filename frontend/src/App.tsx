@@ -34,9 +34,11 @@ import {
   Typography,
   theme
 } from "antd";
+import type { InputRef } from "antd";
+import { copyOrSelect } from "./clipboard";
 import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { LoginApprovalDialog } from "./components/LoginApprovalDialog";
 import { GroupApprovalDialog } from "./components/GroupApprovalDialog";
@@ -232,6 +234,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
   const [password, setPassword] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const passwordInput = useRef<InputRef>(null);
 
   useEffect(() => {
     setPassword("");
@@ -261,9 +264,11 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
     if (!password) {
       return;
     }
-    void navigator.clipboard.writeText(password)
-      .then(() => message.success("已复制初始密码"))
-      .catch(() => message.error("复制失败"));
+    void copyOrSelect(password, () => {
+      passwordInput.current?.focus();
+      passwordInput.current?.select();
+      message.info("请点眼睛显示密码，再手动复制。");
+    }).then(copied => { if (copied) message.success("已复制初始密码"); });
   }
 
   return (
@@ -291,7 +296,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
           <Typography.Text type="secondary">
             此密码用于这个身份源自动创建的 DSM 用户。请只在交付给用户时查看和复制。
           </Typography.Text>
-          <Input.Password value={password} readOnly />
+          <Input.Password ref={passwordInput} value={password} readOnly />
         </Space>
       </Modal>
     </Form.Item>
@@ -603,6 +608,7 @@ function Onboarding({
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
         admin_allowed_cidrs: settings.admin_allowed_cidrs,
+        idp_intranet_only: settings.idp_intranet_only ?? true,
         public_base_url: deploymentMode === "direct" ? withPreferredPort(settings.public_base_url, idpPort) : settings.public_base_url,
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
@@ -654,6 +660,7 @@ function Onboarding({
             access_scheme: "https",
             idp_port: defaultIDPPort,
             admin_allowed_cidrs: "all",
+            idp_intranet_only: true,
             helper_dsm_login_mode: "browser",
             helper_dsm_browser_login_ttl_seconds: 30,
             helper_dsm_tls_skip_verify: true
@@ -674,7 +681,7 @@ function Onboarding({
 const helperControlPath = "/usr/local/libexec/dsmpass/helper-control.sh";
 const restartHelperCommands = `sudo ${helperControlPath} restart &&
 sudo ${helperControlPath} status`;
-const installHelperCommands = `if [ -x ${helperControlPath} ]; then
+const installHelperCommands = `if [ -x ${helperControlPath} ] && [ ! -f /usr/local/libexec/dsmpass/retained ]; then
   sudo ${helperControlPath} stop
 fi &&
 sudo /var/packages/DSMPASS/target/setup-helper-sudo.sh &&
@@ -905,8 +912,8 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                         <pre>{restartHelperCommands}</pre>
                       </Typography.Paragraph>
                       <details>
-                        <summary>首次安装、未签名升级或重启后版本仍不匹配</summary>
-                        <div>在同一 SSH 终端执行以下命令，安装套件自带的 Helper，再重启并检查。完成后刷新管理后台，确认 Helper 已就绪。</div>
+                        <summary>首次安装、保留数据重装或更新后版本仍不匹配</summary>
+                        <div>确认已安装来自可信来源的套件后，在同一 SSH 终端安装 Helper，再重启并检查。完成后刷新管理后台，确认 Helper 已就绪。</div>
                         <Typography.Paragraph className="runtime-command" copyable={{ text: installHelperCommands }}>
                           <pre>{installHelperCommands}</pre>
                         </Typography.Paragraph>
@@ -1248,16 +1255,19 @@ function SourceDetail({
   const callbackURL = source.callback_url ?? `${window.location.origin}/idp/${source.slug}/callback`;
 
   async function copyAddress(label: "Launch" | "Callback", url: string) {
-    try {
-      await navigator.clipboard.writeText(url);
+    const copied = await copyOrSelect(url, () => {
+      modal.info({
+        title: `请手动复制 ${label} 地址`,
+        content: <Input readOnly autoFocus value={url} onFocus={event => event.target.select()} />
+      });
+    });
+    if (copied) {
       modal.success({
         title: `${label} 地址已复制`,
         content: label === "Launch"
           ? `请粘贴到${providerLabel}应用的入口地址/主页配置位置。`
           : `请粘贴到${providerLabel}应用的登录回调地址配置位置。`
       });
-    } catch {
-      message.error("复制失败");
     }
   }
 
@@ -2072,7 +2082,7 @@ function SourceDetail({
           )}
           {conflictGroups.length === 0 && currentOwnerChoices.length > 0 && (
             <Card title={currentOwnerChoices[0].conflict_reason}>
-              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。{source.provider_type === "dingtalk" && "选中的钉钉员工将获得该账号的登录和全量改密权限。"}其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
+              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。{source.provider_type === "dingtalk" && "登录和全量改密需另行核实账号归属。"}其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
               <Table size="small" rowKey="id" dataSource={currentOwnerChoices} pagination={false} columns={[
                 { title: "员工", dataIndex: "display_name" },
                 { title: "员工 ID", dataIndex: "external_subjects" },

@@ -302,6 +302,9 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		return s.resetSyncedPasswordBatch(ctx, cfg, payload)
 	case "scoped_reset_synced_user_password":
 		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
+			if errors.Is(err, errDirectoryMembershipOnly) {
+				return errorResponse("DIRECTORY_MEMBERSHIP_ONLY", err.Error())
+			}
 			if errors.Is(err, errDingTalkMembershipOnly) {
 				return errorResponse("DINGTALK_MEMBERSHIP_ONLY", err.Error())
 			}
@@ -322,7 +325,9 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		return s.provisionAccounts(ctx, cfg, payload)
 	case "scoped_provision_user":
 		return s.provisionAccount(ctx, cfg, payload)
-	case "scoped_disable_dingtalk_user", "scoped_disable_user":
+	case "scoped_cleanup_user":
+		return s.cleanupAccount(cfg, payload)
+	case "scoped_disable_dingtalk_user", "scoped_disable_missing_user", "scoped_disable_user":
 		return s.disableAccount(cfg, payload)
 	case "scoped_web_login_approval":
 		return s.webLoginApproval(cfg, payload)

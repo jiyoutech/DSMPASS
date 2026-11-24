@@ -142,6 +142,7 @@ func TestDingTalkMembershipOnlyAppliesToPasswordResetResponse(t *testing.T) {
 		skipped      bool
 	}{
 		{"scoped_reset_synced_user_password", "DINGTALK_MEMBERSHIP_ONLY", true},
+		{"scoped_reset_synced_user_password", "DIRECTORY_MEMBERSHIP_ONLY", true},
 		{"scoped_reset_synced_user_password", "ACCOUNT_FORBIDDEN", false},
 		{"scoped_add_group_member", "DINGTALK_MEMBERSHIP_ONLY", false},
 	} {

@@ -18,7 +18,12 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
-var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
+var ErrMembershipOnly = errors.New("仅结束该身份的部门同步")
+
+var ErrAccountAbsent = errors.New("DSM 已确认账号不存在")
+var ErrAccountDisabled = errors.New("DSM 账号已停用，需核实后恢复")
+var ErrDirectoryMembershipOnly = errors.New("此账号仅同步部门成员，保留原密码")
+var ErrDingTalkMembershipOnly = ErrDirectoryMembershipOnly
 
 // GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
 const GroupMemberBatchSize = db.MaxGroupMembers
@@ -247,10 +252,46 @@ func provisionUserResult(response map[string]any, initialPassword string, err er
 	return ProvisionUserResult{Created: created, InitialPasswordApplied: err == nil && explicit && applied && initialPassword != ""}, err
 }
 
+type CleanupClient interface {
+	CleanupUser(context.Context, string, string, string, string) (string, error)
+}
+
+func (c UnixSocketClient) CleanupUser(ctx context.Context, requestID, source, accountID, username string) (string, error) {
+	response, err := c.send(ctx, map[string]any{"action": "scoped_cleanup_user", "request_id": requestID, "source_slug": source, "account_id": accountID, "dsm_username": username})
+	if err != nil {
+		return "", err
+	}
+	outcome, _ := response["outcome"].(string)
+	switch outcome {
+	case "disabled", "membership_only", "absent", "unmapped_conflict":
+		return outcome, nil
+	default:
+		return "", errors.New("Helper 未确认清理结果")
+	}
+}
+
+type MissingUserClient interface {
+	DisableMissingUser(context.Context, string, string, string, string, string, string) error
+}
+
+func (c UnixSocketClient) DisableMissingUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
+	return c.disableDirectoryUser(ctx, "scoped_disable_missing_user", requestID, runID, source, accountID, subject, username)
+}
+
 func (c UnixSocketClient) DisableDingTalkUser(ctx context.Context, requestID, runID, source, accountID, subject, username string) error {
-	response, err := c.send(ctx, map[string]any{"action": "scoped_disable_dingtalk_user", "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
+	return c.disableDirectoryUser(ctx, "scoped_disable_dingtalk_user", requestID, runID, source, accountID, subject, username)
+}
+
+func (c UnixSocketClient) disableDirectoryUser(ctx context.Context, action, requestID, runID, source, accountID, subject, username string) error {
+	response, err := c.send(ctx, map[string]any{"action": action, "request_id": requestID, "run_id": runID, "source_slug": source, "account_id": accountID, "subject": subject, "dsm_username": username})
 	if err != nil {
 		return err
+	}
+	if action == "scoped_disable_missing_user" && response["membership_only"] == true && response["disabled"] == false && response["absent"] == false {
+		return ErrMembershipOnly
+	}
+	if response["absent"] == true && response["disabled"] == false {
+		return ErrAccountAbsent
 	}
 	if confirmed, _ := response["disabled"].(bool); !confirmed {
 		return errors.New("Helper 未确认 DSM 账号已停用")
@@ -473,7 +514,10 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 			if action == "scoped_reset_synced_user_passwords" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
 				return nil, ErrPasswordBatchUnsupported
 			}
-			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
+			if action == "scoped_provision_user" && code == "DSM_ACCOUNT_DISABLED" {
+				return nil, ErrAccountDisabled
+			}
+			if action == "scoped_reset_synced_user_password" && (code == "DINGTALK_MEMBERSHIP_ONLY" || code == "DIRECTORY_MEMBERSHIP_ONLY") {
 				return nil, ErrDingTalkMembershipOnly
 			}
 			if message, _ := response["error"].(string); message != "" {

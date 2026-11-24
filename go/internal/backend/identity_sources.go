@@ -200,85 +200,12 @@ func changedImmutableSourceField(existing, update string) bool {
 }
 
 func (s *Server) deleteProvider(c *gin.Context) {
-	slug := c.Param("slug")
-	if _, err := s.loadIdentitySource(c.Request.Context(), slug); err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "identity source not found"})
-		return
-	} else if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	if s.database == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "database handle is not available"})
-		return
-	}
-	tx, err := s.database.BeginTx(c.Request.Context(), nil)
+	result, status, err := s.runProviderCleanup(c.Request.Context(), c.Param("slug"), true, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		c.JSON(status, gin.H{"detail": err.Error()})
 		return
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	exclusiveIdentityIDs, providerGroupIDs, exclusiveGroupIDs, err := sourceOwnedIDs(c.Request.Context(), tx, slug)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	exclusiveAccountIDs, err := accountIDsForIdentities(c.Request.Context(), tx, exclusiveIdentityIDs)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	exclusiveAccountUsernames := []string{}
-	if len(exclusiveAccountIDs) > 0 {
-		exclusiveAccountUsernames, err = queryStringIDs(c.Request.Context(), tx, `
-SELECT dsm_username FROM dsm_accounts
-WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAccountIDs)...)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-			return
-		}
-	}
-	disabledDSMUsers := int64(0)
-	for _, username := range exclusiveAccountUsernames {
-		if _, err := s.helper.DisableUser(c.Request.Context(), "delete_source_disable_"+randomHex(8), username); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"detail": "删除身份源前禁用 DSM 用户失败：" + err.Error()})
-			return
-		}
-		disabledDSMUsers++
-	}
-	result, err := deleteIdentitySourceDataWithIDs(c.Request.Context(), tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	if _, err := tx.ExecContext(c.Request.Context(), `DELETE FROM source_initial_password_secrets WHERE source_slug = ?`, slug); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	sourceResult, err := tx.ExecContext(c.Request.Context(), `DELETE FROM identity_sources WHERE slug = ?`, slug)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	deletedSources, _ := sourceResult.RowsAffected()
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	deletedSyncRuns, deletedSyncLogs, deletedAuditLogs, err := s.deleteSourceLogs(c.Request.Context(), slug)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
-		return
-	}
-	result["deleted_sync_runs"] = int64Value(result, "deleted_sync_runs") + deletedSyncRuns
-	result["deleted_sync_logs"] = int64Value(result, "deleted_sync_logs") + deletedSyncLogs
-	result["deleted_login_audit"] = int64Value(result, "deleted_login_audit") + deletedAuditLogs
-	result["slug"] = slug
-	result["deleted_sources"] = deletedSources
-	result["disabled_dsm_users"] = disabledDSMUsers
-	result["detail"] = "已禁用 DSM 中对应用户，并删除身份源配置、本地同步映射和日志；如需彻底删除这些 DSM 用户，请到 DSM 手动删除"
-	c.JSON(http.StatusOK, result)
+	c.JSON(status, result)
 }
 
 func (s *Server) sourceSyncRuns(c *gin.Context) {

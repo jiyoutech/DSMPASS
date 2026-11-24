@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS directory_owner_choices (
     username TEXT NOT NULL,
     uid INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS source_cleanup_targets (
+    source_slug TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE,
+    outcome TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY(source_slug,account_id)
+);
 CREATE TABLE IF NOT EXISTS dingtalk_offboarding (
     source_slug TEXT NOT NULL,
     account_id TEXT NOT NULL,

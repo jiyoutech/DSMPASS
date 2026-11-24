@@ -147,7 +147,7 @@ func relayLoginReal(cfg config.HelperConfig, requestID, username string) (relayL
 			if err != nil {
 				return err
 			}
-			if err := saveJournal(cfg, j); err != nil {
+			if err := savePreparedJournal(cfg, j); err != nil {
 				diaglog.Append(cfg.DataDir, requestID, "helper.journal.save_pending.error", cfg.LoginDiagnosticsEnabled, diaglog.Event{"error": err.Error(), "journal_dir": cfg.JournalDir})
 				return err
 			}
@@ -291,7 +291,7 @@ func prepareBrowserLogin(cfg config.HelperConfig, requestID, username string) (b
 				ExpiresAt:        expiresAt.Format(time.RFC3339Nano),
 				CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 			}
-			if err := saveJournal(cfg, j); err != nil {
+			if err := savePreparedJournal(cfg, j); err != nil {
 				return err
 			}
 			diaglog.Append(cfg.DataDir, requestID, "helper.prepare_browser_login.password_generated", cfg.LoginDiagnosticsEnabled, diaglog.Event{
@@ -873,13 +873,20 @@ func dsmHTTPClient(cfg config.HelperConfig) http.Client {
 }
 
 func lockPath(dir, username string) string {
-	safe := strings.Map(func(r rune) rune {
-		if r == '_' || r == '-' || r == '.' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			return r
-		}
-		return '_'
-	}, strings.ToLower(username))
-	return filepath.Join(dir, "user-"+safe+".lock")
+	return filepath.Join(dir, "user-"+lineHash(strings.ToLower(username))+".lock")
+}
+
+var errJournalIndexWrite = errors.New("cannot persist active recovery index")
+
+// Both login paths call this before their first shadow write. If indexing
+// fails online, retire the unused credential so it cannot block a later login.
+func savePreparedJournal(cfg config.HelperConfig, j journal) error {
+	err := saveJournal(cfg, j)
+	if errors.Is(err, errJournalIndexWrite) {
+		j.Status = journalStatusSuperseded
+		return errors.Join(err, saveJournal(cfg, j))
+	}
+	return err
 }
 
 func saveJournal(cfg config.HelperConfig, j journal) error {
@@ -906,12 +913,6 @@ func saveJournal(cfg config.HelperConfig, j journal) error {
 		return err
 	}
 	path := filepath.Join(dir, safeName(j.RequestID)+".json")
-	if !terminalJournal(j.Status) {
-		// Persist the account association before any password write can happen.
-		if err := updateJournalIndex(cfg, j, false); err != nil {
-			return err
-		}
-	}
 	if err := writeFileAtomically(path, data, 0o600); err != nil {
 		return err
 	}
@@ -920,6 +921,10 @@ func saveJournal(cfg config.HelperConfig, j journal) error {
 			return err
 		}
 		return updateJournalIndex(cfg, j, true)
+	}
+	// The account index must always refer to a durable recovery record.
+	if err := updateJournalIndex(cfg, j, false); err != nil {
+		return errors.Join(errJournalIndexWrite, err)
 	}
 	return nil
 }

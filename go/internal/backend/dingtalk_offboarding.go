@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
 
@@ -34,12 +35,17 @@ func (s *Server) disableDingTalkAccounts(ctx context.Context, runID, source stri
 			return operations, errors.Join(append(errs, err)...)
 		}
 		err = s.helper.DisableDingTalkUser(ctx, "sync_disable_"+randomHex(8), runID, source, user.AccountID, user.Subject, user.Username)
-		if err == nil {
+		absent := errors.Is(err, helperclient.ErrAccountAbsent)
+		if err == nil || absent {
 			err = saveObjectState(ctx, s.store.DBTX(), user.Username, `UPDATE dsm_accounts SET allow_login=0,provision_status='disabled',updated_at=CURRENT_TIMESTAMP WHERE id=?`, user.AccountID)
 		}
 		if err != nil {
 			s.writeSyncOperation(buffer, runID, source, "user", user.AccountID, user.Username, "disable_missing", "failed", "", "", err.Error())
 			errs = append(errs, fmt.Errorf("停用 %s: %w", user.Username, err))
+			continue
+		}
+		if absent {
+			s.writeSyncOperation(buffer, runID, source, "user", user.AccountID, user.Username, "disable_missing", "skipped", reason, "absent", "")
 			continue
 		}
 		s.writeSyncOperation(buffer, runID, source, "user", user.AccountID, user.Username, "disable_missing", "success", reason, "disabled", "")

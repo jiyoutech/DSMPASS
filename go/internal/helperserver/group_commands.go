@@ -30,9 +30,6 @@ func (s *Server) mutateGroup(cfg config.HelperConfig, action string, payload map
 		if err := assertAllowed(cfg, username); err != nil {
 			return errorResponse("USERNAME_NOT_ALLOWED", err.Error())
 		}
-		if err := s.requireMemberEnrollment(cfg, action, username, groupname); err != nil {
-			return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
-		}
 		if _, err := getSynoUser(cfg.SynoUserPath, username); err != nil {
 			return errorResponse("SYNOUSER_MISSING", "DSM user is unavailable")
 		}
@@ -158,7 +155,7 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 		if err := requireManagedGroup(cfg, groupname); err != nil {
 			return err
 		}
-		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_member", Username: username, Groupname: groupname, SourceSlug: grant.DingTalk.SourceSlug, Subject: grant.DingTalk.Subject})
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_member", LocalUID: grant.UID, Username: username, Groupname: groupname, SourceSlug: grant.DingTalk.SourceSlug, Subject: grant.DingTalk.Subject})
 		if err != nil {
 			return err
 		}
@@ -177,11 +174,21 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 		}
 		return errors.New("未找到与已登记钉钉用户一致的有效部门成员关系")
 	}
+	if _, fixed := grant.Groups[groupname]; !fixed && grant.DingTalk == nil && action == "scoped_add_group_member" {
+		p, err := readAccountPolicy(cfg)
+		if err != nil {
+			return err
+		}
+		if err := s.pinMatchedMembership(cfg, &p, username, group); err != nil {
+			return err
+		}
+		return saveAccountPolicy(cfg, p)
+	}
 	if gid, allowed := grant.Groups[groupname]; !allowed || gid != group.id || !isLocalDirectoryGroup(groupname, group.id) {
 		return fmt.Errorf("DSM 用户 %q 的通讯录同步授权未包含当前群组 %q", username, groupname)
 	}
 	if action == "scoped_add_group_member" || action == "scoped_remove_group_member" {
-		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_member", Username: username, Groupname: groupname})
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_member", LocalUID: grant.UID, Username: username, Groupname: groupname})
 		if err != nil {
 			return err
 		}
@@ -189,6 +196,46 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 			return errors.New("当前通讯录成员关系与请求不符")
 		}
 	}
+	return nil
+}
+
+// Called under the policy writer lock, when an ordinary existing directory
+// user first joins a group that already has independent Helper approval.
+func (s *Server) pinMatchedMembership(cfg config.HelperConfig, p *accountPolicy, name string, group systemAccount) error {
+	grant, ok := p.DirectoryUsers[name]
+	if !ok || grant.DingTalk != nil || !isLocalDirectoryGroup(group.name, group.id) || p.Groups[group.name] != group.id {
+		return errors.New("目标群组尚未获得成员同步授权")
+	}
+	if _, already := grant.Groups[group.name]; already {
+		return errors.New("已有部门授权的 GID 发生变化")
+	}
+	user, err := normalUser(cfg, name)
+	if err != nil {
+		return err
+	}
+	groups, err := systemAccounts(cfg.GroupPath, true)
+	if err != nil {
+		return err
+	}
+	if user.id != grant.UID || !ordinaryInstallUser(user, groups) {
+		return errors.New("DSM 用户身份或权限已改变")
+	}
+	for _, query := range []db.HelperAuthorizationQuery{
+		{Action: "directory_account_match", Username: name, LocalUID: user.id},
+		{Action: "other_directory_member", LocalUID: user.id, Username: name, Groupname: group.name},
+	} {
+		allowed, err := s.mappingAllowed(cfg, query)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return errors.New("未确认该账号的有效目录归属与部门关系")
+		}
+	}
+	if !pinDirectoryDepartments(&grant, *p, groups, []string{group.name}) {
+		return errors.New("未确认部门原始 GID")
+	}
+	p.DirectoryUsers[name] = grant
 	return nil
 }
 

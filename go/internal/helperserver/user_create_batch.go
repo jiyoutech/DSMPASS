@@ -34,7 +34,7 @@ func userCreateLockPaths(dir string, users []newDSMUser) []string {
 	for i, u := range users {
 		paths[i] = lockPath(dir, u.name)
 	}
-	// Several Unicode usernames may normalize to the same lock pathname.
+	// Case variants share an account lock. Acquire each distinct lock in order.
 	slices.Sort(paths)
 	return slices.Compact(paths)
 }
@@ -176,10 +176,14 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	origins, err := s.provisionOrigins(cfg, names)
+	if err != nil {
+		return err
+	}
 	errs := make([]error, len(eligible))
 	var workers sync.WaitGroup
 	for i, u := range eligible {
-		target := creationTarget{cfg: cfg, name: u.name}
+		target := creationTarget{cfg: cfg, name: u.name, origin: origins[u.name]}
 		if errs[i] = target.begin(); errs[i] != nil {
 			continue
 		}
@@ -195,7 +199,7 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 			// Only this goroutine updates the shared policy. confirm binds the
 			// actual ordinary UID and rejects missing, privileged or duplicate UIDs.
 			var id int
-			id, errs[i] = (creationTarget{cfg: cfg, name: u.name}).confirmID()
+			id, errs[i] = (creationTarget{cfg: cfg, name: u.name, origin: origins[u.name]}).confirmID()
 			if errs[i] == nil && cfg.SynoWebAPIPath != "" {
 				createdIDs[u.name] = id
 				continue

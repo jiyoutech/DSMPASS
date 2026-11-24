@@ -160,6 +160,11 @@ PACKAGE_NAME="$PACKAGE_NAME"
 DEFAULT_IDP_PORT="$DEFAULT_IDP_PORT"
 EOF
   cat >> "$work_dir/scripts/start-stop-status" <<'EOF'
+runtime_uid=$(id -u) || exit 1
+if [ "$runtime_uid" = 0 ]; then
+  echo "Use DSM Package Center or synopkg to manage DSMPASS as the package user." >&2
+  exit 1
+fi
 PKGDEST=${SYNOPKG_PKGDEST:-"/var/packages/$PACKAGE_NAME/target"}
 PKGVAR=${SYNOPKG_PKGVAR:-"/var/packages/$PACKAGE_NAME/var"}
 PIDFILE="$PKGVAR/dsmpass.pid"
@@ -665,12 +670,26 @@ render_desktop_launcher
 sync_installed_admin_port
 sync_installed_admin_port_later
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
-  if /usr/local/libexec/dsmpass/helper-control.sh upgrade; then
+  if upgrade_detail=$(/usr/local/libexec/dsmpass/helper-control.sh upgrade 2>&1); then
     log_install_status "signed_helper_upgrade_success"
   elif [ -f /usr/local/libexec/dsmpass/retained ]; then
-    log_install_status "retained_helper_restore_failed"
-    echo "Could not reactivate the retained Helper. Check the signed package and package UID/GID." >&2
-    exit 1
+    case "$upgrade_detail" in
+      *"reinstalled package UID/GID changed;"*)
+        log_install_status "retained_helper_requires_admin: package identity changed"
+        ;;
+      *"signed Helper manifest unavailable:"*"no such file or directory"*)
+        if [ -e "$PKGDEST/helper-release.json" ] || [ -e "$PKGDEST/helper-release.sig" ]; then
+          echo "Incomplete signed Helper payload; reinstall a verified SPK." >&2
+          exit 1
+        fi
+        log_install_status "retained_helper_requires_admin: unsigned package"
+        ;;
+      *)
+        log_install_status "retained_helper_restore_failed"
+        echo "Could not verify or reactivate the retained Helper. Reinstall a verified SPK." >&2
+        exit 1
+        ;;
+    esac
   else
     log_install_status "signed_helper_upgrade_failed: first migration or unsigned builds require root setup-helper-sudo.sh; check Helper status in management page"
   fi
@@ -708,7 +727,7 @@ EOF
 [ "\${SYNOPKG_PKG_STATUS:-}" = "UNINSTALL" ] || exit 0
 PACKAGE_NAME="$PACKAGE_NAME"
 PKGVAR=\${SYNOPKG_PKGVAR:-"/var/packages/\$PACKAGE_NAME/var"}
-APPDATA_DIR="/volume1/@appdata/\$PACKAGE_NAME"
+VOLUME=\${SYNOPKG_PKGDEST_VOL:-}
 
 delete_data_selected=false
 for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"; do
@@ -720,7 +739,29 @@ for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"
 done
 
 if [ "\$delete_data_selected" = "true" ]; then
-  rm -rf "\$PKGVAR" "\$APPDATA_DIR"
+  if [ -d "\$PKGVAR" ]; then
+    physical=\$(CDPATH= cd -P "\$PKGVAR" && pwd -P) || exit 1
+    actual_volume=\${physical%/@appdata/"\$PACKAGE_NAME"}
+    [ "\$physical" = "\$actual_volume/@appdata/\$PACKAGE_NAME" ] && [ "\${VOLUME:-\$actual_volume}" = "\$actual_volume" ] || {
+      echo "Cannot verify package data directory for \$PACKAGE_NAME." >&2
+      exit 1
+    }
+    VOLUME=\$actual_volume
+  fi
+  case "\$VOLUME" in
+    /volume*) number=\${VOLUME#/volume} ;;
+    *) echo "Cannot identify package installation volume." >&2; exit 1 ;;
+  esac
+  case "\$number" in ''|*[!0-9]*) echo "Invalid package installation volume." >&2; exit 1 ;; esac
+  target="\$VOLUME/@appdata/\$PACKAGE_NAME"
+  if [ -L "\$VOLUME" ] || [ -L "\$VOLUME/@appdata" ] || [ -L "\$target" ]; then
+    echo "Refusing to purge an indirect package data path." >&2
+    exit 1
+  fi
+  rm -rf "\$target" || exit 1
+  if [ -L "\$PKGVAR" ]; then
+    rm -f "\$PKGVAR" || exit 1
+  fi
 fi
 
 exit 0

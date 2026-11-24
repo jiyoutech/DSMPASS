@@ -74,3 +74,15 @@ func TestLegacyLoginPreferenceMigratesOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectoryCollationMatchesUnicodePlanning(t *testing.T) {
+	database, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var equal bool
+	if err := database.QueryRow("SELECT ? = ? COLLATE dsmpass_name", " Élodie ", "élodie").Scan(&equal); err != nil || !equal {
+		t.Fatal(equal, err)
+	}
+}

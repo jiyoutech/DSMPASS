@@ -4,16 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
+	"github.com/dsmpass/dsmpass/go/internal/helperclient"
 )
 
 func (s *Server) resetProviderSyncData(c *gin.Context) {
 	slug := c.Param("slug")
-	result, status, err := s.runProviderCleanup(c.Request.Context(), slug, nil)
+	result, status, err := s.runProviderCleanup(c.Request.Context(), slug, false, nil)
 	if err != nil {
 		c.JSON(status, gin.H{"detail": err.Error()})
 		return
@@ -38,7 +41,7 @@ func (s *Server) startProviderCleanupRun(c *gin.Context) {
 	}
 	go func() {
 		ctx := context.Background()
-		_, _, err := s.runProviderCleanup(ctx, slug, progress)
+		_, _, err := s.runProviderCleanup(ctx, slug, false, progress)
 		if err != nil {
 			progress.fail(ctx, err)
 			return
@@ -48,7 +51,7 @@ func (s *Server) startProviderCleanupRun(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"run_id": progress.id})
 }
 
-func (s *Server) runProviderCleanup(ctx context.Context, slug string, progress *operationProgress) (gin.H, int, error) {
+func (s *Server) runProviderCleanup(ctx context.Context, slug string, remove bool, progress *operationProgress) (gin.H, int, error) {
 	if _, err := s.loadIdentitySource(ctx, slug); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, http.StatusNotFound, errors.New("identity source not found")
@@ -65,35 +68,49 @@ func (s *Server) runProviderCleanup(ctx context.Context, slug string, progress *
 	if progress != nil {
 		progress.message(ctx, "分析清理范围", "正在分析需要清理的数据")
 	}
-	exclusiveIdentityIDs, providerGroupIDs, exclusiveGroupIDs, err := sourceOwnedIDs(ctx, s.store.DBTX(), slug)
+	targets, err := s.prepareCleanupTargets(ctx, slug)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
-	exclusiveAccountIDs, err := accountIDsForIdentities(ctx, s.store.DBTX(), exclusiveIdentityIDs)
-	if err != nil {
-		return nil, http.StatusInternalServerError, err
+	if progress != nil {
+		progress.setTotal(ctx, "禁用 DSM 用户", "正在核对 DSM 用户", len(targets))
 	}
-	exclusiveAccountUsernames := []string{}
-	if len(exclusiveAccountIDs) > 0 {
-		exclusiveAccountUsernames, err = queryStringIDs(ctx, s.store.DBTX(), `
-SELECT dsm_username FROM dsm_accounts
-WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAccountIDs)...)
+	var disabledDSMUsers int64
+	var cleanupErrors []error
+	for _, target := range targets {
+		var outcome string
+		if client, ok := s.helper.(helperclient.CleanupClient); ok {
+			outcome, err = client.CleanupUser(ctx, target.RequestID, slug, target.ID, target.Name)
+		} else {
+			var disabled bool
+			disabled, err = s.helper.DisableUser(ctx, target.RequestID, target.Name)
+			if err == nil && !disabled {
+				err = errors.New("Helper 未确认账号停用")
+			}
+			outcome = "disabled"
+		}
 		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("清理 %s 失败，映射已保留，可重试：%w", target.Name, err))
+			continue
+		}
+		if err = saveObjectState(ctx, s.store.DBTX(), target.Name, `UPDATE source_cleanup_targets SET outcome=? WHERE request_id=?`, outcome, target.RequestID); err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
-	}
-
-	disabledDSMUsers := int64(0)
-	if progress != nil {
-		progress.setTotal(ctx, "禁用 DSM 用户", "正在禁用 DSM 用户", len(exclusiveAccountUsernames))
-	}
-	for _, username := range exclusiveAccountUsernames {
-		if _, err := s.helper.DisableUser(ctx, "reset_disable_"+randomHex(8), username); err != nil {
-			return nil, http.StatusBadGateway, errors.New("清理同步数据前禁用 DSM 用户失败：" + err.Error())
+		if outcome == "disabled" {
+			disabledDSMUsers++
 		}
-		disabledDSMUsers++
 		if progress != nil {
-			progress.step(ctx, "禁用 DSM 用户", username)
+			progress.step(ctx, "核对 DSM 用户", target.Name)
+		}
+	}
+	if len(cleanupErrors) > 0 {
+		return nil, http.StatusBadGateway, errors.Join(cleanupErrors...)
+	}
+	var deletedSyncRuns, deletedSyncLogs, deletedAuditLogs int64
+	if s.logs() != s.store {
+		deletedSyncRuns, deletedSyncLogs, deletedAuditLogs, err = s.deleteSourceLogs(ctx, slug)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
 		}
 	}
 	if progress != nil {
@@ -104,9 +121,28 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 		return nil, http.StatusInternalServerError, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := deleteIdentitySourceDataWithIDs(ctx, tx, slug, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs)
+	current, err := cleanupTargets(ctx, tx, slug)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
+	}
+	if !slices.Equal(current, targets) {
+		return nil, http.StatusConflict, errors.New("清理期间账号范围已变化，请重试")
+	}
+	result, err := deleteIdentitySourceData(ctx, tx, slug)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM source_cleanup_targets WHERE source_slug=?", slug); err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	if remove {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM source_initial_password_secrets WHERE source_slug=?", slug); err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		if err := saveObjectState(ctx, tx, slug, "DELETE FROM identity_sources WHERE slug=?", slug); err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		result["deleted_sources"] = 1
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, http.StatusInternalServerError, err
@@ -114,17 +150,60 @@ WHERE id IN (`+placeholders(len(exclusiveAccountIDs))+`)`, anySlice(exclusiveAcc
 	if progress != nil {
 		progress.step(ctx, "清理本地数据", "本地同步数据已删除")
 	}
-	deletedSyncRuns, deletedSyncLogs, deletedAuditLogs, err := s.deleteSourceLogs(ctx, slug)
-	if err != nil {
-		return nil, http.StatusInternalServerError, err
-	}
 	result["deleted_sync_runs"] = int64Value(result, "deleted_sync_runs") + deletedSyncRuns
 	result["deleted_sync_logs"] = int64Value(result, "deleted_sync_logs") + deletedSyncLogs
 	result["deleted_login_audit"] = int64Value(result, "deleted_login_audit") + deletedAuditLogs
 	result["slug"] = slug
 	result["disabled_dsm_users"] = disabledDSMUsers
-	result["detail"] = "已禁用 DSM 中对应用户，并清理该身份源的同步映射数据；如需彻底删除这些 DSM 用户，请到 DSM 手动删除；下次同步遇到同名 DSM 用户会重新启用并复用"
+	result["detail"] = "已清理身份源同步数据。已停用的 DSM 用户保留在 NAS 上。"
 	return result, http.StatusOK, nil
+}
+
+type cleanupTarget struct{ ID, Name, RequestID string }
+
+const cleanupAccountScope = `FROM dsm_accounts a WHERE EXISTS (SELECT 1 FROM external_accounts e WHERE e.app_identity_id=a.app_identity_id AND e.provider_slug=?)
+ AND NOT EXISTS (SELECT 1 FROM external_accounts e WHERE e.app_identity_id=a.app_identity_id AND e.provider_slug<>?)`
+
+func cleanupTargets(ctx context.Context, q db.DBTX, slug string) ([]cleanupTarget, error) {
+	rows, err := q.QueryContext(ctx, `SELECT a.id,a.dsm_username,COALESCE((SELECT request_id FROM source_cleanup_targets t WHERE t.source_slug=? AND t.account_id=a.id AND t.username=a.dsm_username),'') `+cleanupAccountScope+" ORDER BY a.id", slug, slug, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var targets []cleanupTarget
+	for rows.Next() {
+		var target cleanupTarget
+		if err := rows.Scan(&target.ID, &target.Name, &target.RequestID); err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+func (s *Server) prepareCleanupTargets(ctx context.Context, slug string) ([]cleanupTarget, error) {
+	var targets []cleanupTarget
+	err := s.withSyncTransaction(ctx, func(tx db.DBTX) error {
+		var err error
+		targets, err = cleanupTargets(ctx, tx, slug)
+		if err != nil {
+			return err
+		}
+		for i, t := range targets {
+			if t.RequestID != "" {
+				continue
+			}
+			id := "cleanup_" + randomHex(16)
+			_, err := tx.ExecContext(ctx, `INSERT INTO source_cleanup_targets(source_slug,account_id,username,request_id) VALUES(?,?,?,?)
+ON CONFLICT(source_slug,account_id) DO UPDATE SET username=excluded.username,request_id=excluded.request_id,outcome='pending'`, slug, t.ID, t.Name, id)
+			if err != nil {
+				return err
+			}
+			targets[i].RequestID = id
+		}
+		return nil
+	})
+	return targets, err
 }
 
 func (s *Server) deleteSourceLogs(ctx context.Context, slug string) (int64, int64, int64, error) {
@@ -210,6 +289,9 @@ func deleteIdentitySourceData(ctx context.Context, tx db.DBTX, slug string) (gin
 }
 
 func deleteIdentitySourceDataWithIDs(ctx context.Context, tx db.DBTX, slug string, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs []string) (gin.H, error) {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM dingtalk_offboarding WHERE source_slug=?", slug); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM directory_owner_choices WHERE source_slug = ?`, slug); err != nil {
 		return nil, err
 	}
