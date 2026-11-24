@@ -208,3 +208,33 @@ func TestRetainedReinstallHooks(t *testing.T) {
 		})
 	}
 }
+
+func TestRootLifecycleRefusesBeforePackageAccess(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/dsm/package-spk.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, part, ok := strings.Cut(string(data), "cat >> \"$work_dir/scripts/start-stop-status\" <<'EOF'\n")
+	if !ok {
+		t.Fatal("missing lifecycle body")
+	}
+	body, _, ok := strings.Cut(part, "\nEOF\n")
+	if !ok {
+		t.Fatal("incomplete lifecycle body")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "id"), []byte("#!/bin/sh\necho 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "status", "stop", "restart"} {
+		cmd := exec.Command("/bin/sh", "-c", "set -eu\nPACKAGE_NAME=DSMPASS\nDEFAULT_IDP_PORT=26000\n"+body, "test", action)
+		cmd.Env = []string{"PATH=" + dir, "SYNOPKG_PKGVAR=" + filepath.Join(dir, "untouched")}
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "synopkg") {
+			t.Fatal(action, err, string(out))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "untouched")); !os.IsNotExist(err) {
+		t.Fatal("package accessed", err)
+	}
+}
