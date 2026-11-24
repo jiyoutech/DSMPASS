@@ -111,11 +111,11 @@ func (s *Service) ResolveOrCreateIdentityWithLinkedExisting(ctx context.Context,
 			if err != nil {
 				return db.AppIdentity{}, false, err
 			}
-			hasDifferentProvider, err := s.identityHasDifferentProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
+			canLinkFromOtherProvider, err := s.hasLinkableOtherProvider(ctx, existing.AppIdentityID, external.ProviderSlug)
 			if err != nil {
 				return db.AppIdentity{}, false, err
 			}
-			if hasDifferentProvider && !hasSameProvider {
+			if canLinkFromOtherProvider && !hasSameProvider {
 				owner, err := s.getIdentity(ctx, existing.AppIdentityID)
 				if err != nil {
 					return db.AppIdentity{}, false, err
@@ -696,9 +696,10 @@ func (s *Service) identityHasProvider(ctx context.Context, identityID, providerS
 	return count > 0, err
 }
 
-func (s *Service) identityHasDifferentProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
+func (s *Service) hasLinkableOtherProvider(ctx context.Context, identityID, providerSlug string) (bool, error) {
 	var count int
-	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts WHERE app_identity_id = ? AND provider_slug <> ?`, identityID, providerSlug).Scan(&count)
+	err := s.q.DBTX().QueryRowContext(ctx, `SELECT COUNT(*) FROM external_accounts e WHERE e.app_identity_id = ? AND e.provider_slug <> ?
+    AND NOT EXISTS (SELECT 1 FROM directory_owner_choices c JOIN dsm_accounts a ON a.id=c.account_id WHERE a.app_identity_id=e.app_identity_id AND a.dsm_username=c.username)`, identityID, providerSlug).Scan(&count)
 	return count > 0, err
 }
 

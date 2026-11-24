@@ -29,7 +29,7 @@ func (s *Server) webLoginApproval(cfg config.HelperConfig, payload map[string]an
 	identityID, e4 := requiredString(payload, "identity_id")
 	verify, ok := payload["verify"].(bool)
 	if errors.Join(e1, e2, e3, e4) != nil || !ok || cfg.AccountPolicyPath == "" {
-		return errorResponse("BAD_REQUEST", "缺少要核实的账号或钉钉身份")
+		return errorResponse("BAD_REQUEST", "缺少要核实的账号或来源身份")
 	}
 	owner := db.CredentialIdentity{Username: name, SourceSlug: source, Subject: subject}
 	req := db.HelperAuthorizationQuery{Action: "login", Username: name, SourceSlug: source, IdentityID: identityID, CredentialOwner: &owner}
@@ -58,7 +58,7 @@ func (s *Server) webLoginApproval(cfg config.HelperConfig, payload map[string]an
 			result["approved"] = true
 			return nil
 		}
-		if hasOwner || grant.DingTalk == nil || grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject {
+		if hasOwner || (grant.DingTalk != nil && (grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject)) {
 			return errors.New("待核实身份与原通讯录绑定不一致")
 		}
 		if other, ok := p.CredentialCandidates[name]; ok && (other.Owner != owner || other.UID != grant.UID) {

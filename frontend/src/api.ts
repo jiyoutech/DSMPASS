@@ -108,6 +108,10 @@ export const api = {
   listAllDSMGroups: (params?: ListParams) => listAllPaged<DSMGroup>(api.listDSMGroups, { ...params, limit: params?.limit ?? MAX_PAGE_LIMIT }),
   listGroupMembers: (provider?: string) => request<{ items: GroupMember[] }>(`/api/admin/group-members${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
   provisionAccount: (id: string) => request<DSMAccount>(`/api/admin/dsm-accounts/${id}/provision`, { method: "POST" }),
+  chooseDirectoryOwner: (source: string, account: DSMAccount) =>
+    request<{ run_id: string }>(`/api/admin/providers/${encodeURIComponent(source)}/accounts/${encodeURIComponent(account.id)}/owner-choice`, {
+      method: "POST", body: JSON.stringify({ subject: account.external_subjects, reason: account.conflict_reason })
+    }),
   setDSMAccountUsername: (id: string, dsm_username: string) =>
     request<DSMAccount>(`/api/admin/dsm-accounts/${id}/username`, { method: "PUT", body: JSON.stringify({ dsm_username }) }),
   setDSMAccountLogin: (id: string, allow_login: boolean) =>

@@ -9,6 +9,44 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+// An unambiguous directory account can be linked read-only. No password, local
+// group or credential owner is granted by the package's choice record.
+// The caller holds the account and policy write locks.
+func (s *Server) recordDirectoryMatch(cfg config.HelperConfig, name string) (bool, error) {
+	user, err := normalUser(cfg, name)
+	if err != nil {
+		return false, err
+	}
+	matched, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_account_match", Username: name, LocalUID: user.id})
+	if err != nil || !matched {
+		return false, err
+	}
+	groups, err := systemAccounts(cfg.GroupPath, true)
+	if err != nil {
+		return false, err
+	}
+	if !ordinaryInstallUser(user, groups) {
+		return false, errors.New("仅普通 DSM 本地账号可选择归属")
+	}
+	p, err := readAccountPolicy(cfg)
+	if err != nil {
+		return false, err
+	}
+	if candidate, ok := p.CredentialCandidates[name]; ok && candidate.UID != user.id {
+		return false, errors.New("DSM 用户的原始 UID 已变化")
+	}
+	if scope := p.DingTalkScope; scope != nil {
+		if uid, ok := scope.Users[name]; ok && uid != user.id {
+			return false, errors.New("DSM 用户的原始 UID 已变化")
+		}
+	}
+	if p.DirectoryUsers == nil {
+		p.DirectoryUsers = make(map[string]directoryUserGrant)
+	}
+	p.DirectoryUsers[name] = directoryUserGrant{UID: user.id}
+	return true, saveAccountPolicy(cfg, p)
+}
+
 func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, payload map[string]any) map[string]any {
 	username, err := requiredString(payload, "dsm_username")
 	if err != nil {
@@ -39,6 +77,12 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 				}
 				if linked {
 					return nil
+				}
+			}
+			if errors.Is(err, errUserNotEnrolled) && info.ExpiryKnown && !info.Expired {
+				linked, linkErr := s.recordDirectoryMatch(cfg, username)
+				if linkErr != nil || linked {
+					return linkErr
 				}
 			}
 			if errors.Is(err, errUserNotEnrolled) && !info.Expired {

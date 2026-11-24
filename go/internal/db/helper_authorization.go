@@ -19,6 +19,7 @@ type HelperMemberScope struct {
 // HelperAuthorizationQuery is a fixed query protocol, never a SQL interface.
 // The root Helper runs it in a process with the package account's OS identity.
 type HelperAuthorizationQuery struct {
+	LocalUID        int                 `json:"local_uid,omitempty"`
 	Usernames       []string            `json:"usernames,omitempty"`
 	Members         []HelperMemberScope `json:"members,omitempty"`
 	CredentialOwner *CredentialIdentity `json:"credential_owner,omitempty"`
@@ -50,6 +51,24 @@ const provisionIdentityScope = `
  WHERE i.status='active' AND e.active=1 AND src.enabled=1 AND src.directory_sync_enabled=1`
 
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
+	if request.Action == "directory_account_match" {
+		if request.LocalUID < 1024 || request.LocalUID >= 65536 || request.Username == "" || q == nil {
+			return false, nil
+		}
+		var ok bool
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM dsm_accounts a
+ JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+ JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
+ JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=i.id AND e.provider_slug=m.provider_slug AND e.active=1
+ JOIN identity_sources s ON s.slug=e.provider_slug AND s.enabled=1 AND s.directory_sync_enabled=1
+ LEFT JOIN directory_owner_choices c ON c.account_id=a.id
+ WHERE a.dsm_username=? AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.dsm_account_id=a.id AND x.id<>m.id)
+ AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
+ OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username AND e.subject<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
+		return ok, err
+	}
 	if request.Action == "provision_users" {
 		if q == nil || len(request.Usernames) == 0 || len(request.Usernames) > MaxProvisionUsers {
 			return false, errors.New("invalid account provisioning authorization batch")

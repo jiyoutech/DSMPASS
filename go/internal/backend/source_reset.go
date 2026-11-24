@@ -210,6 +210,9 @@ func deleteIdentitySourceData(ctx context.Context, tx db.DBTX, slug string) (gin
 }
 
 func deleteIdentitySourceDataWithIDs(ctx context.Context, tx db.DBTX, slug string, exclusiveIdentityIDs, exclusiveAccountIDs, providerGroupIDs, exclusiveGroupIDs []string) (gin.H, error) {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM directory_owner_choices WHERE source_slug = ?`, slug); err != nil {
+		return nil, err
+	}
 	mappingResult, err := tx.ExecContext(ctx, `DELETE FROM dsm_mapping_entries WHERE provider_slug = ?`, slug)
 	if err != nil {
 		return nil, err

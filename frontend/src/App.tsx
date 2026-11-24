@@ -336,6 +336,7 @@ type EnrichedDSMAccount = DSMAccount & { groups: string[]; member_records: Group
 
 function accountConflictKind(record: DSMAccount) {
   const reason = record.conflict_reason || "";
+  if (reason.startsWith("多个员工对应已有 DSM 账号，请选择归属员工：")) return "owner_choice";
   if (reason.includes("通讯录内用户姓名重名") || reason.includes("飞书用户姓名重名")) {
     return "provider_duplicate";
   }
@@ -350,6 +351,8 @@ function accountConflictKind(record: DSMAccount) {
 
 function accountConflictLabel(record: DSMAccount, providerLabel: string) {
   switch (accountConflictKind(record)) {
+    case "owner_choice":
+      return "选择已有账号归属";
     case "provider_duplicate":
       return `${providerLabel}内重名`;
     case "dsm_existing":
@@ -1557,12 +1560,14 @@ function SourceDetail({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [conflictAccounts]);
   const nonFeishuDuplicateConflictAccounts = useMemo(() => {
-    return conflictAccounts.filter((account) => accountConflictKind(account) !== "provider_duplicate");
+    return conflictAccounts.filter((account) => !["owner_choice", "provider_duplicate"].includes(accountConflictKind(account)));
   }, [conflictAccounts]);
   const conflictGroups = useMemo(() => enrichGroups(conflictGroupData.data?.items ?? []), [conflictGroupData.data?.items, enrichGroups]);
+  const ownerChoices = conflictAccounts.filter((account) => accountConflictKind(account) === "owner_choice");
+  const currentOwnerChoices = ownerChoices.filter((account) => account.conflict_reason === ownerChoices[0]?.conflict_reason);
   const hasConflicts = conflictAccounts.length > 0 || conflictGroups.length > 0;
   const currentFeishuDuplicateGroup = feishuDuplicateAccountGroups[0];
-  const conflictStepCount = (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
+  const conflictStepCount = new Set(ownerChoices.map((a) => a.conflict_reason)).size + (conflictGroups.length > 0 ? 1 : 0) + feishuDuplicateAccountGroups.length + (nonFeishuDuplicateConflictAccounts.length > 0 ? 1 : 0);
   const filteredSyncLogs = useMemo(() => {
     return (syncLogs.data?.items ?? [])
       .filter((record) => syncStatusFilter === "all" || record.status === syncStatusFilter)
@@ -1878,6 +1883,24 @@ function SourceDetail({
     setConflictModalOpen(false);
   }
 
+  async function chooseDirectoryOwner(account: DSMAccount) {
+    setSavingConflictKey(account.id);
+    try {
+      const { run_id } = await api.chooseDirectoryOwner(source.slug, account);
+      setConflictAutoSyncing(true);
+      setActiveOperation(null);
+      await waitOperation(run_id);
+      await refreshAll();
+      message.success("已保存归属并完成增量同步");
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "保存归属或增量同步失败");
+      await refreshAfterSyncFailure();
+    } finally {
+      setConflictAutoSyncing(false);
+      setSavingConflictKey(null);
+    }
+  }
+
   const activeConflictSaveAction = (() => {
     if (conflictAutoSyncing) {
       return null;
@@ -1888,6 +1911,7 @@ function SourceDetail({
         save: () => void saveGroupConflictBatch(conflictGroups, "groups:all")
       };
     }
+    if (currentOwnerChoices.length > 0) return null;
     if (currentFeishuDuplicateGroup) {
       const key = `accounts:feishu:${currentFeishuDuplicateGroup.name}`;
       return {
@@ -2020,7 +2044,7 @@ function SourceDetail({
             type="error"
             showIcon
             message={`还有 ${conflictGroups.length} 个部门冲突、${conflictAccounts.length} 个用户冲突未处理`}
-            description={source.provider_type === "dingtalk" ? "请为当前冲突选择 DSM 名称。保存后可继续处理下一组，点击同步时会写入 DSM。" : "请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"}
+            description={currentOwnerChoices.length > 0 ? "已有 DSM 账号的归属只需选择一次。" : source.provider_type === "dingtalk" ? "请为当前冲突选择 DSM 名称。保存后可继续处理下一组，点击同步时会写入 DSM。" : "请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"}
           />
           {conflictGroups.length > 0 && (
             <Card
@@ -2047,7 +2071,18 @@ function SourceDetail({
               />
             </Card>
           )}
-          {conflictGroups.length === 0 && currentFeishuDuplicateGroup && (
+          {conflictGroups.length === 0 && currentOwnerChoices.length > 0 && (
+            <Card title={currentOwnerChoices[0].conflict_reason}>
+              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
+              <Table size="small" rowKey="id" dataSource={currentOwnerChoices} pagination={false} columns={[
+                { title: "员工", dataIndex: "display_name" },
+                { title: "员工 ID", dataIndex: "external_subjects" },
+                { title: "邮箱", render: (_, record) => record.primary_email || record.external_emails || "—" },
+                { title: "归属", render: (_, record) => <Button disabled={Boolean(savingConflictKey)} loading={savingConflictKey === record.id} onClick={() => void chooseDirectoryOwner(record)}>选择此人</Button> }
+              ]} />
+            </Card>
+          )}
+          {conflictGroups.length === 0 && currentOwnerChoices.length === 0 && currentFeishuDuplicateGroup && (
             <Card
               className="conflict-step-card"
               title={(
@@ -2073,7 +2108,7 @@ function SourceDetail({
               </div>
             </Card>
           )}
-          {conflictGroups.length === 0 && !currentFeishuDuplicateGroup && nonFeishuDuplicateConflictAccounts.length > 0 && (
+          {conflictGroups.length === 0 && currentOwnerChoices.length === 0 && !currentFeishuDuplicateGroup && nonFeishuDuplicateConflictAccounts.length > 0 && (
             <Card
               className="conflict-step-card"
               title={<Space><span>第 1 / {conflictStepCount} 组：其他用户命名冲突</span><Tag color="volcano">{nonFeishuDuplicateConflictAccounts.length}</Tag></Space>}
@@ -2259,7 +2294,9 @@ function SourceDetail({
                         width: 220,
                         render: (_, record: DSMAccount) => (
                           <Space>
-                            {record.provision_status === "conflict" && <Button size="small" onClick={() => editAccountUsername(record)}>修改用户名</Button>}
+                            {record.provision_status === "conflict" && (accountConflictKind(record) === "owner_choice"
+                              ? <Button size="small" onClick={() => setConflictModalOpen(true)}>选择归属员工</Button>
+                              : <Button size="small" onClick={() => editAccountUsername(record)}>修改用户名</Button>)}
                             {record.provision_status === "pending" && <Button size="small" onClick={() => provisionAccount(record)}>开通</Button>}
                             {record.allow_login ? (
                               <Button size="small" danger loading={accountLoginAction === accountLoginActionKey([record.id], false)} onClick={() => void setAccountLogin([record.id], false)}>禁止登录</Button>
@@ -2500,8 +2537,8 @@ function SourceDetail({
                             <span>访问 IP</span><strong>{record.ip_address ?? "-"}</strong>
                           </div>
                           <LogBlock title="错误内容" value={record.error_code} empty="无错误" tone="danger" />
-                          {source.provider_type === "dingtalk" && record.result === "failed" && record.dsm_username &&
-                            /LOGIN_OWNER_VERIFICATION_REQUIRED|仅用于同步群组成员|钉钉同名用户保留 DSM\/SMB 密码/.test(record.error_code ?? "") &&
+                          {record.result === "failed" && record.dsm_username &&
+                            /LOGIN_OWNER_VERIFICATION_REQUIRED|仅用于同步群组成员|已获通讯录同步授权|钉钉同名用户保留 DSM\/SMB 密码/.test(record.error_code ?? "") &&
                             <Button onClick={() => setApprovalLogin(record)}>核实登录归属</Button>}
                         </div>
                       )

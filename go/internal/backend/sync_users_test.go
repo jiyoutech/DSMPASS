@@ -9,6 +9,7 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
 )
 
 type syncUserBatchFixture struct {
@@ -207,4 +208,36 @@ func TestPartialUserFailureDoesNotBlockOtherDepartments(t *testing.T) {
 	}
 	assertLocalMemberStatus(t, ctx, database, "member-test0001", 1, "pending")
 	assertLocalMemberStatus(t, ctx, database, "member-test0002", 1, "created")
+}
+
+func TestDirectoryOwnerCandidatesDoNotBlockOtherUsers(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	h := &syncUserBatchFixture{}
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, h, database, q)
+	if _, err := database.Exec("INSERT INTO identity_sources(slug,provider_type,display_name) VALUES('source','wecom','Directory')"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 700 {
+		name := fmt.Sprintf("employee%04d", i)
+		seedSyncedAccount(t, ctx, database, "source", name, "external-"+name, name, name, "2999-01-01")
+	}
+	if _, err := database.Exec("UPDATE dsm_accounts SET provision_status='pending'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE dsm_accounts SET provision_status='conflict',conflict_reason=? WHERE dsm_username IN ('employee0000','employee0001')", identity.OwnerChoicePrefix+"普通职员（UID 1850）"); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := s.syncSourceToDSM(ctx, "run", "source", "2000-01-01", sourceSyncPolicy{})
+	if err != nil || len(ops) != 698 || !slices.Equal(h.sizes, []int{200, 200, 200, 98}) {
+		t.Fatalf("%d outcomes, batches %v, err %v", len(ops), h.sizes, err)
+	}
+	var unresolved int
+	if err := database.QueryRow("SELECT count(*) FROM dsm_accounts WHERE provision_status='conflict'").Scan(&unresolved); err != nil || unresolved != 2 {
+		t.Fatalf("unresolved %d, err %v", unresolved, err)
+	}
 }

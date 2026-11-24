@@ -14,6 +14,8 @@ import (
 
 	"github.com/dsmpass/dsmpass/go/internal/db"
 	"github.com/dsmpass/dsmpass/go/internal/helperclient"
+	"github.com/dsmpass/dsmpass/go/internal/identity"
+	"github.com/dsmpass/dsmpass/go/internal/provider"
 	"github.com/dsmpass/dsmpass/go/internal/syncsvc"
 )
 
@@ -27,18 +29,31 @@ func (s *Server) startProviderSyncRun(c *gin.Context) {
 		return
 	}
 	sourceSlug := c.Param("slug")
-	if _, ok := s.directoryProvider(sourceSlug); !ok {
+	directory, ok := s.directoryProvider(sourceSlug)
+	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "unknown provider"})
 		return
 	}
+	if !s.beginSourceSync(sourceSlug) {
+		c.JSON(http.StatusConflict, gin.H{"detail": "sync already running"})
+		return
+	}
+	s.enqueueLockedProviderSync(c, directory, mode)
+}
+
+// Receives the source lock from the request and releases it after the queued work.
+func (s *Server) enqueueLockedProviderSync(c *gin.Context, directory provider.Directory, mode syncMode) {
+	sourceSlug := directory.Slug()
 	progress, err := s.createOperationRun(c.Request.Context(), "sync", sourceSlug, "等待开始", mode.label()+"任务已创建", 0)
 	if err != nil {
+		s.endSourceSync(sourceSlug)
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
 		return
 	}
 	go func() {
+		defer s.endSourceSync(sourceSlug)
 		ctx := context.Background()
-		_, err := s.runSyncProviderModeWithProgress(ctx, sourceSlug, mode, progress)
+		_, err := s.runLockedProviderSync(ctx, directory, mode, progress)
 		if err != nil {
 			progress.fail(ctx, err)
 			return
@@ -78,7 +93,6 @@ func (s *Server) runSyncProviderWithProgress(ctx context.Context, providerSlug s
 }
 
 func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSlug string, mode syncMode, progress *operationProgress) (result syncsvc.Result, runErr error) {
-	defer s.maybeCleanupLogs(ctx)
 	directory, ok := s.directoryProvider(providerSlug)
 	if !ok {
 		return syncsvc.Result{}, errUnknownProvider
@@ -87,6 +101,11 @@ func (s *Server) runSyncProviderModeWithProgress(ctx context.Context, providerSl
 		return syncsvc.Result{}, errSyncAlreadyRunning
 	}
 	defer s.endSourceSync(directory.Slug())
+	return s.runLockedProviderSync(ctx, directory, mode, progress)
+}
+
+func (s *Server) runLockedProviderSync(ctx context.Context, directory provider.Directory, mode syncMode, progress *operationProgress) (result syncsvc.Result, runErr error) {
+	defer s.maybeCleanupLogs(ctx)
 	if mode == syncFull {
 		health, err := s.helper.HealthCheck(ctx)
 		if err != nil {
@@ -338,7 +357,8 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 	SELECT COUNT(*)
 	FROM dsm_accounts a
 	JOIN external_accounts e ON e.app_identity_id = a.app_identity_id
-	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'`, sourceSlug).Scan(&accountConflicts); err != nil {
+	WHERE e.provider_slug = ? AND e.active = 1 AND a.provision_status = 'conflict'
+	  AND instr(COALESCE(a.conflict_reason,''),?)<>1`, sourceSlug, identity.OwnerChoicePrefix).Scan(&accountConflicts); err != nil {
 		return operations, err
 	}
 	providerName := s.providerDisplayNameForSourceSlug(ctx, sourceSlug)

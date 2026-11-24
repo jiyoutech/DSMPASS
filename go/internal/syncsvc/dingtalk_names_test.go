@@ -97,7 +97,7 @@ func TestDingTalkRecoversOnlyUnmappedLegacyConflicts(t *testing.T) {
 	} {
 		var args []any
 		if strings.Contains(stmt, "?") {
-			args = append(args, identity.LegacyDingTalkDuplicateReason)
+			args = append(args, identity.LegacyDuplicateReason("钉钉"))
 		}
 		if _, err := db.Exec(stmt, args...); err != nil {
 			t.Fatal(err)
@@ -124,25 +124,25 @@ func TestDingTalkNumberingChecksNativeNamesAndLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := []provider.User{dingTalkEmployee("b", base), dingTalkEmployee("a", base)}
-	names, err := e.dingTalkNumberedNames(ctx, dingTalkTestSource, users, passwd)
-	if err != nil || names["a"] != prefix+"2" || names["b"] != prefix+"3" {
+	names, err := e.directoryNames(ctx, dingTalkTestSource, "钉钉", users, passwd)
+	if err != nil || names["a"].username != prefix+"2" || names["b"].username != prefix+"3" {
 		t.Fatalf("native collision or length: %v %v", names, err)
 	}
 	for i := 0; i < 8; i++ {
 		users = append(users, dingTalkEmployee("c"+strconv.Itoa(i), base))
 	}
-	names, err = e.dingTalkNumberedNames(ctx, dingTalkTestSource, users, passwd)
+	names, err = e.directoryNames(ctx, dingTalkTestSource, "钉钉", users, passwd)
 	twoDigitBase := strings.TrimSuffix(prefix, "名")
-	if err != nil || names["c6"] != twoDigitBase+"10" || names["c7"] != twoDigitBase+"11" {
+	if err != nil || names["c6"].username != twoDigitBase+"10" || names["c7"].username != twoDigitBase+"11" {
 		t.Fatalf("two-digit suffix: %v %v", names, err)
 	}
-	if _, err := e.dingTalkNumberedNames(ctx, dingTalkTestSource, users, passwd+".missing"); err == nil {
+	if _, err := e.directoryNames(ctx, dingTalkTestSource, "钉钉", users, passwd+".missing"); err == nil {
 		t.Fatal("assigned names without a native account list")
 	}
-	if _, err := e.dingTalkNumberedNames(ctx, dingTalkTestSource, []provider.User{users[0], users[0]}, passwd); err == nil {
+	if _, err := e.directoryNames(ctx, dingTalkTestSource, "钉钉", []provider.User{users[0], users[0]}, passwd); err == nil {
 		t.Fatal("accepted non-unique source ID")
 	}
-	if names, err := e.dingTalkNumberedNames(ctx, dingTalkTestSource, nil, passwd+".missing"); err != nil || len(names) != 0 {
+	if names, err := e.directoryNames(ctx, dingTalkTestSource, "钉钉", nil, passwd+".missing"); err != nil || len(names) != 0 {
 		t.Fatalf("empty input: %v %v", names, err)
 	}
 }

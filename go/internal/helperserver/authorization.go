@@ -106,6 +106,9 @@ func loginDeniedResponse(err error) map[string]any {
 	if errors.Is(err, errDingTalkMembershipOnly) {
 		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中批量关联已有账号，或核实这条绑定")
 	}
+	if errors.Is(err, errDirectoryMembershipOnly) {
+		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中核实这条绑定")
+	}
 	return errorResponse("ACCOUNT_FORBIDDEN", err.Error())
 }
 

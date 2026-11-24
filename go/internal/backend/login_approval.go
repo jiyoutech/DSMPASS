@@ -39,7 +39,7 @@ func (s *Server) webLoginApproval(c *gin.Context) {
 	}
 	owner := db.CredentialIdentity{Username: name, SourceSlug: source}
 	err = s.store.DBTX().QueryRowContext(ctx, `SELECT e.subject FROM external_accounts e
-		JOIN identity_sources s ON s.slug=e.provider_slug AND s.provider_type='dingtalk'
+		JOIN identity_sources s ON s.slug=e.provider_slug AND s.provider_type IN ('dingtalk','wecom','feishu')
 		JOIN dsm_mapping_entries m ON m.external_account_id=e.id AND m.provider_slug=s.slug AND m.mapping_type='user' AND m.active=1
 		JOIN dsm_accounts a ON a.id=m.dsm_account_id AND a.app_identity_id=e.app_identity_id
 		WHERE e.id=? AND e.provider_slug=? AND e.app_identity_id=? AND a.dsm_username=?`, externalID, source, identityID, name).Scan(&owner.Subject)

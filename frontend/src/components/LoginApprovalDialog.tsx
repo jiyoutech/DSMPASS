@@ -47,7 +47,7 @@ export function LoginApprovalDialog({ record, onClose }: Props) {
         {!ticket && !error && <Spin />}
         {ticket?.approved && <Alert type="success" showIcon message="已有有效登录绑定，可重新扫码登录。" />}
         {ticket && !ticket.approved && <>
-          <Typography.Text>请核对钉钉员工 ID <Typography.Text code>{ticket.subject}</Typography.Text> 是否属于 DSM 用户「{record.dsm_username}」。确认后，该员工可以登录这个账号，并参与身份源的全量改密。</Typography.Text>
+          <Typography.Text>请核对身份源员工 ID <Typography.Text code>{ticket.subject}</Typography.Text> 是否属于 DSM 用户「{record.dsm_username}」。确认后，该员工可以登录这个账号，并参与身份源的全量改密。</Typography.Text>
           <Typography.Text>在 DSM 控制面板的「用户与群组」中编辑此用户，在描述末尾加一个空格，粘贴下方确认码并保存，再点击「验证并保存」。</Typography.Text>
           <Typography.Text code copyable>{ticket.code}</Typography.Text>
           <Typography.Text type="secondary">确认码有效至 {ticket.expires_at && new Date(ticket.expires_at).toLocaleTimeString()}。验证后可从描述中移除。</Typography.Text>

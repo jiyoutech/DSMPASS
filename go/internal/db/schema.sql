@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS dsm_accounts (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS directory_owner_choices (
+    account_id TEXT PRIMARY KEY REFERENCES dsm_accounts(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL REFERENCES external_accounts(id) ON DELETE CASCADE,
+    source_slug TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    username TEXT NOT NULL,
+    uid INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dingtalk_offboarding (
     source_slug TEXT NOT NULL,
     account_id TEXT NOT NULL,
