@@ -379,7 +379,7 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		if err != nil {
 			return nil, fmt.Errorf("Helper 不可连接，请在管理页面检查安装或升级状态: %w", err)
 		}
-		if err := CheckCompatibility(health, buildinfo.Version, buildinfo.Revision); err != nil {
+		if err := CheckCompatibility(health, buildinfo.Version, buildinfo.Revision, buildinfo.BuildEpoch); err != nil {
 			return nil, err
 		}
 	}

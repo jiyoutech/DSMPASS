@@ -216,6 +216,7 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 			"dsm_endpoint_error":         errorString(endpointErr),
 			"version":                    buildinfo.Version,
 			"revision":                   buildinfo.Revision,
+			"build_epoch":                buildinfo.BuildEpoch,
 			"signed_helper_upgrade":      true,
 			"socket_path":                cfg.SocketPath,
 			"euid":                       os.Geteuid(),

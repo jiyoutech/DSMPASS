@@ -14,10 +14,12 @@ func TestHelperReleaseCompatibility(t *testing.T) {
 		{"same-version-old-build", map[string]any{"version": "0.8.49", "revision": "old"}, "0.8.49", "new", false},
 		{"legacy-without-revision", map[string]any{"version": "0.8.49"}, "0.8.49", "new", false},
 		{"missing-health", nil, "0.8.49", "new", false},
+		{"matching-epoch", map[string]any{"version": "0.8.51", "revision": "new", "build_epoch": "22"}, "0.8.51", "new", true},
+		{"rebuilt-revision", map[string]any{"version": "0.8.51", "revision": "new", "build_epoch": "21"}, "0.8.51", "new", false},
 		{"development", nil, "dev", "dev", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := CheckCompatibility(tc.health, tc.version, tc.revision); (err == nil) != tc.valid {
+			if err := CheckCompatibility(tc.health, tc.version, tc.revision, "22"); (err == nil) != tc.valid {
 				t.Fatalf("compatibility: %v", err)
 			}
 		})

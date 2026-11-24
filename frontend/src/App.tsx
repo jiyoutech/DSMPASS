@@ -683,21 +683,37 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
   const [helperRestarting, setHelperRestarting] = useState(false);
   const helperReachable = helperStatus.data?.reachable === true;
   const helperDetails = helperStatus.data?.details;
+  const helperNeedsRestart = helperReachable && helperStatus.data?.restart_required === true;
   const helperInitializing = helperReachable && helperStatus.data?.compatible === true && helperDetails?.startup_ready === false;
   const helperPermissionOK = helperStatusOK(helperStatus.data);
   const reloadHelperStatus = helperStatus.reloadWithResult;
 
   useEffect(() => {
-    if (!helperInitializing) return;
+    if (helperRestarting) return;
     let cancelled = false;
+    let loading = false;
     let timer: ReturnType<typeof setTimeout>;
+    const interval = helperInitializing ? 3000 : 30000;
     const poll = async () => {
-      await reloadHelperStatus({ silent: true });
-      if (!cancelled) timer = setTimeout(() => void poll(), 3000);
+      clearTimeout(timer);
+      if (loading || cancelled || document.hidden) return;
+      loading = true;
+      try {
+        await reloadHelperStatus({ silent: true });
+      } finally {
+        loading = false;
+        if (!cancelled && !document.hidden) timer = setTimeout(() => void poll(), interval);
+      }
     };
-    timer = setTimeout(() => void poll(), 3000);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [helperInitializing, reloadHelperStatus]);
+    const onVisibility = () => { if (!document.hidden) void poll(); };
+    timer = setTimeout(() => void poll(), interval);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [helperInitializing, helperRestarting, reloadHelperStatus]);
   const menuItems = [
     { key: "providers", icon: <KeyOutlined />, label: "身份源" },
     { key: "settings", icon: <SettingOutlined />, label: "系统设置" }
@@ -777,7 +793,7 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
       showHelperCheckResult(status, "Helper 已重启，检查通过");
     } catch (err) {
       const detail = err instanceof Error ? err.message : "Helper 重启失败";
-      message.error(`Helper 未能重启，请先通过 SSH 执行提权脚本。${detail}`);
+      message.error(`Helper 重启失败：${detail}`);
     } finally {
       setHelperRestarting(false);
     }
@@ -822,13 +838,13 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                 <div className="version-stack" aria-label="版本">
                   <span>FE {version.data?.frontend_version ?? "-"}</span>
                   <span>BE {version.data?.backend_version ?? "-"}</span>
-                  <span>Helper {version.data?.helper_version || "-"}</span>
+                  <span>Helper {helperDetails?.version || version.data?.helper_version || "-"}</span>
                 </div>
                 <Space className="runtime-status">
                   <Badge status="success" text="Backend" />
                   <Badge
                     status={helperStatus.loading || helperInitializing ? "processing" : helperPermissionOK ? "success" : "error"}
-                    text={helperInitializing ? "Helper 初始化中" : helperStatus.loading || helperPermissionOK ? "Helper" : "Helper 权限异常"}
+                    text={helperNeedsRestart ? "Helper 待重启" : helperInitializing ? "Helper 初始化中" : helperStatus.loading || helperPermissionOK ? "Helper" : "Helper 权限异常"}
                   />
                 </Space>
                 <Button icon={<LogoutOutlined />} onClick={async () => { await api.adminLogout(); onLogout(); }}>
@@ -855,7 +871,15 @@ function AppShell({ auth, onLogout }: { auth: AdminAuthStatus; onLogout: () => v
                   description={`登录和同步将在初始化完成后恢复。日志较多时需要等待，页面会自动检查进度，无需反复重启。${helperDetails?.startup_error ? `迁移尚未完成：${helperDetails.startup_error}。修复原因后会自动重试。` : ""}`}
                 />
               )}
-              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && (
+              {helperNeedsRestart && (
+                <Alert type="warning" showIcon className="runtime-alert"
+                  message="Helper 更新待生效，请重启 Helper"
+                  description={helperStatus.data?.error}
+                  action={<Button icon={<ReloadOutlined />} loading={helperRestarting}
+                    onClick={() => void restartAndCheckHelper()}>重启并检查 Helper</Button>}
+                />
+              )}
+              {!helperStatus.loading && !helperPermissionOK && !helperInitializing && !helperNeedsRestart && (
                 <Alert
                   type="error"
                   showIcon
