@@ -61,6 +61,16 @@ func TestDirectoryOwnerHelperLinksOnlyOrdinaryLiveAccounts(t *testing.T) {
 			if err := os.WriteFile(cfg.SynoUserPath, []byte("#!/bin/sh\n[ \"$1\" = --get ] || { touch \"$0.write\"; exit 1; }\necho 'Expired : ["+expired+"]'\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			if tc.kind == "dingtalk" && tc.allowed {
+				p, err := readAccountPolicy(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.DingTalkScope = &dingTalkDirectoryScope{Sources: []string{"source"}, Users: map[string]int{name: 1026}}
+				if err := saveAccountPolicy(cfg, p); err != nil {
+					t.Fatal(err)
+				}
+			}
 			srv := NewWithStore(cfg, q)
 			for i := 0; i < 2; i++ {
 				result := srv.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": name, "display_name": "changed"})

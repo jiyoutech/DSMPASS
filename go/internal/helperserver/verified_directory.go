@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -47,10 +48,10 @@ func captureVerifiedDirectory(cfg config.HelperConfig, p *accountPolicy, emails 
 	return changed
 }
 
-func (s *Server) dingTalkLoginBinding(cfg config.HelperConfig, name string, uid int) (*db.DingTalkUserBinding, error) {
+func (s *Server) dingTalkLoginBinding(cfg config.HelperConfig, name string, uid int) (*db.DingTalkLoginMatch, error) {
 	if cfg.Privileged {
 		result, err := queryHelperAsPackage(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_login_binding", Username: name, LocalUID: uid, DatabasePath: strings.TrimPrefix(cfg.DatabaseURL, "sqlite://")})
-		return result.DingTalkBinding, err
+		return result.DingTalkLoginMatch, err
 	}
 	return db.DingTalkLoginBinding(context.Background(), s.store, name, uid)
 }
@@ -70,6 +71,18 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 	p, err := readAccountPolicy(cfg)
 	if err != nil {
 		return false, err
+	}
+	// A database mapping can identify an employee only within a root-enrolled
+	// local account and source. Retained DingTalk grants carry that same pin.
+	if binding != nil {
+		pinned := grant != nil && grant.UID == local.id && grant.DingTalk != nil && grant.DingTalk.SourceSlug == binding.SourceSlug &&
+			(grant.DingTalk.Subject == binding.Subject || binding.Selected)
+		if scope := p.DingTalkScope; scope != nil {
+			pinned = slices.Contains(scope.Sources, binding.SourceSlug) && (pinned || scope.Users[name] == local.id)
+		}
+		if !pinned {
+			binding = nil
+		}
 	}
 	candidate, hasEmail := p.CredentialCandidates[name]
 	if binding == nil && (!hasEmail || (req.SourceSlug != "" && candidate.Owner.SourceSlug != req.SourceSlug)) {
@@ -99,7 +112,7 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 			return false, err
 		}
 		for other, g := range p.DirectoryUsers {
-			if other != name && g.DingTalk != nil && *g.DingTalk == *binding {
+			if other != name && g.DingTalk != nil && *g.DingTalk == binding.DingTalkUserBinding {
 				return false, nil
 			}
 		}
@@ -107,6 +120,13 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 			if other != name && c.Owner.SourceSlug == owner.SourceSlug && c.Owner.Subject == owner.Subject {
 				return false, nil
 			}
+		}
+		// An explicit choice can supersede a membership-only subject for the
+		// same enrolled source and UID. Established credentials remain pinned.
+		if binding.Selected && grant != nil && grant.DingTalk != nil && grant.DingTalk.SourceSlug == binding.SourceSlug {
+			choice := *grant
+			choice.DingTalk = &binding.DingTalkUserBinding
+			grant = &choice
 		}
 		return s.bindCredentialOwner(cfg, p, owner, local.id, grant, req)
 	}

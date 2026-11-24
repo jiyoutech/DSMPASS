@@ -40,7 +40,7 @@ func captureDingTalkDirectory(cfg config.HelperConfig, policy *accountPolicy, so
 		if _, enrolled := policy.Users[name]; enrolled {
 			continue
 		}
-		if _, enrolled := policy.DirectoryUsers[name]; enrolled {
+		if grant, enrolled := policy.DirectoryUsers[name]; enrolled && grant.UID != user.id {
 			continue
 		}
 		if assertAllowed(cfg, name) != nil || !ordinaryInstallUser(user, groups) {

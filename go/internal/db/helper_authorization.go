@@ -36,11 +36,12 @@ type HelperAuthorizationQuery struct {
 }
 
 type HelperAuthorizationResult struct {
-	LoginRoster     map[string]string         `json:"login_roster,omitempty"`
-	DingTalkBinding *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
-	Allowed         bool                      `json:"allowed"`
-	Error           string                    `json:"error,omitempty"`
-	Enrollment      *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
+	DingTalkLoginMatch *DingTalkLoginMatch       `json:"dingtalk_login_match,omitempty"`
+	LoginRoster        map[string]string         `json:"login_roster,omitempty"`
+	DingTalkBinding    *DingTalkUserBinding      `json:"dingtalk_binding,omitempty"`
+	Allowed            bool                      `json:"allowed"`
+	Error              string                    `json:"error,omitempty"`
+	Enrollment         *HelperEnrollmentSnapshot `json:"enrollment,omitempty"`
 }
 
 const provisionIdentityScope = `

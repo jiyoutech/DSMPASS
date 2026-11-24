@@ -20,6 +20,7 @@ func TestDingTalkNameLogin(t *testing.T) {
 		{name: "ambiguous even without mapping for second employee", change: duplicate},
 		{name: "administrator selected one of two", change: duplicate, selected: true, allowed: true},
 		{name: "different login identity", identity: "other-identity"},
+		{name: "selected employee supersedes old membership only", change: duplicate, selected: true, allowed: true},
 		{name: "selected UID changed", selected: true, change: "UPDATE directory_owner_choices SET uid=8000"},
 		{name: "changed employee ID", change: "UPDATE external_accounts SET subject='replacement'"},
 		{name: "blank directory name", change: "UPDATE external_accounts SET display_name=''"},
@@ -32,6 +33,9 @@ func TestDingTalkNameLogin(t *testing.T) {
 		{name: "unknown DSM status", expiry: "unknown"},
 		{name: "disabled DSM user", expiry: "true"},
 		{name: "revoked"},
+		{name: "unregistered local account"},
+		{name: "generic grant without source pin"},
+		{name: "source removed from local scope"},
 		{name: "replacement DSM UID"},
 		{name: "administrator"},
 		{name: "unresolved creation receipt"},
@@ -69,6 +73,14 @@ func TestDingTalkNameLogin(t *testing.T) {
 			binding := db.DingTalkUserBinding{SourceSlug: "source", Subject: "subject"}
 			p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026, DingTalk: &binding}}
 			switch tc.name {
+			case "selected employee supersedes old membership only":
+				binding.Subject = "other"
+			case "unregistered local account":
+				delete(p.DirectoryUsers, "alice")
+			case "generic grant without source pin":
+				p.DirectoryUsers["alice"] = directoryUserGrant{UID: 1026}
+			case "source removed from local scope":
+				p.DingTalkScope = &dingTalkDirectoryScope{Sources: []string{"other"}, Users: map[string]int{"alice": 1026}}
 			case "revoked":
 				p.Users["alice"] = revokedUserID
 			case "administrator":

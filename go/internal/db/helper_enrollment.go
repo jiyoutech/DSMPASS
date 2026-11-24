@@ -203,14 +203,19 @@ func DingTalkBindingForName(ctx context.Context, q *Queries, name string) (*Ding
 	return &binding, nil
 }
 
+type DingTalkLoginMatch struct {
+	DingTalkUserBinding
+	Selected bool `json:"selected,omitempty"`
+}
+
 // DingTalkLoginBinding checks the synchronized directory and the administrator's
 // saved choice in one read. The caller independently reads the native DSM UID.
-func DingTalkLoginBinding(ctx context.Context, q *Queries, name string, uid int) (*DingTalkUserBinding, error) {
+func DingTalkLoginBinding(ctx context.Context, q *Queries, name string, uid int) (*DingTalkLoginMatch, error) {
 	if q == nil || name == "" || uid < 1024 || uid >= 65536 {
 		return nil, nil
 	}
-	var binding DingTalkUserBinding
-	err := q.DBTX().QueryRowContext(ctx, `SELECT src.slug,e.subject
+	var binding DingTalkLoginMatch
+	err := q.DBTX().QueryRowContext(ctx, `SELECT src.slug,e.subject,c.account_id IS NOT NULL
 FROM dsm_accounts a
 JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
 JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
@@ -224,7 +229,7 @@ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' 
  AND (x.dsm_account_id=a.id OR x.external_account_id=e.id))
 AND NOT EXISTS (SELECT 1 FROM external_accounts x WHERE x.provider_slug=src.slug AND x.subject=e.subject AND x.active=1 AND x.id<>e.id)
 AND ((c.external_id=e.id AND c.source_slug=src.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
- OR (c.account_id IS NULL AND `+uniqueDingTalkName+`))`, name, uid).Scan(&binding.SourceSlug, &binding.Subject)
+ OR (c.account_id IS NULL AND `+uniqueDingTalkName+`))`, name, uid).Scan(&binding.SourceSlug, &binding.Subject, &binding.Selected)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
