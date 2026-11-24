@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
@@ -60,33 +59,16 @@ func (s *Server) dingTalkLoginBinding(cfg config.HelperConfig, name string, uid 
 // we only query DSM once a candidate exists. Provisioning has already read it.
 func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.HelperAuthorizationQuery, grant *directoryUserGrant, info *synoUserInfo) (bool, error) {
 	name := req.Username
-	local, err := normalUser(cfg, name)
-	if err != nil {
-		return false, err
-	}
-	binding, err := s.dingTalkLoginBinding(cfg, name, local.id)
-	if err != nil {
-		return false, err
-	}
 	p, err := readAccountPolicy(cfg)
 	if err != nil {
 		return false, err
 	}
-	// A database mapping can identify an employee only within a root-enrolled
-	// local account and source. Retained DingTalk grants carry that same pin.
-	if binding != nil {
-		pinned := grant != nil && grant.UID == local.id && grant.DingTalk != nil && grant.DingTalk.SourceSlug == binding.SourceSlug &&
-			grant.DingTalk.Subject == binding.Subject
-		if scope := p.DingTalkScope; scope != nil {
-			pinned = slices.Contains(scope.Sources, binding.SourceSlug) && (pinned || scope.Users[name] == local.id)
-		}
-		if !pinned {
-			binding = nil
-		}
-	}
-	candidate, hasEmail := p.CredentialCandidates[name]
-	if binding == nil && (!hasEmail || (req.SourceSlug != "" && candidate.Owner.SourceSlug != req.SourceSlug)) {
+	candidate, ok := p.CredentialCandidates[name]
+	if !ok || (req.SourceSlug != "" && candidate.Owner.SourceSlug != req.SourceSlug) {
 		return false, nil
+	}
+	if _, err := os.Lstat((creationTarget{cfg: cfg, name: name}).path()); !os.IsNotExist(err) {
+		return false, err
 	}
 	if info == nil {
 		current, err := getSynoUser(cfg.SynoUserPath, name)
@@ -101,30 +83,8 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 	if info.Expired {
 		return false, fmt.Errorf("DSM 用户 %q 已停用", name)
 	}
-	if hasEmail && directoryMailConflict(candidate.Email, info.Mail) {
+	if directoryMailConflict(candidate.Email, info.Mail) {
 		return false, errors.New("DSM 邮箱与已验证的目录邮箱冲突，请核实账号归属")
-	}
-	if binding != nil && info.ExpiryKnown {
-		owner := db.CredentialIdentity{Username: name, SourceSlug: binding.SourceSlug, Subject: binding.Subject}
-		if hasEmail && (candidate.UID != local.id || candidate.Owner != owner) {
-			return false, nil
-		}
-		if _, err := os.Lstat((creationTarget{cfg: cfg, name: name}).path()); err == nil {
-			return false, nil
-		} else if !os.IsNotExist(err) {
-			return false, err
-		}
-		for other, g := range p.DirectoryUsers {
-			if other != name && g.DingTalk != nil && *g.DingTalk == binding.DingTalkUserBinding {
-				return false, nil
-			}
-		}
-		for other, c := range p.CredentialCandidates {
-			if other != name && c.Owner.SourceSlug == owner.SourceSlug && c.Owner.Subject == owner.Subject {
-				return false, nil
-			}
-		}
-		return s.bindCredentialOwner(cfg, p, owner, local.id, grant, req)
 	}
 	if req.Action == "provision" {
 		req.Action = "verify_existing_owner"
@@ -146,7 +106,7 @@ func (s *Server) linkVerifiedDirectoryUser(cfg config.HelperConfig, name, mail s
 	}
 	candidate, ok := p.CredentialCandidates[name]
 	mail = strings.ToLower(strings.TrimSpace(mail))
-	if !ok || candidate.Email != mail || mail == "" {
+	if !ok || !strings.EqualFold(strings.TrimSpace(candidate.Email), mail) || mail == "" {
 		return false, nil
 	}
 	req.VerifiedEmail = mail

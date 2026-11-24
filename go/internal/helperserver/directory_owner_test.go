@@ -82,12 +82,8 @@ func TestDirectoryOwnerHelperLinksOnlyOrdinaryLiveAccounts(t *testing.T) {
 				t.Fatal("unexpected DSM write", err)
 			}
 			err := srv.authorizeLogin(cfg, map[string]any{"dsm_username": name, "identity_id": "identity", "login_source": "source"})
-			if tc.allowed && tc.kind == "dingtalk" {
-				if err != nil {
-					t.Fatal("matched DingTalk employee cannot log in", err)
-				}
-			} else if err == nil || (tc.allowed && !errors.Is(err, errDirectoryMembershipOnly)) {
-				t.Fatal("unexpected login result", err)
+			if err == nil || (tc.allowed && !errors.Is(err, errDirectoryMembershipOnly) && !errors.Is(err, errDingTalkMembershipOnly)) {
+				t.Fatal("directory enrollment alone granted credentials or returned an unexpected result", err)
 			}
 		})
 	}

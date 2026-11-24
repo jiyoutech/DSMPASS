@@ -86,7 +86,7 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 
 func loginDeniedResponse(err error) map[string]any {
 	if errors.Is(err, errDingTalkMembershipOnly) {
-		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。请管理员在此身份源检查同名冲突并选择归属员工，或在登录审计中核实绑定")
+		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。请管理员在登录审计中核实凭据归属；有同名冲突时先选择对应员工")
 	}
 	if errors.Is(err, errDirectoryMembershipOnly) {
 		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中核实这条绑定")
