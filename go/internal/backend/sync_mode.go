@@ -78,7 +78,7 @@ ORDER BY a.id`, sourceSlug)
 		for i, user := range pending {
 			err := outcomes[i]
 			switch {
-			case errors.Is(err, helperclient.ErrDingTalkMembershipOnly):
+			case errors.Is(err, helperclient.ErrDirectoryMembershipOnly):
 				s.writeSyncOperation(buffer, runID, sourceSlug, "user", user.AccountID, user.Username, "reset_password", "skipped", "", "", err.Error())
 			case err != nil:
 				s.writeSyncOperation(buffer, runID, sourceSlug, "user", user.AccountID, user.Username, "reset_password", "failed", "", "", "密码重置未确认完成，请查看任务错误并重新执行全量同步")

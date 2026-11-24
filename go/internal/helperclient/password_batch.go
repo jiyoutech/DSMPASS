@@ -57,8 +57,8 @@ func passwordResetResults(users []PasswordResetTarget, reply map[string]any) ([]
 			return nil, errors.New("invalid DSM password batch result")
 		}
 		if !success {
-			if row["error_code"] == "DINGTALK_MEMBERSHIP_ONLY" {
-				results[i] = ErrDingTalkMembershipOnly
+			if row["error_code"] == "DINGTALK_MEMBERSHIP_ONLY" || row["error_code"] == "DIRECTORY_MEMBERSHIP_ONLY" {
+				results[i] = ErrDirectoryMembershipOnly
 			} else if message, ok := row["error"].(string); ok && message != "" {
 				results[i] = errors.New(message)
 			} else {

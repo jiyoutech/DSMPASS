@@ -18,7 +18,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
-var ErrDingTalkMembershipOnly = errors.New("钉钉同名账号仅同步部门成员，保留原密码")
+var ErrDirectoryMembershipOnly = errors.New("此账号仅同步部门成员，保留原密码")
+var ErrDingTalkMembershipOnly = ErrDirectoryMembershipOnly
 
 // GroupMemberBatchSize bounds both the socket payload and time under the DSM writer lock.
 const GroupMemberBatchSize = db.MaxGroupMembers
@@ -473,7 +474,7 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 			if action == "scoped_reset_synced_user_passwords" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
 				return nil, ErrPasswordBatchUnsupported
 			}
-			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
+			if action == "scoped_reset_synced_user_password" && (code == "DINGTALK_MEMBERSHIP_ONLY" || code == "DIRECTORY_MEMBERSHIP_ONLY") {
 				return nil, ErrDingTalkMembershipOnly
 			}
 			if message, _ := response["error"].(string); message != "" {
