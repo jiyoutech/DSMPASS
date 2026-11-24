@@ -66,8 +66,8 @@ func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthori
  WHERE a.dsm_username=? AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
  AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.dsm_account_id=a.id AND x.id<>m.id)
  AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
- OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username AND e.subject<>''
- AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
+ OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username COLLATE NOCASE AND e.subject<>''
+ AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) COLLATE NOCASE AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
 		return ok, err
 	}
 	if request.Action == "provision_users" {
