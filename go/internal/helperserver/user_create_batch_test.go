@@ -226,3 +226,53 @@ printf '%s:x:%s:100:%s:/:/bin/false\n' "$2" "$uid" "$2" >> "$PASSWD_ROWS"
 		}
 	}
 }
+
+func TestSingleProvisionPreservesOutstandingReceiptAndRequiresConfirmedAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		label, receipt string
+		unknown        bool
+	}{
+		{"unknown lookup", "", true}, {"uncertain attempt", "-1", false},
+		{"unregistered UID", "2071", false}, {"unreadable receipt", "invalid", false},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			cfg := policyTestConfig(t)
+			name := "pending-user"
+			s := NewWithStore(cfg, batchMemberTestStore(t, []string{name}, "engineering"))
+			dir := t.TempDir()
+			t.Setenv("CALLS", filepath.Join(dir, "mutations"))
+			get := "echo 'synoerr=[0x1D00]' >&2; exit 255"
+			if tc.unknown {
+				get = "exit 1"
+			}
+			cfg.SynoUserPath = filepath.Join(dir, "synouser")
+			if err := os.WriteFile(cfg.SynoUserPath, []byte("#!/bin/sh\nif [ \"$1\" = --get ]; then "+get+"; fi\necho write >> \"$CALLS\"\nexit 1\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			receipt := (creationTarget{cfg: cfg, name: name}).path()
+			if tc.receipt != "" {
+				if err := os.WriteFile(receipt, []byte(tc.receipt), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row := map[string]any{"dsm_username": name, "display_name": name, "email": ""}
+			for range 2 {
+				r := s.provisionAccounts(context.Background(), cfg, map[string]any{"dsm_users": []any{row}, "initial_password": "fixture"})
+				if out := r["user_results"].([]map[string]any); out[0]["success"] != false {
+					t.Fatal("uncertain result accepted", out)
+				}
+			}
+			if _, err := os.Stat(os.Getenv("CALLS")); !os.IsNotExist(err) {
+				t.Fatal("native mutation attempted", err)
+			}
+			got, err := os.ReadFile(receipt)
+			if tc.receipt == "" {
+				if !os.IsNotExist(err) {
+					t.Fatal("new receipt on unknown lookup", err)
+				}
+			} else if err != nil || string(got) != tc.receipt {
+				t.Fatal("changed pending receipt", string(got), err)
+			}
+		})
+	}
+}

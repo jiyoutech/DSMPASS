@@ -186,14 +186,7 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 	}
 	workers.Wait()
 	for i, u := range eligible {
-		if commandExited255(errs[i]) && ctx.Err() == nil && s.canRetryAbsentCreate(cfg, u.name) {
-			// The previous synchronous command exited, all workers are joined,
-			// and both namespaces still report absence under the same locks.
-			errs[i] = createNativeUser(cfg, u, password)
-			if commandExited255(errs[i]) && s.canRetryAbsentCreate(cfg, u.name) {
-				errs[i] = errors.Join(errs[i], (creationTarget{cfg: cfg, name: u.name}).clear())
-			}
-		}
+		errs[i] = s.retryAbsentCreate(ctx, cfg, u, password, errs[i])
 		if errs[i] == nil {
 			// Only this goroutine updates the shared policy. confirm binds the
 			// actual ordinary UID and rejects missing, privileged or duplicate UIDs.
@@ -231,6 +224,18 @@ func createNativeUser(cfg config.HelperConfig, u newDSMUser, password string) er
 func commandExited255(err error) bool {
 	var exitErr *exec.ExitError
 	return errors.As(err, &exitErr) && exitErr.ExitCode() == 255
+}
+
+// Called under the account and writer locks, after all native jobs in this wave have exited.
+func (s *Server) retryAbsentCreate(ctx context.Context, cfg config.HelperConfig, user newDSMUser, password string, err error) error {
+	if !commandExited255(err) || ctx.Err() != nil || !s.canRetryAbsentCreate(cfg, user.name) {
+		return err
+	}
+	err = createNativeUser(cfg, user, password)
+	if commandExited255(err) && s.canRetryAbsentCreate(cfg, user.name) {
+		return errors.Join(err, (creationTarget{cfg: cfg, name: user.name}).clear())
+	}
+	return err
 }
 
 func (s *Server) canRetryAbsentCreate(cfg config.HelperConfig, name string) bool {

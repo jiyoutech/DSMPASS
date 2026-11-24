@@ -52,7 +52,7 @@ func TestVerifiedExistingUserAutomaticallyGetsLoginAndFullSyncPassword(t *testin
 			}
 			// A changed stable identifier cannot consume a previously captured candidate.
 			exec("UPDATE external_accounts SET subject='substitution'")
-			if r := server.provisionAccount(cfg, provision); r["success"] != true {
+			if r := server.provisionAccount(context.Background(), cfg, provision); r["success"] != true {
 				t.Fatal(r)
 			}
 			if err := server.authorizeLogin(cfg, login); err == nil {
@@ -60,14 +60,14 @@ func TestVerifiedExistingUserAutomaticallyGetsLoginAndFullSyncPassword(t *testin
 			}
 			exec("UPDATE external_accounts SET subject='subject'")
 			exec("INSERT INTO external_accounts(id,provider_slug,subject,subject_norm,subject_type,email_norm) VALUES('duplicate','source','x','x','directory_subject','alice@example.test')")
-			if r := server.provisionAccount(cfg, provision); r["success"] != true {
+			if r := server.provisionAccount(context.Background(), cfg, provision); r["success"] != true {
 				t.Fatal(r)
 			}
 			if err := server.authorizeLogin(cfg, login); err == nil {
 				t.Fatal("accepted shared email")
 			}
 			exec("DELETE FROM external_accounts WHERE id='duplicate'")
-			if r := server.provisionAccount(cfg, provision); r["success"] != true || r["created"] != false {
+			if r := server.provisionAccount(context.Background(), cfg, provision); r["success"] != true || r["created"] != false {
 				t.Fatal(r)
 			}
 			if err := server.authorizeLogin(cfg, login); err != nil {
@@ -96,7 +96,7 @@ func TestVerifiedExistingUserAutomaticallyGetsLoginAndFullSyncPassword(t *testin
 			if _, err := migrateAccountPolicy(cfg, nil, snapshot); err != nil {
 				t.Fatal(err)
 			}
-			if r := server.provisionAccount(cfg, provision); r["success"] == true {
+			if r := server.provisionAccount(context.Background(), cfg, provision); r["success"] == true {
 				t.Fatal("re-enrolled a revoked UID")
 			}
 		})

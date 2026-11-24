@@ -3,6 +3,7 @@
 package helperserver
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -28,7 +29,7 @@ func TestDSMFullSyncPasswordAtCreation(t *testing.T) {
 		s := NewWithStore(cfg, syncedPasswordTestStore(t, name))
 		f.create(t, name, false, func() error {
 			start := time.Now()
-			result := s.provisionAccount(cfg, map[string]any{"dsm_username": name, "display_name": "DSMPASS fresh password fixture", "initial_password": password})
+			result := s.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": name, "display_name": "DSMPASS fresh password fixture", "initial_password": password})
 			creation += time.Since(start)
 			if result["success"] != true || result["created"] != true || result["initial_password_applied"] != true {
 				return fmt.Errorf("unconfirmed fixture creation: %v", result)

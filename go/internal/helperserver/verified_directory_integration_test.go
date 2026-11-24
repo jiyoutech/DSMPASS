@@ -74,7 +74,7 @@ func TestDSMVerifiedExistingAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewWithStore(cfg, q)
-	if r := s.provisionAccount(cfg, map[string]any{"dsm_username": name}); r["success"] != true || r["created"] != false {
+	if r := s.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": name}); r["success"] != true || r["created"] != false {
 		t.Fatal(r)
 	}
 	if err := s.authorizeLogin(cfg, map[string]any{"dsm_username": name, "identity_id": "identity", "login_source": "source"}); err != nil {

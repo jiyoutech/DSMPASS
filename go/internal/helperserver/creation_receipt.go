@@ -45,6 +45,15 @@ func (t creationTarget) begin() error {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
 		return nil
 	}
+	if !t.group {
+		// A previous attempt may already have changed DSM. Only its original
+		// owner may clear a confirmed failure or finish registering its UID.
+		if _, found, err := t.receiptID(); err != nil {
+			return err
+		} else if found {
+			return fmt.Errorf("DSM 用户 %q 有待核实的创建回执", t.name)
+		}
+	}
 	return t.write(-1)
 }
 func (t creationTarget) clear() error {

@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
-func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]any) map[string]any {
+func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, payload map[string]any) map[string]any {
 	username, err := requiredString(payload, "dsm_username")
 	if err != nil {
 		return errorResponse("BAD_REQUEST", err.Error())
@@ -27,7 +26,8 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 	err = withAccountMutation(cfg, username, false, func() error {
 		displayName, _ := optionalString(payload, "display_name")
 		email, _ := optionalString(payload, "email")
-		if info, err := getSynoUser(cfg.SynoUserPath, username); err == nil {
+		info, lookupErr := getSynoUser(cfg.SynoUserPath, username)
+		if lookupErr == nil {
 			if err := target.resume(); err != nil {
 				return err
 			}
@@ -64,6 +64,9 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 			}
 			return nil
 		}
+		if !dsmUserNotFound(lookupErr) {
+			return fmt.Errorf("无法确认 DSM 用户 %q 是否存在: %w", username, lookupErr)
+		}
 		if err := verifyAccountAbsent(cfg, username); err != nil {
 			return err
 		}
@@ -72,12 +75,15 @@ func (s *Server) provisionAccount(cfg config.HelperConfig, payload map[string]an
 		if password == "" {
 			password = randomPassword(cfg.InitialPasswordLength)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := target.begin(); err != nil {
 			return err
 		}
-		if err := runAccountCommand(ctx, cfg.SynoUserPath, synouserAddArgs(username, password, displayName, email)...); err != nil {
+		user := newDSMUser{name: username, display: displayName, email: email}
+		err := createNativeUser(cfg, user, password)
+		if err := s.retryAbsentCreate(ctx, cfg, user, password, err); err != nil {
 			return err
 		}
 		// confirm reads the actual local UID and checks privileged group membership.

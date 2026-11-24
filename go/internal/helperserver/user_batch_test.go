@@ -38,7 +38,7 @@ func TestProvisionUsersRetainsUIDConfirmationAndPerAccountFailures(t *testing.T)
 		logPath := filepath.Join(t.TempDir(), "calls")
 		t.Setenv("TEST_CALLS", logPath)
 		t.Setenv("TEST_PASSWD", cfg.PasswdPath)
-		script := "#!/bin/sh\necho \"$1\" >> \"$TEST_CALLS\"\ncase \"$1\" in\n --get) exit 1;;\n --add) "
+		script := "#!/bin/sh\necho \"$1\" >> \"$TEST_CALLS\"\ncase \"$1\" in\n --get) echo 'synoerr=[0x1D00]' >&2; exit 255;;\n --add) "
 		if persist {
 			script += "echo 'newuser:x:1050:100:New:/:/bin/false' >> \"$TEST_PASSWD\"; "
 		}

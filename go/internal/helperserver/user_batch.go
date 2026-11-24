@@ -49,7 +49,7 @@ func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig,
 		} else if unchanged[name] {
 			result = map[string]any{"success": true, "created": false, "initial_password_applied": false}
 		} else {
-			result = s.provisionAccount(cfg, row)
+			result = s.provisionAccount(ctx, cfg, row)
 		}
 		result["dsm_username"] = row["dsm_username"]
 		results = append(results, result)
