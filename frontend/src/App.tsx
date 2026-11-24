@@ -2082,7 +2082,7 @@ function SourceDetail({
           )}
           {conflictGroups.length === 0 && currentOwnerChoices.length > 0 && (
             <Card title={currentOwnerChoices[0].conflict_reason}>
-              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。{source.provider_type === "dingtalk" && "选中的钉钉员工将获得该账号的登录和全量改密权限。"}其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
+              <Typography.Paragraph>请选择沿用已有 DSM 账号的员工。{source.provider_type === "dingtalk" && "登录和全量改密需另行核实账号归属。"}其余同名员工会在随后的增量同步中自动编号建号。</Typography.Paragraph>
               <Table size="small" rowKey="id" dataSource={currentOwnerChoices} pagination={false} columns={[
                 { title: "员工", dataIndex: "display_name" },
                 { title: "员工 ID", dataIndex: "external_subjects" },
