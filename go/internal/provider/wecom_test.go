@@ -471,3 +471,37 @@ func TestWeComDepartmentTrustedIPErrorKeepsTrustedIPAdvice(t *testing.T) {
 		t.Fatalf("trusted IP error should not be classified as department permission error: %s", message)
 	}
 }
+
+func TestWeComConfirmsIncompleteTerminalMemberPage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		confirm bool
+	}{{"retry confirms empty array", true}, {"persistent omission", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewWeCom(WeComConfig{})
+			calls := 0
+			w.client.Transport = fakeTransport(func(r *http.Request) (any, int) {
+				calls++
+				body := map[string]any{}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if calls == 1 {
+					return map[string]any{"errcode": 0, "dept_user": []map[string]any{{"userid": "A"}}, "next_cursor": "next"}, 200
+				}
+				if body["cursor"] != "next" {
+					t.Fatal("retried wrong cursor")
+				}
+				page := map[string]any{"errcode": 0, "next_cursor": ""}
+				if tc.confirm && calls == 3 {
+					page["dept_user"] = []any{}
+				}
+				return page, 200
+			})
+			items, err := w.visibleUserIDs("fixture")
+			if calls != 3 || (err == nil) != tc.confirm || (tc.confirm && len(items) != 1) || (!tc.confirm && items != nil) {
+				t.Fatal(calls, items, err)
+			}
+		})
+	}
+}
