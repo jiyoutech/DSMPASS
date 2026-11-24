@@ -65,14 +65,6 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 	if !errors.Is(denied, errDingTalkMembershipOnly) && !errors.Is(denied, errDirectoryMembershipOnly) && !errors.Is(denied, errUserNotEnrolled) {
 		return denied
 	}
-	p, err := readAccountPolicy(cfg)
-	if err != nil {
-		return err
-	}
-	candidate, ok := p.CredentialCandidates[username]
-	if !ok || candidate.Owner.SourceSlug != source {
-		return denied
-	}
 	return withAccountMutation(cfg, username, false, func() error {
 		grant, err := userEnrollment(cfg, username)
 		if grant == nil && err == nil { // Another request completed enrollment.
@@ -81,17 +73,7 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 		if err != nil && !errors.Is(err, errUserNotEnrolled) {
 			return err
 		}
-		info, err := getSynoUser(cfg.SynoUserPath, username)
-		if err != nil {
-			return err
-		}
-		if !info.ExpiryKnown {
-			return errors.New("无法确认 DSM 账号是否启用")
-		}
-		if info.Expired {
-			return fmt.Errorf("DSM 用户 %q 已停用", username)
-		}
-		linked, err := s.linkVerifiedDirectoryUser(cfg, username, info.Mail, grant, req)
+		linked, err := s.linkExistingDirectoryUser(cfg, req, grant, nil)
 		if err != nil {
 			return err
 		}
@@ -104,7 +86,7 @@ func (s *Server) authorizeLogin(cfg config.HelperConfig, payload map[string]any)
 
 func loginDeniedResponse(err error) map[string]any {
 	if errors.Is(err, errDingTalkMembershipOnly) {
-		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中批量关联已有账号，或核实这条绑定")
+		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。请管理员在此身份源检查同名冲突并选择归属员工，或在登录审计中核实绑定")
 	}
 	if errors.Is(err, errDirectoryMembershipOnly) {
 		return errorResponse("LOGIN_OWNER_VERIFICATION_REQUIRED", err.Error()+"。管理员可在此身份源的登录审计中核实这条绑定")

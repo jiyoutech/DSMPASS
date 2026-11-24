@@ -42,6 +42,14 @@ func runAccountQuery(input io.Reader, output io.Writer) error {
 		}
 		return json.NewEncoder(output).Encode(result)
 	}
+	if request.Action == "dingtalk_login_binding" {
+		match, err := db.DingTalkLoginBinding(context.Background(), queries, request.Username, request.LocalUID)
+		result := db.HelperAuthorizationResult{DingTalkLoginMatch: match}
+		if err != nil {
+			result.Error = "query_failed"
+		}
+		return json.NewEncoder(output).Encode(result)
+	}
 	if request.Action == "dingtalk_binding" {
 		binding, err := db.DingTalkBindingForName(context.Background(), queries, request.Username)
 		result := db.HelperAuthorizationResult{DingTalkBinding: binding}

@@ -70,8 +70,8 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 				return err
 			}
 			grant, err := userEnrollment(cfg, username)
-			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired && info.Mail != "" {
-				linked, linkErr := s.linkVerifiedDirectoryUser(cfg, username, info.Mail, grant, db.HelperAuthorizationQuery{Action: "verify_existing_owner", Username: username})
+			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired {
+				linked, linkErr := s.linkExistingDirectoryUser(cfg, db.HelperAuthorizationQuery{Action: "provision", Username: username}, grant, &info)
 				if linkErr != nil {
 					return linkErr
 				}
@@ -104,6 +104,25 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 				email = info.Mail
 			}
 			if info.Expired || displayName != info.FullName || email != info.Mail {
+				// Keep the native profile of an existing directory-owned account on retries.
+				if cfg.AccountPolicyPath != "" {
+					p, err := readAccountPolicy(cfg)
+					if err != nil {
+						return err
+					}
+					if owner, ok := p.CredentialOwners[username]; ok {
+						binding, err := s.dingTalkLoginBinding(cfg, username, p.Users[username])
+						if err != nil {
+							return err
+						}
+						if binding != nil && binding.SourceSlug == owner.SourceSlug && binding.Subject == owner.Subject {
+							if info.Expired {
+								return fmt.Errorf("DSM 用户 %q 已停用", username)
+							}
+							return nil
+						}
+					}
+				}
 				return modifySynoUser(cfg.SynoUserPath, username, displayName, false, email)
 			}
 			return nil

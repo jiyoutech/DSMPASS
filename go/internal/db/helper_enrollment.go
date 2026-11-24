@@ -37,9 +37,12 @@ const memberDepartmentMatch = `(pg.subject = mm.provider_group_id OR pg.id = mm.
  AND NOT EXISTS (SELECT 1 FROM provider_groups alt WHERE alt.provider_slug=pg.provider_slug
  AND alt.id<>pg.id AND (alt.id=mm.provider_group_id OR alt.subject=mm.provider_group_id))`
 
-const uniqueDingTalkName = `src.provider_type='dingtalk' AND trim(e.display_name)=a.dsm_username AND e.subject<>''
- AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=e.provider_slug
- AND other.active=1 AND other.id<>e.id AND trim(other.display_name)=a.dsm_username)`
+const unresolvedDingTalkNamesake = `src.provider_type='dingtalk' AND trim(coalesce(e.display_name,''))=a.dsm_username
+ AND EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=e.provider_slug
+ AND other.active=1 AND other.id<>e.id AND trim(other.display_name)=a.dsm_username COLLATE NOCASE)`
+
+const uniqueDingTalkName = `src.provider_type='dingtalk' AND trim(e.display_name)=a.dsm_username AND trim(e.subject)<>''
+ AND NOT (` + unresolvedDingTalkNamesake + `)`
 
 const dingTalkBindings = `SELECT a.dsm_username AS name, MIN(src.slug) AS source, MIN(e.subject) AS subject
 FROM dsm_accounts a JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
@@ -93,7 +96,7 @@ JOIN dsm_mapping_entries me ON me.dsm_account_id = a.id AND me.mapping_type = 'u
 JOIN external_accounts e ON e.id = me.external_account_id AND e.app_identity_id = i.id AND e.provider_slug = me.provider_slug
 JOIN identity_sources src ON src.slug = me.provider_slug
 LEFT JOIN successful h ON h.object_key = a.id AND h.dsm_name = a.dsm_username AND h.source_slug = me.provider_slug
-LEFT JOIN unique_mail mail ON mail.identity_id = i.id AND mail.email_norm = e.email_norm AND e.email_verified = 1
+LEFT JOIN unique_mail mail ON mail.identity_id = i.id AND mail.email_norm = e.email_norm AND e.email_verified = 1 AND NOT (`+unresolvedDingTalkNamesake+`)
 WHERE i.status = 'active' AND e.active = 1 AND src.enabled = 1
   AND COALESCE(a.conflict_reason, '') = ''
   AND ((a.provision_status IN ('created', 'linked_existing') AND (src.login_enabled = 1 OR src.directory_sync_enabled = 1))
@@ -117,7 +120,7 @@ JOIN app_identities i ON i.id=e.app_identity_id AND i.status='active'
 JOIN identity_sources src ON src.slug=e.provider_slug AND src.enabled=1 AND src.directory_sync_enabled=1
 JOIN dsm_mapping_entries um ON um.mapping_type='user' AND um.active=1 AND um.external_account_id=e.id AND um.provider_slug=src.slug
 JOIN dsm_accounts a ON a.id=um.dsm_account_id AND a.app_identity_id=i.id
-WHERE COALESCE(a.conflict_reason,'')='' AND a.provision_status IN ('created','linked_existing','pending','failed')
+WHERE NOT (`+unresolvedDingTalkNamesake+`) AND COALESCE(a.conflict_reason,'')='' AND a.provision_status IN ('created','linked_existing','pending','failed')
 AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries other JOIN external_accounts x ON x.id=other.external_account_id AND x.active=1
  JOIN identity_sources s ON s.slug=other.provider_slug AND s.enabled=1
  WHERE other.mapping_type='user' AND other.active=1 AND other.dsm_account_id=a.id AND other.id<>um.id)
@@ -191,6 +194,42 @@ func DingTalkBindingForName(ctx context.Context, q *Queries, name string) (*Ding
 	}
 	var binding DingTalkUserBinding
 	err := q.DBTX().QueryRowContext(ctx, `SELECT source,subject FROM (`+dingTalkBindings+`) WHERE name=?`, name).Scan(&binding.SourceSlug, &binding.Subject)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+type DingTalkLoginMatch struct {
+	DingTalkUserBinding
+	Selected bool `json:"selected,omitempty"`
+}
+
+// DingTalkLoginBinding checks the synchronized directory and the administrator's
+// saved choice in one read. The caller independently reads the native DSM UID.
+func DingTalkLoginBinding(ctx context.Context, q *Queries, name string, uid int) (*DingTalkLoginMatch, error) {
+	if q == nil || name == "" || uid < 1024 || uid >= 65536 {
+		return nil, nil
+	}
+	var binding DingTalkLoginMatch
+	err := q.DBTX().QueryRowContext(ctx, `SELECT src.slug,e.subject,c.account_id IS NOT NULL
+FROM dsm_accounts a
+JOIN app_identities i ON i.id=a.app_identity_id AND i.status='active'
+JOIN dsm_mapping_entries m ON m.dsm_account_id=a.id AND m.mapping_type='user' AND m.active=1
+JOIN external_accounts e ON e.id=m.external_account_id AND e.app_identity_id=i.id AND e.provider_slug=m.provider_slug AND e.active=1
+JOIN identity_sources src ON src.slug=e.provider_slug AND src.provider_type='dingtalk'
+LEFT JOIN directory_owner_choices c ON c.account_id=a.id
+WHERE a.dsm_username=? AND src.enabled=1 AND src.directory_sync_enabled=1 AND src.login_enabled=1
+AND a.allow_login=1 AND a.manual_login_blocked=0 AND coalesce(a.conflict_reason,'')=''
+AND a.provision_status IN ('pending','failed','created','linked_existing') AND trim(e.subject)<>''
+AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.id<>m.id
+ AND (x.dsm_account_id=a.id OR x.external_account_id=e.id))
+AND NOT EXISTS (SELECT 1 FROM external_accounts x WHERE x.provider_slug=src.slug AND x.subject=e.subject AND x.active=1 AND x.id<>e.id)
+AND ((c.external_id=e.id AND c.source_slug=src.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
+ OR (c.account_id IS NULL AND `+uniqueDingTalkName+`))`, name, uid).Scan(&binding.SourceSlug, &binding.Subject, &binding.Selected)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

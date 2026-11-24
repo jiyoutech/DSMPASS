@@ -13,6 +13,7 @@ func TestDirectoryOwnerHelperLinksOnlyOrdinaryLiveAccounts(t *testing.T) {
 		name, kind, username, change, expiry string
 		selected, allowed                    bool
 	}{
+		{name: "unique DingTalk", kind: "dingtalk", allowed: true},
 		{name: "selected DingTalk namesake", kind: "dingtalk", selected: true, allowed: true},
 		{name: "selected Feishu namesake", kind: "feishu", selected: true, allowed: true},
 		{name: "selected WeCom namesake", kind: "wecom", selected: true, allowed: true},
@@ -60,6 +61,16 @@ func TestDirectoryOwnerHelperLinksOnlyOrdinaryLiveAccounts(t *testing.T) {
 			if err := os.WriteFile(cfg.SynoUserPath, []byte("#!/bin/sh\n[ \"$1\" = --get ] || { touch \"$0.write\"; exit 1; }\necho 'Expired : ["+expired+"]'\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			if tc.kind == "dingtalk" && tc.allowed {
+				p, err := readAccountPolicy(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.DingTalkScope = &dingTalkDirectoryScope{Sources: []string{"source"}, Users: map[string]int{name: 1026}}
+				if err := saveAccountPolicy(cfg, p); err != nil {
+					t.Fatal(err)
+				}
+			}
 			srv := NewWithStore(cfg, q)
 			for i := 0; i < 2; i++ {
 				result := srv.provisionAccount(context.Background(), cfg, map[string]any{"dsm_username": name, "display_name": "changed"})
@@ -71,7 +82,11 @@ func TestDirectoryOwnerHelperLinksOnlyOrdinaryLiveAccounts(t *testing.T) {
 				t.Fatal("unexpected DSM write", err)
 			}
 			err := srv.authorizeLogin(cfg, map[string]any{"dsm_username": name, "identity_id": "identity", "login_source": "source"})
-			if err == nil || (tc.allowed && !errors.Is(err, errDirectoryMembershipOnly)) {
+			if tc.allowed && tc.kind == "dingtalk" {
+				if err != nil {
+					t.Fatal("matched DingTalk employee cannot log in", err)
+				}
+			} else if err == nil || (tc.allowed && !errors.Is(err, errDirectoryMembershipOnly)) {
 				t.Fatal("unexpected login result", err)
 			}
 		})
