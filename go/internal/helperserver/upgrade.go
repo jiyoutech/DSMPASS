@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -17,7 +18,7 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/securefs"
 )
 
-func upgradePrivilegedHelper(cfg config.HelperConfig) error {
+func upgradePrivilegedHelper(cfg config.HelperConfig, retained bool) (result error) {
 	currentEpoch, err := strconv.ParseInt(buildinfo.BuildEpoch, 10, 64)
 	if err != nil || currentEpoch < 0 {
 		return errors.New("installed Helper has invalid build metadata")
@@ -34,10 +35,41 @@ func upgradePrivilegedHelper(cfg config.HelperConfig) error {
 	if err != nil {
 		return err
 	}
-	if payload.Manifest.BuildEpoch == currentEpoch {
-		if payload.Manifest.Helper != helperupdate.Digest(previousBinary) || payload.Manifest.Controller != helperupdate.Digest(previousController) {
-			return errors.New("same-build Helper payload differs from installed files; explicit root installation required")
+	if payload.Manifest.BuildEpoch == currentEpoch && (payload.Manifest.Helper != helperupdate.Digest(previousBinary) || payload.Manifest.Controller != helperupdate.Digest(previousController)) {
+		return errors.New("same-build Helper payload differs from installed files; explicit root installation required")
+	}
+	if retained {
+		if err := securefs.CheckRootPath(cfg.AccountPolicyPath); err != nil {
+			return fmt.Errorf("check retained account policy: %w", err)
 		}
+		if _, err := readAccountPolicy(cfg); err != nil {
+			return fmt.Errorf("read retained account policy: %w", err)
+		}
+		account, err := user.Lookup("DSMPASS")
+		if err != nil {
+			return fmt.Errorf("lookup reinstalled package account: %w", err)
+		}
+		if account.Uid != strconv.Itoa(cfg.PackageUID) || account.Gid != strconv.Itoa(cfg.PackageGID) {
+			return errors.New("reinstalled package UID/GID changed; run setup-helper-sudo.sh as root")
+		}
+		// Keep the marker throughout start and rollback. Queued control commands
+		// cannot start the dormant service until the signed install has succeeded.
+		defer func() {
+			if result == nil {
+				// Newer payloads install their own rule in finalize-upgrade.
+				if payload.Manifest.BuildEpoch == currentEpoch {
+					result = installHelperSudoers()
+				}
+				if result == nil {
+					result = os.Remove(retainedHelperMarker)
+				}
+			}
+			if result != nil {
+				result = errors.Join(result, stopPrivilegedHelper(cfg), installHelperSudoersRule(retainedHelperRule(), "upgrade"))
+			}
+		}()
+	}
+	if payload.Manifest.BuildEpoch == currentEpoch {
 		return startPrivilegedHelper(cfg)
 	}
 	// Signature, architecture, replay protection and both payload hashes have

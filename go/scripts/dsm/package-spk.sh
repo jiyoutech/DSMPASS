@@ -399,7 +399,7 @@ EOF
   cat > "$work_dir/scripts/preinst" <<'EOF'
 #!/bin/sh
 set -eu
-if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
+if [ -x /usr/local/libexec/dsmpass/helper-control.sh ] && [ ! -f /usr/local/libexec/dsmpass/retained ]; then
   /usr/local/libexec/dsmpass/helper-control.sh stop
 fi
 exit 0
@@ -585,6 +585,12 @@ if [ "$management_port" -le 1024 ] || [ "$management_port" -gt 65535 ]; then
   exit 1
 fi
 
+had_env=false
+[ ! -s "$ENVFILE" ] || had_env=true
+if [ -f /usr/local/libexec/dsmpass/retained ] && [ "$had_env" = false ]; then
+  echo "Retained DSMPASS configuration is missing. Install on the original volume or restore the retained data." >&2
+  exit 1
+fi
 mkdir -p "$PKGVAR/data" "$PKGVAR/data/tls"
 chmod 700 "$PKGVAR" "$PKGVAR/data" "$PKGVAR/data/tls" 2>/dev/null || true
 
@@ -644,12 +650,27 @@ else
 fi
 
 [ -f "$ENVFILE" ] && . "$ENVFILE"
+database_url=${DSMPASS_DATABASE_URL:-"sqlite://$PKGVAR/data/dsmpass.db"}
+database_file=${database_url#sqlite://}
+if [ -f /usr/local/libexec/dsmpass/retained ] && [ ! -s "$database_file" ]; then
+  echo "Retained database is missing. Install on the original volume or restore the retained data." >&2
+  exit 1
+fi
+if [ -f /usr/local/libexec/dsmpass/retained ] || { [ "${SYNOPKG_PKG_STATUS:-}" = INSTALL ] && [ "$had_env" = true ] && [ -s "$database_file" ]; }; then
+  retained_data_dir=${DSMPASS_DATA_DIR:-"$PKGVAR/data"}
+  mkdir -p "$retained_data_dir"
+  touch "$retained_data_dir/restore-manual-sync"
+fi
 render_desktop_launcher
 sync_installed_admin_port
 sync_installed_admin_port_later
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
   if /usr/local/libexec/dsmpass/helper-control.sh upgrade; then
     log_install_status "signed_helper_upgrade_success"
+  elif [ -f /usr/local/libexec/dsmpass/retained ]; then
+    log_install_status "retained_helper_restore_failed"
+    echo "Could not reactivate the retained Helper. Check the signed package and package UID/GID." >&2
+    exit 1
   else
     log_install_status "signed_helper_upgrade_failed: first migration or unsigned builds require root setup-helper-sudo.sh; check Helper status in management page"
   fi
@@ -670,6 +691,12 @@ for value in "${delete_data:-}" "${DSMPASS_DELETE_DATA:-}" "${remove_data:-}"; d
   case "$value" in true|TRUE|yes|YES|1) cleanup_action=uninstall-purge ;; esac
 done
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
+  if [ "$cleanup_action" = uninstall-preserve ]; then
+    [ ! -f /usr/local/libexec/dsmpass/retained ] || exit 0
+    if /usr/local/libexec/dsmpass/helper-control.sh retain; then
+      exit 0
+    fi
+  fi
   echo "Stop DSMPASS, then as a root administrator run /usr/local/libexec/dsmpass/helper-control.sh $cleanup_action and retry uninstall." >&2
   exit 1
 fi
@@ -704,7 +731,7 @@ EOF
   "step_title": "Remove DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "Stop DSMPASS first. If Helper is installed, run /usr/local/libexec/dsmpass/helper-control.sh as root with uninstall-preserve to keep its data or uninstall-purge to erase it, then select the matching option below.",
+    "desc": "Keep data to reuse existing logins on this NAS after reinstalling. To delete all data, stop the package and run /usr/local/libexec/dsmpass/helper-control.sh uninstall-purge as root first.",
     "subitems": [{
       "key": "keep_data",
       "desc": "Keep package data",
@@ -757,7 +784,7 @@ EOF
   "step_title": "卸载 DSM PASS",
   "items": [{
     "type": "singleselect",
-    "desc": "先停用套件。若已安装 Helper，请以 root 运行 /usr/local/libexec/dsmpass/helper-control.sh，保留数据使用参数 uninstall-preserve，彻底清除使用 uninstall-purge，再选择对应选项卸载。",
+    "desc": "选择保留数据，在原 NAS 和存储卷重装后可沿用已开通的登录。若要彻底删除数据，请先停用套件，以 root 执行 /usr/local/libexec/dsmpass/helper-control.sh uninstall-purge。",
     "subitems": [{
       "key": "keep_data",
       "desc": "保留套件数据",

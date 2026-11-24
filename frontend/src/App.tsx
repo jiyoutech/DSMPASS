@@ -1358,7 +1358,7 @@ function SourceDetail({
     if (syncMode === "full") {
       return "将重新同步全部用户、部门和成员关系，并把当前身份源的有效同步账号的 DSM 和 SMB 密码重置为本身份源的 DSM 初始密码，用于修复旧版本造成的密码不一致。用户自行修改的密码也会被覆盖，请通知用户更新 SMB 连接凭据。已映射的已有 DSM 账号及手动修正用户名的同步账号也会重置；没有有效同步映射的本地账号和系统保留账号不重置。已完成的操作不会因后续失败而回滚；失败后可重新执行全量同步。";
     }
-    return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。定时同步和冲突处理后的自动同步也使用增量模式。";
+    return "将读取身份源通讯录，更新新增和变更的用户、部门及成员关系，保留已有账号密码。" + (source.provider_type === "dingtalk" ? "" : "定时同步和冲突处理后的自动同步也使用增量模式。");
   }
 
   async function runDirectorySync(mode: SyncMode) {
@@ -1436,6 +1436,11 @@ function SourceDetail({
   async function syncIfConflictsResolved(accountConflicts: PagedResponse<DSMAccount> | null, groupConflicts: PagedResponse<DSMGroup> | null) {
     if (conflictCount(accountConflicts) > 0 || conflictCount(groupConflicts) > 0) {
       message.success("已保存，继续处理剩余冲突");
+      return;
+    }
+    if (source.provider_type === "dingtalk") {
+      setConflictModalOpen(false);
+      message.success("冲突处理结果已保存。点击同步时会更新通讯录。");
       return;
     }
     setConflictModalOpen(true);
@@ -1954,7 +1959,7 @@ function SourceDetail({
                 loading={savingConflictKey === activeConflictSaveAction.key}
                 onClick={activeConflictSaveAction.save}
               >
-                保存并开通本组
+                {source.provider_type === "dingtalk" ? "保存本组映射" : "保存并开通本组"}
               </Button>
             )}
           </Space>
@@ -1988,7 +1993,7 @@ function SourceDetail({
             type="error"
             showIcon
             message={`还有 ${conflictGroups.length} 个部门冲突、${conflictAccounts.length} 个用户冲突未处理`}
-            description="请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"
+            description={source.provider_type === "dingtalk" ? "请为当前冲突选择 DSM 名称。保存后可继续处理下一组，点击同步时会写入 DSM。" : "请按当前卡片处理一组冲突；保存成功会自动尝试开通，然后显示下一组。"}
           />
           {conflictGroups.length > 0 && (
             <Card

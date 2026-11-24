@@ -15,7 +15,17 @@ import (
 )
 
 func installHelperSudoers() error {
-	rule := []byte(helperSudoersRule())
+	return installHelperSudoersRule(helperSudoersRule(), "status")
+}
+
+func retainedHelperRule() string {
+	controller := config.HelperControlPath
+	return "Defaults!" + controller + " env_reset, !setenv, secure_path=\"/usr/sbin:/usr/bin:/sbin:/bin\"\n" +
+		"DSMPASS ALL=(root) NOPASSWD: NOSETENV: " + controller + " upgrade\n"
+}
+
+func installHelperSudoersRule(text, checkAction string) error {
+	rule := []byte(text)
 	for _, visudo := range []string{"/usr/sbin/visudo", "/usr/bin/visudo"} {
 		if _, err := os.Stat(visudo); os.IsNotExist(err) {
 			continue
@@ -55,7 +65,7 @@ func installHelperSudoers() error {
 	return replaceVerifiedSudoers(helperSudoersPath, rule, func(data []byte) error {
 		return securefs.WriteRootFile(helperSudoersPath, data, 0440)
 	}, func() error {
-		return runSudoRuleValidator("/usr/bin/sudo", "-n", "-l", "-U", "DSMPASS", "--", config.HelperControlPath, "status")
+		return runSudoRuleValidator("/usr/bin/sudo", "-n", "-l", "-U", "DSMPASS", "--", config.HelperControlPath, checkAction)
 	})
 }
 

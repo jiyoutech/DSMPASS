@@ -48,7 +48,7 @@ func PreparePrivilegedRuntime(cfg config.HelperConfig) error {
 }
 
 func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
-	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" && action != "uninstall-preserve" && action != "uninstall-purge" {
+	if action != "start" && action != "stop" && action != "restart" && action != "status" && action != "upgrade" && action != "retain" && action != "uninstall-preserve" && action != "uninstall-purge" {
 		return errors.New("unsupported Helper control action")
 	}
 	if err := PreparePrivilegedRuntime(cfg); err != nil {
@@ -60,12 +60,18 @@ func ControlPrivilegedHelper(cfg config.HelperConfig, action string) error {
 		if err := PreparePrivilegedRuntime(cfg); err != nil {
 			return err
 		}
-		if action == "uninstall-preserve" || action == "uninstall-purge" {
+		if action == "retain" || action == "uninstall-preserve" || action == "uninstall-purge" {
 			return uninstallPrivilegedHelper(cfg, action == "uninstall-purge")
-
+		}
+		retained, err := helperIsRetained()
+		if err != nil {
+			return err
 		}
 		if action == "upgrade" {
-			return upgradePrivilegedHelper(cfg)
+			return upgradePrivilegedHelper(cfg, retained)
+		}
+		if retained {
+			return errors.New("Helper is stopped pending signed package reinstallation")
 		}
 		if action == "stop" || action == "restart" {
 			if err := stopPrivilegedHelper(cfg); err != nil {

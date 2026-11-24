@@ -147,7 +147,7 @@ sudo /var/packages/DSMPASS/scripts/start-stop-status restart
 
 只有在确认要删除本地配置、同步数据、日志和 TLS 文件时，才选择删除套件数据。
 
-先停用 DSMPASS。若已安装受保护的 Helper，请管理员通过 SSH 进入 root shell。计划保留授权和配置时执行 `/usr/local/libexec/dsmpass/helper-control.sh uninstall-preserve`；确认彻底清除时执行 `/usr/local/libexec/dsmpass/helper-control.sh uninstall-purge`。命令成功后，在套件中心选择相应的数据保留选项并完成卸载。
+卸载时选择“保留套件数据”，套件中心会停止 Helper 并保留账号授权。如果选择彻底删除数据，先停止套件，由管理员以 root 执行 `/usr/local/libexec/dsmpass/helper-control.sh uninstall-purge`，再在卸载向导选择删除数据。
 
 选择保留数据时，同时保留 root 私有的 `/etc/dsmpass` 配置和 `/var/lib/dsmpass` 授权、日志及恢复资料；选择删除数据时，控制器在确认没有未完成恢复后自动清理这两个固定目录。`/run/dsmpass` 中少量空的进程锁文件保留到重启，防止排队控制进程绕过同一把锁，不包含密码或可执行程序。
 
@@ -155,18 +155,9 @@ DSM 升级也会调用旧包的 `preuninst` 和 `postuninst`。两个钩子仅�
 
 升级和卸载前会停止 Helper 并完成待恢复密码。若恢复失败，操作取消并尝试重新启动 Helper，使恢复循环与其他账号服务继续运行，错误会明确提示处理恢复后重试。无法恢复的密码仍会阻止卸载，不会通过删除记录掩盖问题。路径权限异常、磁盘错误或重启失败仍需管理员检查日志；中途系统断电可能需要重新初始化受保护 Helper。
 
-卸载后建议 SSH 到 DSM 确认：
+在同一台 NAS、原存储卷重装签名套件时，安装程序会自动恢复已保留的 Helper。保留期间 Helper 已停止，套件账号只可调用验证签名的 `upgrade` 入口。已开通登录且绑定仍有效的员工可直接用原 DSM 账号登录。同名员工按已保存的身份源和员工标识区分，管理员只需处理待解决的冲突。钉钉身份源在重装后改为手动同步；需要定时同步的管理员可重新设置间隔。普通升级保留原有间隔。
 
-```bash
-sudo -i
-ls -l /etc/sudoers.d/DSMPASS-helper
-```
-
-如果仍然存在，手动删除：
-
-```bash
-sudo rm -f /etc/sudoers.d/DSMPASS-helper
-```
+如果在旧版已完成卸载、受保护的 Helper 已被移除，或 DSM 为重装的套件分配了不同 UID/GID，管理员需要运行一次 `setup-helper-sudo.sh` 并启动 Helper。仍然有效的旧绑定可直接使用。只有通讯录成员权限的账号继续按原权限处理。
 
 ## 排障
 
@@ -210,7 +201,7 @@ srw-rw---- 1 root DSMPASS 0 ... /run/dsmpass/helper.sock
 
 用户和用户组可能因 DSM 环境略有不同，重点看文件存在、第一列以 `s` 开头。如果显示 `No such file or directory`，说明 Helper 还没有成功启动，需要先在管理后台点击「重启并检查 Helper」并查看日志。
 
-执行成功后会安装 root 保护的程序、配置和 `/etc/sudoers.d/DSMPASS-helper`。sudo 只允许固定控制入口的 start、stop、restart、status，不允许保留调用方环境，也不允许直接运行套件目录中的 Helper。socket 还会校验连接方的本机 UID。继续失败时由 root 查看 `/var/lib/dsmpass/helper.log`。
+执行成功后会安装 root 保护的程序、配置和 `/etc/sudoers.d/DSMPASS-helper`。sudo 只允许固定控制入口的 start、stop、restart、status、retain、upgrade，不允许保留调用方环境，也不允许直接运行套件目录中的 Helper。socket 还会校验连接方的本机 UID。继续失败时由 root 查看 `/var/lib/dsmpass/helper.log`。
 
 有 `visudo` 时先验证候选规则；DSM 未提供 `visudo` 时，安装器原子写入固定规则，再使用系统 `sudo -l` 解析并检查指定控制命令的授权，不执行该命令。解析失败会恢复原规则或移除新规则，并报告失败；不会跳过规则检查。
 
