@@ -20,7 +20,9 @@ func TestDingTalkNameLogin(t *testing.T) {
 		{name: "ambiguous even without mapping for second employee", change: duplicate},
 		{name: "administrator selected one of two", change: duplicate, selected: true, allowed: true},
 		{name: "different login identity", identity: "other-identity"},
-		{name: "selected employee supersedes old membership only", change: duplicate, selected: true, allowed: true},
+		{name: "selected employee needs independent confirmation", change: duplicate, selected: true},
+		{name: "trusted email conflicts"},
+		{name: "trusted email case difference", allowed: true},
 		{name: "selected UID changed", selected: true, change: "UPDATE directory_owner_choices SET uid=8000"},
 		{name: "changed employee ID", change: "UPDATE external_accounts SET subject='replacement'"},
 		{name: "blank directory name", change: "UPDATE external_accounts SET display_name=''"},
@@ -73,7 +75,7 @@ func TestDingTalkNameLogin(t *testing.T) {
 			binding := db.DingTalkUserBinding{SourceSlug: "source", Subject: "subject"}
 			p.DirectoryUsers = map[string]directoryUserGrant{"alice": {UID: 1026, DingTalk: &binding}}
 			switch tc.name {
-			case "selected employee supersedes old membership only":
+			case "selected employee needs independent confirmation":
 				binding.Subject = "other"
 			case "unregistered local account":
 				delete(p.DirectoryUsers, "alice")
@@ -92,6 +94,13 @@ func TestDingTalkNameLogin(t *testing.T) {
 				if err := target.begin(); err != nil {
 					t.Fatal(err)
 				}
+			case "trusted email conflicts", "trusted email case difference":
+				mail := "different@example.test"
+				if tc.allowed {
+					mail = " ALICE@example.test "
+				}
+				owner := db.CredentialIdentity{Username: "alice", SourceSlug: "source", Subject: "subject"}
+				p.CredentialCandidates = map[string]verifiedAccountCandidate{"alice": {Owner: owner, UID: 1026, Email: mail}}
 			case "email cannot decide between namesakes":
 				owner := db.CredentialIdentity{Username: "alice", SourceSlug: "source", Subject: "subject"}
 				p.CredentialCandidates = map[string]verifiedAccountCandidate{"alice": {Owner: owner, UID: 1026, Email: "alice@example.test"}}

@@ -13,10 +13,11 @@ import (
 )
 
 type loginApprovalTicket struct {
-	Owner     db.CredentialIdentity `json:"owner"`
-	UID       int                   `json:"uid"`
-	Code      string                `json:"code"`
-	ExpiresAt int64                 `json:"expires_at"`
+	PreviousSubject string                `json:"previous_subject,omitempty"`
+	Owner           db.CredentialIdentity `json:"owner"`
+	UID             int                   `json:"uid"`
+	Code            string                `json:"code"`
+	ExpiresAt       int64                 `json:"expires_at"`
 }
 
 // For a legacy membership-only binding, the administrator proves control of
@@ -58,8 +59,19 @@ func (s *Server) webLoginApproval(cfg config.HelperConfig, payload map[string]an
 			result["approved"] = true
 			return nil
 		}
-		if hasOwner || (grant.DingTalk != nil && (grant.DingTalk.SourceSlug != source || grant.DingTalk.Subject != subject)) {
+		if hasOwner || (grant.DingTalk != nil && grant.DingTalk.SourceSlug != source) {
 			return errors.New("待核实身份与原通讯录绑定不一致")
+		}
+		var previousSubject string
+		if grant.DingTalk != nil && grant.DingTalk.Subject != subject {
+			selected, err := s.dingTalkLoginBinding(cfg, name, grant.UID)
+			if err != nil {
+				return err
+			}
+			if selected == nil || !selected.Selected || selected.Subject != subject || selected.SourceSlug != source {
+				return errors.New("需要先在身份源中确认原名账号归属")
+			}
+			previousSubject = grant.DingTalk.Subject
 		}
 		if other, ok := p.CredentialCandidates[name]; ok && (other.Owner != owner || other.UID != grant.UID) {
 			return errors.New("存在另一条待核实的身份记录")
@@ -79,10 +91,15 @@ func (s *Server) webLoginApproval(cfg config.HelperConfig, payload map[string]an
 		}
 		now := time.Now()
 		ticket := p.LoginApprovals[name]
-		valid := ticket.Owner == owner && ticket.UID == grant.UID && ticket.Code != "" && ticket.ExpiresAt > now.Unix()
+		valid := ticket.PreviousSubject == previousSubject && ticket.Owner == owner && ticket.UID == grant.UID && ticket.Code != "" && ticket.ExpiresAt > now.Unix()
 		if verify {
 			if !valid || !slices.Contains(strings.Fields(info.FullName), ticket.Code) {
 				return errors.New("请检查当前确认码是否已保存到该 DSM 用户的描述，过期后需重新获取")
+			}
+			if previousSubject != "" {
+				confirmed := *grant
+				confirmed.DingTalk = &db.DingTalkUserBinding{SourceSlug: source, Subject: subject}
+				grant = &confirmed
 			}
 			linked, err := s.bindCredentialOwner(cfg, p, owner, grant.UID, grant, req)
 			if err != nil {
@@ -106,7 +123,7 @@ func (s *Server) webLoginApproval(cfg config.HelperConfig, payload map[string]an
 			if _, exists := p.LoginApprovals[name]; !exists && len(p.LoginApprovals) >= 256 {
 				return errors.New("待核实账号较多，请先完成已有确认")
 			}
-			ticket = loginApprovalTicket{Owner: owner, UID: grant.UID, Code: "DP-U-" + rand.Text(), ExpiresAt: now.Add(15 * time.Minute).Unix()}
+			ticket = loginApprovalTicket{PreviousSubject: previousSubject, Owner: owner, UID: grant.UID, Code: "DP-U-" + rand.Text(), ExpiresAt: now.Add(15 * time.Minute).Unix()}
 			p.LoginApprovals[name] = ticket
 			if err := saveAccountPolicy(cfg, p); err != nil {
 				return err

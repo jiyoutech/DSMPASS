@@ -76,7 +76,7 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 	// local account and source. Retained DingTalk grants carry that same pin.
 	if binding != nil {
 		pinned := grant != nil && grant.UID == local.id && grant.DingTalk != nil && grant.DingTalk.SourceSlug == binding.SourceSlug &&
-			(grant.DingTalk.Subject == binding.Subject || binding.Selected)
+			grant.DingTalk.Subject == binding.Subject
 		if scope := p.DingTalkScope; scope != nil {
 			pinned = slices.Contains(scope.Sources, binding.SourceSlug) && (pinned || scope.Users[name] == local.id)
 		}
@@ -101,6 +101,9 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 	if info.Expired {
 		return false, fmt.Errorf("DSM 用户 %q 已停用", name)
 	}
+	if hasEmail && directoryMailConflict(candidate.Email, info.Mail) {
+		return false, errors.New("DSM 邮箱与已验证的目录邮箱冲突，请核实账号归属")
+	}
 	if binding != nil && info.ExpiryKnown {
 		owner := db.CredentialIdentity{Username: name, SourceSlug: binding.SourceSlug, Subject: binding.Subject}
 		if hasEmail && (candidate.UID != local.id || candidate.Owner != owner) {
@@ -121,19 +124,18 @@ func (s *Server) linkExistingDirectoryUser(cfg config.HelperConfig, req db.Helpe
 				return false, nil
 			}
 		}
-		// An explicit choice can supersede a membership-only subject for the
-		// same enrolled source and UID. Established credentials remain pinned.
-		if binding.Selected && grant != nil && grant.DingTalk != nil && grant.DingTalk.SourceSlug == binding.SourceSlug {
-			choice := *grant
-			choice.DingTalk = &binding.DingTalkUserBinding
-			grant = &choice
-		}
 		return s.bindCredentialOwner(cfg, p, owner, local.id, grant, req)
 	}
 	if req.Action == "provision" {
 		req.Action = "verify_existing_owner"
 	}
 	return s.linkVerifiedDirectoryUser(cfg, name, info.Mail, grant, req)
+}
+
+func directoryMailConflict(candidate, native string) bool {
+	candidate = strings.TrimSpace(candidate)
+	native = strings.TrimSpace(native)
+	return candidate != "" && native != "" && !strings.EqualFold(candidate, native)
 }
 
 // Called under both account locks, using the email read from DSM itself.

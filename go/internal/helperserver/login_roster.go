@@ -61,7 +61,7 @@ func bindDingTalkLogins(cfg config.HelperConfig, source string, dryRun bool, que
 			return 0, fmt.Errorf("读取 DSM 用户 %q 失败，本批未写入: %w", entry.Username, err)
 		}
 		mail := strings.TrimSpace(info.Mail)
-		if info.ExpiryKnown && !info.Expired && (entry.email == "" || mail == "" || strings.EqualFold(mail, entry.email)) {
+		if info.ExpiryKnown && !info.Expired && !directoryMailConflict(entry.email, mail) {
 			active[entry.Username] = true
 		}
 	}
