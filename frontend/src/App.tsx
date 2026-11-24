@@ -34,9 +34,11 @@ import {
   Typography,
   theme
 } from "antd";
+import type { InputRef } from "antd";
+import { copyOrSelect } from "./clipboard";
 import type { ColumnsType } from "antd/es/table";
 import zhCN from "antd/locale/zh_CN";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { LoginApprovalDialog } from "./components/LoginApprovalDialog";
 import { GroupApprovalDialog } from "./components/GroupApprovalDialog";
@@ -232,6 +234,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
   const [password, setPassword] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const passwordInput = useRef<InputRef>(null);
 
   useEffect(() => {
     setPassword("");
@@ -261,9 +264,11 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
     if (!password) {
       return;
     }
-    void navigator.clipboard.writeText(password)
-      .then(() => message.success("已复制初始密码"))
-      .catch(() => message.error("复制失败"));
+    void copyOrSelect(password, () => {
+      passwordInput.current?.focus();
+      passwordInput.current?.select();
+      message.info("请点眼睛显示密码，再手动复制。");
+    }).then(copied => { if (copied) message.success("已复制初始密码"); });
   }
 
   return (
@@ -291,7 +296,7 @@ function SourceInitialPasswordField({ source, onUpdated }: { source: ProviderIte
           <Typography.Text type="secondary">
             此密码用于这个身份源自动创建的 DSM 用户。请只在交付给用户时查看和复制。
           </Typography.Text>
-          <Input.Password value={password} readOnly />
+          <Input.Password ref={passwordInput} value={password} readOnly />
         </Space>
       </Modal>
     </Form.Item>
@@ -1248,16 +1253,19 @@ function SourceDetail({
   const callbackURL = source.callback_url ?? `${window.location.origin}/idp/${source.slug}/callback`;
 
   async function copyAddress(label: "Launch" | "Callback", url: string) {
-    try {
-      await navigator.clipboard.writeText(url);
+    const copied = await copyOrSelect(url, () => {
+      modal.info({
+        title: `请手动复制 ${label} 地址`,
+        content: <Input readOnly autoFocus value={url} onFocus={event => event.target.select()} />
+      });
+    });
+    if (copied) {
       modal.success({
         title: `${label} 地址已复制`,
         content: label === "Launch"
           ? `请粘贴到${providerLabel}应用的入口地址/主页配置位置。`
           : `请粘贴到${providerLabel}应用的登录回调地址配置位置。`
       });
-    } catch {
-      message.error("复制失败");
     }
   }
 
