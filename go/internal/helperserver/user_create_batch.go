@@ -34,7 +34,7 @@ func userCreateLockPaths(dir string, users []newDSMUser) []string {
 	for i, u := range users {
 		paths[i] = lockPath(dir, u.name)
 	}
-	// Several Unicode usernames may normalize to the same lock pathname.
+	// Case variants share an account lock. Acquire each distinct lock in order.
 	slices.Sort(paths)
 	return slices.Compact(paths)
 }

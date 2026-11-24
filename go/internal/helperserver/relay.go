@@ -873,13 +873,7 @@ func dsmHTTPClient(cfg config.HelperConfig) http.Client {
 }
 
 func lockPath(dir, username string) string {
-	safe := strings.Map(func(r rune) rune {
-		if r == '_' || r == '-' || r == '.' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			return r
-		}
-		return '_'
-	}, strings.ToLower(username))
-	return filepath.Join(dir, "user-"+safe+".lock")
+	return filepath.Join(dir, "user-"+lineHash(strings.ToLower(username))+".lock")
 }
 
 func saveJournal(cfg config.HelperConfig, j journal) error {

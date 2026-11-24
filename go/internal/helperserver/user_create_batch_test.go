@@ -97,9 +97,9 @@ esac
 
 func TestCreateLocksForCollidingNames(t *testing.T) {
 	dir := t.TempDir()
-	users := []newDSMUser{{name: "王"}, {name: "ordinary"}, {name: "李"}, {name: "ordinary"}}
+	users := []newDSMUser{{name: "王"}, {name: "ordinary"}, {name: "李"}, {name: "ORDINARY"}}
 	paths := userCreateLockPaths(dir, users)
-	if !slices.IsSorted(paths) || len(paths) != 2 {
+	if !slices.IsSorted(paths) || len(paths) != 3 || lockPath(dir, "王") == lockPath(dir, "李") {
 		t.Fatalf("lock paths %v", paths)
 	}
 	if err := withUserCreateLocks(paths, func() error { return nil }); err != nil {
