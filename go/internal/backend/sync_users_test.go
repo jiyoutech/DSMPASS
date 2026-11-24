@@ -170,3 +170,32 @@ func TestDirectoryPlanBeforeWritesAndMixedBatch(t *testing.T) {
 		}
 	}
 }
+
+func TestPartialUserFailureDoesNotBlockOtherDepartments(t *testing.T) {
+	ctx := context.Background()
+	database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	s := NewWithDB(config.BackendConfig{AdminJWTSecret: "test-key"}, &syncUserBatchFixture{mode: "partial"}, database, q)
+	if _, err := database.Exec("INSERT INTO identity_sources(slug,provider_type,display_name) VALUES('source','feishu','Directory')"); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"test0001", "test0002"} {
+		seedSyncedAccount(t, ctx, database, "source", name, "external-"+name, name, name, "2999-01-01")
+		g := fmt.Sprintf("group%d", i)
+		seedGroupMember(t, ctx, database, "source", "provider-"+g, g, "member-"+name, g, g, name, 1, "pending")
+	}
+	ops, err := s.syncSourceToDSM(ctx, "partial", "source", "2000-01-01", sourceSyncPolicy{})
+	if err == nil {
+		t.Fatal("failed user not reported")
+	}
+	for _, op := range ops {
+		if op.Action == "sync_dsm_group_member" && op.DSMUsername == "test0001" {
+			t.Fatal("unconfirmed member marked synced")
+		}
+	}
+	assertLocalMemberStatus(t, ctx, database, "member-test0001", 1, "pending")
+	assertLocalMemberStatus(t, ctx, database, "member-test0002", 1, "created")
+}

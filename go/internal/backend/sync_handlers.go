@@ -441,6 +441,7 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		progress.setTotal(ctx, "同步 DSM 用户", "正在同步 DSM 用户", len(pendingAccounts))
 	}
 	var accountErrors []error
+	failedUsers := make(map[string]bool)
 	var createdUserCount int
 	var createdPasswords syncCreatedPasswords
 	managedMembers := make(map[string]bool)
@@ -498,6 +499,7 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 					progress.step(ctx, "同步 DSM 用户", item.username)
 				}
 				if result.Err != nil {
+					failedUsers[item.username] = true
 					accountErrors = append(accountErrors, result.Err)
 					s.writeSyncOperation(logBuffer, runID, sourceSlug, "user", item.id, item.username, "create_or_update", "failed", item.status, "failed", result.Err.Error())
 					continue
@@ -557,6 +559,11 @@ func (s *Server) provisionSourceToDSM(ctx context.Context, runID, sourceSlug str
 		if err := memberRows.Scan(&item.id, &item.groupname, &item.username, &item.status); err != nil {
 			memberRows.Close()
 			return operations, errors.Join(append(accountErrors, err)...)
+		}
+		if failedUsers[item.username] {
+			// The user failure is already recorded for this run. Leave this
+			// membership for reconciliation and continue with confirmed users.
+			continue
 		}
 		pendingMembers = append(pendingMembers, item)
 	}
