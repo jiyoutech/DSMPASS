@@ -722,7 +722,7 @@ EOF
 [ "\${SYNOPKG_PKG_STATUS:-}" = "UNINSTALL" ] || exit 0
 PACKAGE_NAME="$PACKAGE_NAME"
 PKGVAR=\${SYNOPKG_PKGVAR:-"/var/packages/\$PACKAGE_NAME/var"}
-APPDATA_DIR="/volume1/@appdata/\$PACKAGE_NAME"
+VOLUME=\${SYNOPKG_PKGDEST_VOL:-}
 
 delete_data_selected=false
 for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"; do
@@ -734,7 +734,29 @@ for value in "\${delete_data:-}" "\${DSMPASS_DELETE_DATA:-}" "\${remove_data:-}"
 done
 
 if [ "\$delete_data_selected" = "true" ]; then
-  rm -rf "\$PKGVAR" "\$APPDATA_DIR"
+  if [ -d "\$PKGVAR" ]; then
+    physical=\$(CDPATH= cd -P "\$PKGVAR" && pwd -P) || exit 1
+    actual_volume=\${physical%/@appdata/"\$PACKAGE_NAME"}
+    [ "\$physical" = "\$actual_volume/@appdata/\$PACKAGE_NAME" ] && [ "\${VOLUME:-\$actual_volume}" = "\$actual_volume" ] || {
+      echo "Cannot verify package data directory for \$PACKAGE_NAME." >&2
+      exit 1
+    }
+    VOLUME=\$actual_volume
+  fi
+  case "\$VOLUME" in
+    /volume*) number=\${VOLUME#/volume} ;;
+    *) echo "Cannot identify package installation volume." >&2; exit 1 ;;
+  esac
+  case "\$number" in ''|*[!0-9]*) echo "Invalid package installation volume." >&2; exit 1 ;; esac
+  target="\$VOLUME/@appdata/\$PACKAGE_NAME"
+  if [ -L "\$VOLUME" ] || [ -L "\$VOLUME/@appdata" ] || [ -L "\$target" ]; then
+    echo "Refusing to purge an indirect package data path." >&2
+    exit 1
+  fi
+  rm -rf "\$target" || exit 1
+  if [ -L "\$PKGVAR" ]; then
+    rm -f "\$PKGVAR" || exit 1
+  fi
 fi
 
 exit 0

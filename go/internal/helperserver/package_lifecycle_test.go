@@ -28,18 +28,22 @@ func TestUpgradeCannotRunUninstallCleanup(t *testing.T) {
 		}
 		for _, status := range []string{"UPGRADE", "INSTALL", "", "UNINSTALL"} {
 			t.Run(hook+"/"+status, func(t *testing.T) {
-				dir := t.TempDir()
+				dir, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
 				marker := filepath.Join(dir, "called")
 				controller := filepath.Join(dir, "controller")
 				if err := os.WriteFile(controller, []byte("#!/bin/sh\nprintf '%s' \"$1\" > \"$TEST_MARKER\"\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				pkgvar := filepath.Join(dir, "data")
-				if err := os.Mkdir(pkgvar, 0700); err != nil {
+				pkgvar := filepath.Join(dir, "volume2", "@appdata", "DSMPASS")
+				if err := os.MkdirAll(pkgvar, 0700); err != nil {
 					t.Fatal(err)
 				}
 				script := strings.ReplaceAll(body, "/usr/local/libexec/dsmpass/helper-control.sh", controller)
-				script = strings.ReplaceAll(script, `/volume1/@appdata/$PACKAGE_NAME`, filepath.Join(dir, "appdata"))
+				script = strings.ReplaceAll(script, "PACKAGE_NAME=\"$PACKAGE_NAME\"", "PACKAGE_NAME=DSMPASS")
+				script = strings.ReplaceAll(script, "/volume", filepath.Join(dir, "volume"))
 				cmd := exec.Command("/bin/sh", "-c", script)
 				cmd.Env = append(os.Environ(), "SYNOPKG_PKG_STATUS="+status, "SYNOPKG_PKGVAR="+pkgvar, "DSMPASS_DELETE_DATA=1", "TEST_MARKER="+marker)
 				output, err := cmd.CombinedOutput()
