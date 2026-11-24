@@ -434,6 +434,10 @@ func (w WeCom) visibleUserIDs(token string) ([]map[string]any, error) {
 		out, err := readDirectoryPage(func() (map[string]any, error) {
 			var data map[string]any
 			err := w.postJSON(endpoint, body, &data)
+			if _, present := data["dept_user"]; err == nil && !present && data["errcode"] == float64(0) && data["next_cursor"] == "" {
+				// A partial success must never become a complete offboarding snapshot.
+				return nil, &temporaryDirectoryError{errors.New("企业微信末页缺少成员列表，无法确认通讯录完整")}
+			}
 			return data, err
 		})
 		if err != nil {
