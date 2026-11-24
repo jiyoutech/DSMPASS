@@ -324,6 +324,11 @@ func (f Feishu) departmentUsers(token, departmentID string) ([]map[string]any, e
 		if err != nil {
 			return nil, err
 		}
+		for _, item := range items {
+			if subject, _ := feishuUserSubject(item); strings.TrimSpace(subject) == "" {
+				return nil, errors.New("飞书部门用户缺少身份标识，无法确认通讯录完整")
+			}
+		}
 		result = append(result, items...)
 		hasMore, err := directoryPageHasMore(data, "page_token")
 		if err != nil {
@@ -365,6 +370,11 @@ func (f Feishu) departmentChildren(token, departmentID string) ([]map[string]any
 		items, err := directoryPageItems(data, "items")
 		if err != nil {
 			return nil, err
+		}
+		for _, item := range items {
+			if strings.TrimSpace(firstString(item, "open_department_id", "department_id")) == "" {
+				return nil, errors.New("飞书部门缺少身份标识，无法确认通讯录完整")
+			}
 		}
 		result = append(result, items...)
 		hasMore, err := directoryPageHasMore(data, "page_token")

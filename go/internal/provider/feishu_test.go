@@ -492,3 +492,25 @@ func TestIncompleteDirectoryPage(t *testing.T) {
 		}
 	}
 }
+
+func TestFeishuRejectsMissingDirectoryIDsIncludingLaterPages(t *testing.T) {
+	for _, kind := range []string{"user", "department"} {
+		t.Run(kind, func(t *testing.T) {
+			f := NewFeishu(config.BackendConfig{FeishuContactBaseURL: "https://feishu.test"})
+			f.client = http.Client{Transport: fakeTransport(func(r *http.Request) (any, int) {
+				data := map[string]any{"items": []any{map[string]any{"open_id": "u1", "open_department_id": "d1"}}, "has_more": true, "page_token": "next"}
+				if r.URL.Query().Get("page_token") != "" {
+					data = map[string]any{"items": []any{map[string]any{"name": "missing id"}}, "has_more": false}
+				}
+				return map[string]any{"data": data}, http.StatusOK
+			})}
+			read := f.departmentUsers
+			if kind == "department" {
+				read = f.departmentChildren
+			}
+			if items, err := read("token", "department"); err == nil || items != nil {
+				t.Fatalf("partial %s list escaped: %v %v", kind, items, err)
+			}
+		})
+	}
+}
