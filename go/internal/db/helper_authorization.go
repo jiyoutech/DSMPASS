@@ -11,6 +11,7 @@ const MaxProvisionUsers = 200
 
 // These constraints are populated from the Helper's local UID/GID policy.
 type HelperMemberScope struct {
+	UID        int                  `json:"uid,omitempty"`
 	Username   string               `json:"username"`
 	DingTalk   *DingTalkUserBinding `json:"dingtalk,omitempty"`
 	OtherGroup bool                 `json:"other_group,omitempty"`
@@ -51,6 +52,15 @@ const provisionIdentityScope = `
  JOIN identity_sources src ON src.slug=e.provider_slug
  WHERE i.status='active' AND e.active=1 AND src.enabled=1 AND src.directory_sync_enabled=1`
 
+// uidExpr is a fixed SQL expression supplied by the query, never caller input.
+func selectedDingTalkMember(uidExpr string) string {
+	return `(src.provider_type='dingtalk' AND a.managed=0 AND EXISTS (
+ SELECT 1 FROM directory_owner_choices c WHERE c.account_id=a.id AND c.external_id=e.id
+ AND c.source_slug=src.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid BETWEEN 1024 AND 65535 AND c.uid=` + uidExpr + `)
+ AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user'
+ AND x.active=1 AND x.id<>um.id AND (x.dsm_account_id=a.id OR x.external_account_id=e.id)))`
+}
+
 func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthorizationQuery) (bool, error) {
 	if request.Action == "directory_account_match" {
 		if request.LocalUID < 1024 || request.LocalUID >= 65536 || request.Username == "" || q == nil {
@@ -65,7 +75,7 @@ func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthori
  LEFT JOIN directory_owner_choices c ON c.account_id=a.id
  WHERE a.dsm_username=? AND a.provision_status IN ('pending','failed','created','linked_existing') AND COALESCE(a.conflict_reason,'')=''
  AND NOT EXISTS (SELECT 1 FROM dsm_mapping_entries x WHERE x.mapping_type='user' AND x.active=1 AND x.dsm_account_id=a.id AND x.id<>m.id)
- AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid=? AND a.managed=0)
+ AND ((c.external_id=e.id AND c.source_slug=s.slug AND c.subject=e.subject AND c.username=a.dsm_username AND c.uid BETWEEN 1024 AND 65535 AND c.uid=? AND a.managed=0)
  OR (c.account_id IS NULL AND s.provider_type IN ('feishu','wecom') AND a.managed=1 AND trim(e.display_name)=a.dsm_username COLLATE dsmpass_name AND e.subject<>''
  AND NOT EXISTS (SELECT 1 FROM external_accounts other WHERE other.provider_slug=s.slug AND other.active=1 AND trim(other.display_name)=trim(e.display_name) COLLATE dsmpass_name AND other.id<>e.id))))`, request.Username, request.LocalUID).Scan(&ok)
 		return ok, err
@@ -102,7 +112,7 @@ func HelperAccountAllowed(ctx context.Context, q *Queries, request HelperAuthori
 		var allowed bool
 		err = q.DBTX().QueryRowContext(ctx, `
 WITH wanted AS (
- SELECT json_extract(value,'$.username') AS username, json_extract(value,'$.dingtalk.source_slug') AS slug,
+ SELECT json_extract(value,'$.username') AS username, json_extract(value,'$.uid') AS uid, json_extract(value,'$.dingtalk.source_slug') AS slug,
         json_extract(value,'$.dingtalk.subject') AS subject, json_extract(value,'$.other_group') AS other_group
  FROM json_each(?)
 )
@@ -110,7 +120,7 @@ SELECT NOT EXISTS (
  SELECT 1 FROM wanted w WHERE NOT EXISTS (
    SELECT 1 `+directoryMembershipScope+` AND a.dsm_username=w.username AND g.dsm_groupname=?
    AND ((src.provider_type <> 'dingtalk' AND w.other_group=1)
-     OR ((`+uniqueDingTalkName+`) AND (w.slug IS NULL OR (src.slug=w.slug AND e.subject=w.subject))))
+     OR ((`+uniqueDingTalkName+` OR `+selectedDingTalkMember("w.uid")+`) AND (w.slug IS NULL OR (src.slug=w.slug AND e.subject=w.subject))))
  )
 )`, string(members), request.Groupname).Scan(&allowed)
 		return allowed, err
@@ -187,13 +197,13 @@ AND ((? AND m.active=1 AND e.active=1 AND i.status='active' AND a.manual_login_b
 	if q != nil && request.Action == "dingtalk_member" {
 		var allowed bool
 		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+`
-		 AND `+uniqueDingTalkName+` AND a.dsm_username=? AND g.dsm_groupname=? AND src.slug=? AND e.subject=?)`,
-			request.Username, request.Groupname, request.SourceSlug, request.Subject).Scan(&allowed)
+		 AND (`+uniqueDingTalkName+` OR `+selectedDingTalkMember("?")+`) AND a.dsm_username=? AND g.dsm_groupname=? AND src.slug=? AND e.subject=?)`,
+			request.LocalUID, request.Username, request.Groupname, request.SourceSlug, request.Subject).Scan(&allowed)
 		return allowed, err
 	}
 	if q != nil && (request.Action == "directory_member" || request.Action == "other_directory_member") && request.Username != "" && request.Groupname != "" {
 		var mapped bool
-		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+` AND a.dsm_username = ? AND g.dsm_groupname = ? AND (src.provider_type<>'dingtalk' OR (? AND `+uniqueDingTalkName+`)))`, request.Username, request.Groupname, request.Action == "directory_member").Scan(&mapped)
+		err := q.DBTX().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 `+directoryMembershipScope+` AND a.dsm_username = ? AND g.dsm_groupname = ? AND (src.provider_type<>'dingtalk' OR (? AND `+uniqueDingTalkName+`) OR `+selectedDingTalkMember("?")+`))`, request.Username, request.Groupname, request.Action == "directory_member", request.LocalUID).Scan(&mapped)
 		return mapped, err
 	}
 	if q != nil && request.Action == "directory_group" && request.Groupname != "" {

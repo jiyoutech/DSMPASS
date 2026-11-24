@@ -155,7 +155,7 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 		if err := requireManagedGroup(cfg, groupname); err != nil {
 			return err
 		}
-		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_member", Username: username, Groupname: groupname, SourceSlug: grant.DingTalk.SourceSlug, Subject: grant.DingTalk.Subject})
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "dingtalk_member", LocalUID: grant.UID, Username: username, Groupname: groupname, SourceSlug: grant.DingTalk.SourceSlug, Subject: grant.DingTalk.Subject})
 		if err != nil {
 			return err
 		}
@@ -188,7 +188,7 @@ func (s *Server) requireMemberEnrollment(cfg config.HelperConfig, action, userna
 		return fmt.Errorf("DSM 用户 %q 的通讯录同步授权未包含当前群组 %q", username, groupname)
 	}
 	if action == "scoped_add_group_member" || action == "scoped_remove_group_member" {
-		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_member", Username: username, Groupname: groupname})
+		mapped, err := s.mappingAllowed(cfg, db.HelperAuthorizationQuery{Action: "directory_member", LocalUID: grant.UID, Username: username, Groupname: groupname})
 		if err != nil {
 			return err
 		}
@@ -222,7 +222,7 @@ func (s *Server) pinMatchedMembership(cfg config.HelperConfig, p *accountPolicy,
 	}
 	for _, query := range []db.HelperAuthorizationQuery{
 		{Action: "directory_account_match", Username: name, LocalUID: user.id},
-		{Action: "other_directory_member", Username: name, Groupname: group.name},
+		{Action: "other_directory_member", LocalUID: user.id, Username: name, Groupname: group.name},
 	} {
 		allowed, err := s.mappingAllowed(cfg, query)
 		if err != nil {
