@@ -102,6 +102,8 @@ func TestRetainedReinstallHooks(t *testing.T) {
 		{"missing-database", "INSTALL", true, false, true, false, false, true},
 		{"missing-settings", "INSTALL", true, true, false, false, false, true},
 		{"restore-refused", "INSTALL", true, true, true, true, true, true},
+		{"changed-uid", "INSTALL", true, true, true, true, true, false},
+		{"unsigned", "INSTALL", true, true, true, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -119,7 +121,7 @@ func TestRetainedReinstallHooks(t *testing.T) {
 			if tc.retained {
 				writeFile(t, filepath.Join(dir, "retained"), "retained\n")
 			}
-			writeFile(t, filepath.Join(dir, "controller"), "#!/bin/sh\necho \"$1\" >> \"$SYNOPKG_PKGVAR/calls\"\n[ \"$1\" != upgrade ] || [ \"$FAIL_UPGRADE\" != yes ]\n")
+			writeFile(t, filepath.Join(dir, "controller"), "#!/bin/sh\necho \"$1\" >> \"$SYNOPKG_PKGVAR/calls\"\nif [ \"$1\" = upgrade ] && [ -n \"$UPGRADE_ERROR\" ]; then echo \"$UPGRADE_ERROR\" >&2; exit 1; fi\n")
 			// The real hook schedules an INFO refresh after installation. Keep that
 			// separate package-manager operation outside this test.
 			writeFile(t, filepath.Join(dir, "nohup"), "#!/bin/sh\nexit 0\n")
@@ -134,7 +136,14 @@ func TestRetainedReinstallHooks(t *testing.T) {
 				cmd := exec.Command("/bin/sh", "-ec", body)
 				cmd.Env = []string{"PATH=" + dir + ":" + os.Getenv("PATH"), "SYNOPKG_PKGVAR=" + dir, "SYNOPKG_PKGDEST=" + dir, "DEFAULT_MANAGEMENT_PORT=25000", "DEFAULT_IDP_PORT=24000", "PACKAGE_NAME=DSMPASS", "SYNOPKG_PKG_STATUS=" + tc.status}
 				if tc.failUpgrade {
-					cmd.Env = append(cmd.Env, "FAIL_UPGRADE=yes")
+					detail := "Helper release signature is invalid"
+					switch tc.name {
+					case "changed-uid":
+						detail = "reinstalled package UID/GID changed; run setup-helper-sudo.sh as root"
+					case "unsigned":
+						detail = "signed Helper manifest unavailable: no such file or directory"
+					}
+					cmd.Env = append(cmd.Env, "UPGRADE_ERROR="+detail)
 				}
 				cmd.Env = append(cmd.Env, extra...)
 				out, err := cmd.CombinedOutput()

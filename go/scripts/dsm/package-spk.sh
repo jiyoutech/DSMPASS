@@ -665,12 +665,26 @@ render_desktop_launcher
 sync_installed_admin_port
 sync_installed_admin_port_later
 if [ -x /usr/local/libexec/dsmpass/helper-control.sh ]; then
-  if /usr/local/libexec/dsmpass/helper-control.sh upgrade; then
+  if upgrade_detail=$(/usr/local/libexec/dsmpass/helper-control.sh upgrade 2>&1); then
     log_install_status "signed_helper_upgrade_success"
   elif [ -f /usr/local/libexec/dsmpass/retained ]; then
-    log_install_status "retained_helper_restore_failed"
-    echo "Could not reactivate the retained Helper. Check the signed package and package UID/GID." >&2
-    exit 1
+    case "$upgrade_detail" in
+      *"reinstalled package UID/GID changed;"*)
+        log_install_status "retained_helper_requires_admin: package identity changed"
+        ;;
+      *"signed Helper manifest unavailable:"*"no such file or directory"*)
+        if [ -e "$PKGDEST/helper-release.json" ] || [ -e "$PKGDEST/helper-release.sig" ]; then
+          echo "Incomplete signed Helper payload; reinstall a verified SPK." >&2
+          exit 1
+        fi
+        log_install_status "retained_helper_requires_admin: unsigned package"
+        ;;
+      *)
+        log_install_status "retained_helper_restore_failed"
+        echo "Could not verify or reactivate the retained Helper. Reinstall a verified SPK." >&2
+        exit 1
+        ;;
+    esac
   else
     log_install_status "signed_helper_upgrade_failed: first migration or unsigned builds require root setup-helper-sudo.sh; check Helper status in management page"
   fi
