@@ -18,6 +18,7 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/signing"
 )
 
+var ErrAccountDisabled = errors.New("DSM 账号已停用，需核实后恢复")
 var ErrDirectoryMembershipOnly = errors.New("此账号仅同步部门成员，保留原密码")
 var ErrDingTalkMembershipOnly = ErrDirectoryMembershipOnly
 
@@ -473,6 +474,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 			}
 			if action == "scoped_reset_synced_user_passwords" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
 				return nil, ErrPasswordBatchUnsupported
+			}
+			if action == "scoped_provision_user" && code == "DSM_ACCOUNT_DISABLED" {
+				return nil, ErrAccountDisabled
 			}
 			if action == "scoped_reset_synced_user_password" && (code == "DINGTALK_MEMBERSHIP_ONLY" || code == "DIRECTORY_MEMBERSHIP_ONLY") {
 				return nil, ErrDingTalkMembershipOnly

@@ -9,6 +9,8 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/db"
 )
 
+var errAccountDisabled = errors.New("DSM 账号已停用，需核实后恢复")
+
 // An unambiguous directory account can be linked read-only. No password, local
 // group or credential owner is granted by the package's choice record.
 // The caller holds the account and policy write locks.
@@ -69,6 +71,9 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 			if err := target.resume(); err != nil {
 				return err
 			}
+			if info.Expired {
+				return errAccountDisabled
+			}
 			grant, err := userEnrollment(cfg, username)
 			if (grant != nil || errors.Is(err, errUserNotEnrolled)) && !info.Expired {
 				linked, linkErr := s.linkExistingDirectoryUser(cfg, db.HelperAuthorizationQuery{Action: "provision", Username: username}, grant, &info)
@@ -92,9 +97,6 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 				return err
 			}
 			if grant != nil {
-				if info.Expired {
-					return fmt.Errorf("DSM 用户 %q 已停用", username)
-				}
 				return nil
 			}
 			if displayName == "" {
@@ -103,7 +105,7 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 			if email == "" {
 				email = info.Mail
 			}
-			if info.Expired || displayName != info.FullName || email != info.Mail {
+			if displayName != info.FullName || email != info.Mail {
 				// Keep the native profile of an existing directory-owned account on retries.
 				if cfg.AccountPolicyPath != "" {
 					p, err := readAccountPolicy(cfg)
@@ -116,12 +118,12 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 							return err
 						}
 						if binding != nil && binding.SourceSlug == owner.SourceSlug && binding.Subject == owner.Subject {
-							if info.Expired {
-								return fmt.Errorf("DSM 用户 %q 已停用", username)
-							}
 							return nil
 						}
 					}
+				}
+				if !info.ExpiryKnown {
+					return errors.New("无法确认 DSM 账号启用状态，资料更新已暂停")
 				}
 				return modifySynoUser(cfg.SynoUserPath, username, displayName, false, email)
 			}
@@ -165,6 +167,9 @@ func (s *Server) provisionAccount(ctx context.Context, cfg config.HelperConfig, 
 		initialPasswordApplied = suppliedPassword && cfg.AccountPolicyPath != "" && cfg.JournalDir != "" && checkPasswordResetPending(cfg, username) == nil
 		return nil
 	})
+	if errors.Is(err, errAccountDisabled) {
+		return errorResponse("DSM_ACCOUNT_DISABLED", err.Error())
+	}
 	if err != nil {
 		return errorResponse("SYNOUSER_FAILED", err.Error())
 	}

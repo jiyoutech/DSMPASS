@@ -48,6 +48,12 @@ func (s *Server) saveSyncUserBatch(ctx context.Context, batch []pendingAccountPr
 	return s.withSyncTransaction(ctx, func(tx db.DBTX) error {
 		for i, item := range batch {
 			result := results[i]
+			if errors.Is(result.Err, helperclient.ErrAccountDisabled) {
+				if err := saveObjectState(ctx, tx, item.username, `UPDATE dsm_accounts SET provision_status='disabled',allow_login=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND dsm_username=?`, item.id, item.username); err != nil {
+					return err
+				}
+				continue
+			}
 			if result.Err != nil {
 				if err := saveObjectState(ctx, tx, item.username, `UPDATE dsm_accounts SET provision_status='failed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND dsm_username=?`, item.id, item.username); err != nil {
 					return errors.Join(result.Err, err)
