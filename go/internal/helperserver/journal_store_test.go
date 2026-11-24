@@ -237,3 +237,26 @@ func TestJournalBodyWriteFailureLeavesNoNewIndex(t *testing.T) {
 		t.Fatalf("dangling account index: %v", err)
 	}
 }
+
+func TestOnlineIndexWriteFailureRetiresUnusedCredential(t *testing.T) {
+	cfg, _ := shadowOnlyTestConfig(t)
+	if err := ensureJournalStore(cfg); err != nil {
+		t.Fatal(err)
+	}
+	// A malformed index cannot be amended. The prepared body still needs a
+	// terminal receipt, since its password was never installed.
+	if err := os.WriteFile(journalIndexPath(cfg, "bob"), []byte("damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	j := journal{RequestID: "unused", DSMUsername: "bob", Status: journalStatusPendingBrowser}
+	if err := savePreparedJournal(cfg, j); err == nil {
+		t.Fatal("expected index failure")
+	}
+	record, err := loadJournal(cfg, j.RequestID)
+	if err != nil || record.Status != journalStatusSuperseded {
+		t.Fatal(record.Status, err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.JournalDir, "unused.json")); !os.IsNotExist(err) {
+		t.Fatal("unused credential remained active", err)
+	}
+}
