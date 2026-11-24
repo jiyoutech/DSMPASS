@@ -16,7 +16,7 @@ func (s *Server) adminAccessControl() gin.HandlerFunc {
 
 func (s *Server) idpAccessControl() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !isIntranetIP(requestRemoteIP(c.Request)) {
+		if !s.idpAllowPublic.Load() && !isIntranetIP(requestRemoteIP(c.Request)) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "idp access is only allowed from intranet"})
 			return
 		}

@@ -712,7 +712,7 @@ func TestAdminCIDRUpdateMustKeepCurrentClientAllowed(t *testing.T) {
 	}
 }
 
-func TestSettingsReportsFixedIDPIntranetPolicy(t *testing.T) {
+func TestSettingsIgnoresLegacyIDPAccessPolicy(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.BackendConfig{
 		IDPAllowedCIDRs:   "all",
@@ -729,7 +729,7 @@ func TestSettingsReportsFixedIDPIntranetPolicy(t *testing.T) {
 	if err := server.saveSetting(ctx, "idp_allowed_cidrs", "all"); err != nil {
 		t.Fatal(err)
 	}
-	router := server.Router()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("GET", "/api/admin/settings", nil)
@@ -738,8 +738,8 @@ func TestSettingsReportsFixedIDPIntranetPolicy(t *testing.T) {
 		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"idp_allowed_cidrs":"private"`) {
-		t.Fatalf("settings response should report fixed idp intranet policy: %s", body)
+	if !strings.Contains(body, `"idp_allowed_cidrs":"private"`) || !strings.Contains(body, `"idp_intranet_only":true`) {
+		t.Fatalf("settings response should report default idp intranet policy: %s", body)
 	}
 	if strings.Contains(body, `"idp_allowed_cidrs":"all"`) {
 		t.Fatalf("settings response used deprecated idp cidr value: %s", body)
@@ -768,7 +768,7 @@ func TestSettingsDoesNotPersistIDPAllowedCIDRsUpdate(t *testing.T) {
 		t.Fatalf("unexpected status %d body=%s", response.Code, response.Body.String())
 	}
 	if !strings.Contains(response.Body.String(), `"idp_allowed_cidrs":"private"`) {
-		t.Fatalf("settings response should report fixed idp intranet policy: %s", response.Body.String())
+		t.Fatalf("settings response should report default idp intranet policy: %s", response.Body.String())
 	}
 	rows, err := queries.ListRuntimeSettings(ctx)
 	if err != nil {
@@ -779,6 +779,71 @@ func TestSettingsDoesNotPersistIDPAllowedCIDRsUpdate(t *testing.T) {
 			t.Fatalf("deprecated idp cidr setting should not be persisted")
 		}
 	}
+}
+
+func TestIDPIntranetToggle(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.BackendConfig{
+		PublicBaseURL:     "https://nas.example.com:26000",
+		AdminAllowedCIDRs: "private",
+		IDPAllowedCIDRs:   "all", // Legacy package default.
+	}
+	database, queries, err := OpenDatabase(ctx, "sqlite://:memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	router := NewWithDB(cfg, testHelper{}, database, queries).Router()
+	const host = "nas.example.com:26000"
+	const lan = "192.168.1.10:12345"
+	const wan = "203.0.113.10:12345"
+	const launch = "/idp/missing/launch"
+
+	request := func(method, path, payload, remote, entryHost string, want int) string {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(payload))
+		req.Host, req.RemoteAddr = entryHost, remote
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != want {
+			t.Fatalf("%s %s from %s: got %d, want %d: %s", method, path, remote, res.Code, want, res.Body.String())
+		}
+		return res.Body.String()
+	}
+	settings := func(payload string, status int) string {
+		t.Helper()
+		return request("PUT", "/api/admin/settings", payload, lan, host, status)
+	}
+
+	request("GET", launch, "", wan, host, http.StatusForbidden)
+	// A missing provider returns 404 once the access middleware admits the request.
+	for _, remote := range []string{lan, "127.0.0.2:12345", "[::1]:12345", "[fd00::1]:12345", "169.254.8.9:12345", "[fe80::1]:12345"} {
+		request("GET", launch, "", remote, host, http.StatusNotFound)
+	}
+	for _, value := range []string{`"false"`, `""`, "null", "0"} {
+		settings(`{"idp_intranet_only":`+value+`}`, http.StatusBadRequest)
+	}
+	settings("{}", http.StatusOK)
+	request("GET", launch, "", wan, host, http.StatusForbidden)
+
+	for i := 0; i < 2; i++ {
+		body := settings(`{"idp_intranet_only":false}`, http.StatusOK)
+		if !strings.Contains(body, `"idp_intranet_only":false`) || !strings.Contains(body, `"idp_allowed_cidrs":"all"`) || strings.Contains(body, "idp_route_restart_required") {
+			t.Fatalf("unexpected public access settings: %s", body)
+		}
+	}
+	request("GET", launch, "", wan, host, http.StatusNotFound)
+	request("GET", "/idp/missing/callback", "", "[2001:db8::1]:12345", host, http.StatusNotFound)
+	request("GET", launch, "", wan, "wrong.example.com", http.StatusForbidden)
+	request("GET", "/api/admin/settings", "", wan, host, http.StatusForbidden)
+
+	router = NewWithDB(cfg, testHelper{}, database, queries).Router()
+	request("GET", launch, "", wan, host, http.StatusNotFound)
+	settings(`{"idp_intranet_only":true}`, http.StatusOK)
+	request("GET", launch, "", wan, host, http.StatusForbidden)
+	request("GET", launch, "", lan, host, http.StatusNotFound)
+	router = NewWithDB(cfg, testHelper{}, database, queries).Router()
+	request("GET", launch, "", wan, host, http.StatusForbidden)
 }
 
 func TestSettingsSecretsAreWriteOnlyAndRuntimeApplied(t *testing.T) {
@@ -1727,7 +1792,7 @@ func TestSettingsOverviewSeparatesRuntimeFactsAndConfigurationEffects(t *testing
 		`"effect":"决定登录链接和 OAuth redirect_uri/callback_url，是企业微信、飞书、钉钉等平台需要配置的外部地址。"`,
 		`"key":"idp_access_boundary"`,
 		`"label":"认证入口访问边界"`,
-		`"value":"仅本机和内网来源"`,
+		`"value":"仅本机和内网"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("settings overview missing %q: %s", want, body)

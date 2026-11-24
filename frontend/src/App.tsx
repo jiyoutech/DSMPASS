@@ -608,6 +608,7 @@ function Onboarding({
         access_scheme: settings.access_scheme || "https",
         idp_port: idpPort,
         admin_allowed_cidrs: settings.admin_allowed_cidrs,
+        idp_intranet_only: settings.idp_intranet_only ?? true,
         public_base_url: deploymentMode === "direct" ? withPreferredPort(settings.public_base_url, idpPort) : settings.public_base_url,
         dsm_redirect_url: settings.dsm_redirect_url,
         helper_dsm_login_api: settings.helper_dsm_login_api,
@@ -659,6 +660,7 @@ function Onboarding({
             access_scheme: "https",
             idp_port: defaultIDPPort,
             admin_allowed_cidrs: "all",
+            idp_intranet_only: true,
             helper_dsm_login_mode: "browser",
             helper_dsm_browser_login_ttl_seconds: 30,
             helper_dsm_tls_skip_verify: true

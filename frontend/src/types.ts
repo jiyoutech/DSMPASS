@@ -285,6 +285,7 @@ export interface SystemSettings {
   idp_port: number;
   admin_allowed_cidrs: string;
   idp_allowed_cidrs: string;
+  idp_intranet_only: boolean;
   public_base_url: string;
   dsm_redirect_url: string;
   dsm_cookie_name: string;

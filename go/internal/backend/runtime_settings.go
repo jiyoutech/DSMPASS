@@ -10,8 +10,6 @@ import (
 	"github.com/dsmpass/dsmpass/go/internal/settings"
 )
 
-const fixedIDPAllowedCIDRs = "private"
-
 func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 	rows, err := s.store.ListRuntimeSettings(ctx)
 	if err != nil {
@@ -58,6 +56,11 @@ func (s *Server) LoadRuntimeSettings(ctx context.Context) error {
 }
 
 func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) {
+	idpIntranetOnly := !s.idpAllowPublic.Load()
+	idpAllowedCIDRs := "private"
+	if !idpIntranetOnly {
+		idpAllowedCIDRs = "all"
+	}
 	settings := map[string]any{
 		"deployment_mode":                      normalizeDeploymentMode(s.cfg.DeploymentMode),
 		"access_host":                          s.cfg.AccessHost,
@@ -65,7 +68,8 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 		"admin_port":                           firstPositiveInt(parsePortInt(listenAddressPort(s.cfg.Listen)), 25000),
 		"idp_port":                             firstPositiveInt(parsePortInt(listenAddressPort(s.IDPListenAddress())), defaultIDPPortForAdmin(parsePortInt(listenAddressPort(s.cfg.Listen)))),
 		"admin_allowed_cidrs":                  s.cfg.AdminAllowedCIDRs,
-		"idp_allowed_cidrs":                    fixedIDPAllowedCIDRs,
+		"idp_allowed_cidrs":                    idpAllowedCIDRs,
+		"idp_intranet_only":                    idpIntranetOnly,
 		"public_base_url":                      s.cfg.PublicBaseURL,
 		"dsm_redirect_url":                     s.cfg.DSMRedirectURL,
 		"dsm_cookie_name":                      s.cfg.DSMCookieName,
@@ -99,7 +103,7 @@ func (s *Server) effectiveSettings(ctx context.Context) (map[string]any, error) 
 			}
 			continue
 		}
-		if row.Key == "idp_allowed_cidrs" {
+		if row.Key == "idp_allowed_cidrs" || row.Key == "idp_intranet_only" {
 			continue
 		}
 		if row.Key == "relay_helper_hmac_secret" {
@@ -165,6 +169,9 @@ func (s *Server) applyRuntimeSetting(key string, value any) {
 		}
 	case "admin_allowed_cidrs":
 		s.cfg.AdminAllowedCIDRs = asString()
+	case "idp_intranet_only":
+		intranetOnly, ok := value.(bool)
+		s.idpAllowPublic.Store(ok && !intranetOnly)
 	case "dsm_redirect_url":
 		s.cfg.DSMRedirectURL = normalizeDSMBaseURL(asString())
 	case "helper_dsm_login_api":

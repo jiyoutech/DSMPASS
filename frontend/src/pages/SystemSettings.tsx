@@ -369,12 +369,21 @@ export function SystemSettingsFields({ section = "all" }: { section?: "all" | "a
         <div className="settings-section-head">
           <div>
             <h3>访问安全</h3>
-            <p>管理后台访问范围可在此配置；认证入口固定只接受 DSMPASS 实际看到的本机和内网来源。</p>
+            <p>分别设置管理后台和认证入口的访问范围。</p>
           </div>
         </div>
         <Form.Item extra={fieldEffectHelp.adminAllowedCIDRs}>
           <AdminAccessSwitch />
         </Form.Item>
+        <div className="settings-admin-access">
+          <div>
+            <strong>认证端仅允许内网访问</strong>
+            <p>默认仅允许本机、内网和链路本地地址。关闭并保存后，公网来源也可访问登录和回调入口。</p>
+          </div>
+          <Form.Item name="idp_intranet_only" valuePropName="checked" noStyle>
+            <Switch aria-label="认证端仅允许内网访问" checkedChildren="内网" unCheckedChildren="不限" />
+          </Form.Item>
+        </div>
       </section>}
     </Space>
   );
@@ -405,6 +414,7 @@ export function SystemSettings() {
         access_scheme: data.access_scheme || "https",
         idp_port: data.idp_port || defaultIDPPort,
         admin_allowed_cidrs: data.admin_allowed_cidrs,
+        idp_intranet_only: data.idp_intranet_only ?? true,
         public_base_url: data.public_base_url,
         dsm_redirect_url: data.dsm_redirect_url,
         helper_dsm_login_api: data.helper_dsm_login_api,

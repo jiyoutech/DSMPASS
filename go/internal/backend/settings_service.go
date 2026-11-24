@@ -12,6 +12,8 @@ import (
 )
 
 func (s *Server) updateSettings(ctx context.Context, update map[string]any, _ string, clientIP net.IP) error {
+	s.settingsUpdateMu.Lock()
+	defer s.settingsUpdateMu.Unlock()
 	plan, err := s.planSettingsUpdate(update, clientIP)
 	if err != nil {
 		return err
@@ -118,6 +120,11 @@ func (s *Server) planSettingsUpdate(update map[string]any, clientIP net.IP) (*se
 				return nil, err
 			}
 			value = port
+		}
+		if key == "idp_intranet_only" {
+			if _, ok := value.(bool); !ok {
+				return nil, badRequest("idp_intranet_only must be a boolean")
+			}
 		}
 		if key == "admin_allowed_cidrs" {
 			value = strings.TrimSpace(asRuntimeString(value))
