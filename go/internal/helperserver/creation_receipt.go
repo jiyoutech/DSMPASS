@@ -2,10 +2,13 @@ package helperserver
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dsmpass/dsmpass/go/internal/db"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/dsmpass/dsmpass/go/internal/config"
 	"github.com/dsmpass/dsmpass/go/internal/securefs"
@@ -14,9 +17,10 @@ import (
 // All methods run under the existing writer lock. A receipt is independent of
 // the grants file so a failed grant write can be retried after a restart.
 type creationTarget struct {
-	cfg   config.HelperConfig
-	name  string
-	group bool
+	cfg    config.HelperConfig
+	name   string
+	group  bool
+	origin db.AccountOrigin
 }
 
 func (t creationTarget) path() string {
@@ -36,6 +40,13 @@ func (t creationTarget) account() (systemAccount, error) {
 
 func (t creationTarget) write(id int) error {
 	data := []byte(strconv.Itoa(id))
+	if t.origin.AccountID != "" {
+		var err error
+		data, err = json.Marshal(creationReceipt{UID: id, Origin: t.origin})
+		if err != nil {
+			return err
+		}
+	}
 	if t.cfg.Privileged {
 		return securefs.WriteRootFile(t.path(), data, 0600)
 	}
@@ -90,7 +101,8 @@ func (t creationTarget) resume() error {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
 		return nil
 	}
-	id, found, err := t.receiptID()
+	receipt, found, err := t.readReceipt()
+	id := receipt.UID
 	if err != nil || !found {
 		return err
 	}
@@ -116,36 +128,59 @@ func (t creationTarget) resume() error {
 		entries = p.Groups
 	}
 	entries[t.name] = id
+	if receipt.Origin.AccountID != "" {
+		if p.CreatedUsers == nil {
+			p.CreatedUsers = map[string]db.AccountOrigin{}
+		}
+		p.CreatedUsers[t.name] = receipt.Origin
+	}
 	if err := saveAccountPolicy(t.cfg, p); err != nil {
 		return fmt.Errorf("DSM 已创建 %q，保存授权失败，可重试同步: %w", t.name, err)
 	}
 	return t.clear()
 }
 
+type creationReceipt struct {
+	UID    int
+	Origin db.AccountOrigin
+}
+
 func (t creationTarget) receiptID() (int, bool, error) {
+	r, found, err := t.readReceipt()
+	return r.UID, found, err
+}
+func (t creationTarget) readReceipt() (creationReceipt, bool, error) {
+	var r creationReceipt
 	path := t.path()
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, false, nil
+		return r, false, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return r, false, err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return 0, false, errors.New("invalid creation receipt permissions")
+		return r, false, errors.New("invalid creation receipt permissions")
 	}
 	if t.cfg.Privileged {
 		if err := securefs.CheckRootPath(path); err != nil {
-			return 0, false, err
+			return r, false, err
 		}
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return 0, false, err
+		return r, false, err
 	}
-	id, err := strconv.Atoi(string(raw))
-	if err != nil || id < 0 {
-		return 0, false, fmt.Errorf("DSM 对象 %q 创建结果待核实，请管理员确认名称与系统编号后授权", t.name)
+	if strings.HasPrefix(string(raw), "{") {
+		err = json.Unmarshal(raw, &r)
+		if r.Origin.Username != t.name || r.Origin.Subject == "" || r.Origin.SourceSlug == "" || r.Origin.AccountID == "" || t.group {
+			return r, false, errors.New("invalid creation origin")
+		}
+	} else {
+		r.UID, err = strconv.Atoi(string(raw))
 	}
-	return id, true, nil
+	if err != nil || r.UID < 0 {
+		return r, false, fmt.Errorf("DSM 对象 %q 创建结果待核实，请管理员确认名称与系统编号后授权", t.name)
+	}
+	return r, true, nil
 }
