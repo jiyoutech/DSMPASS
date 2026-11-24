@@ -373,3 +373,67 @@ func TestFreshPasswordConfirmationOnlyAppliesToThisCreation(t *testing.T) {
 		}
 	}
 }
+
+type passwordBatchHelper struct {
+	syncPasswordHelper
+	sizes    []int
+	response string
+}
+
+func (h *passwordBatchHelper) ResetSyncedUserPasswords(_ context.Context, _ string, _ string, targets []helperclient.PasswordResetTarget, _ string) ([]error, error) {
+	h.sizes = append(h.sizes, len(targets))
+	switch h.response {
+	case "old":
+		return nil, helperclient.ErrPasswordBatchUnsupported
+	case "unknown":
+		return nil, errors.New("connection closed")
+	case "short":
+		return []error{}, nil
+	}
+	out := make([]error, len(targets))
+	for i, u := range targets {
+		if u.Username == "bob" {
+			out[i] = helperclient.ErrDingTalkMembershipOnly
+		}
+	}
+	return out, nil
+}
+
+func TestFullSyncUsesBoundedPasswordBatchesAndNeverReplaysUncertainWrites(t *testing.T) {
+	for _, mode := range []string{"ok", "old", "unknown", "short"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			database, q, err := OpenDatabase(ctx, "sqlite://:memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			h := &passwordBatchHelper{response: mode}
+			s := NewWithDB(config.BackendConfig{AdminJWTSecret: "fixture"}, h, database, q)
+			if _, err = database.Exec("INSERT INTO identity_sources (slug,provider_type,display_name) VALUES ('a','feishu','A')"); err != nil {
+				t.Fatal(err)
+			}
+			names := []string{"alice", "bob", "carol", "dora", "ethan", "fred", "grace", "helen", "iris", "jules"}
+			for _, n := range names {
+				seedSyncedAccount(t, ctx, database, "a", n, "ext-"+n, n, n, "2999-01-01")
+			}
+			pwd, err := s.provisionUserInitialPassword(ctx, "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations, err := s.resetFullSyncPasswords(ctx, "full", "a", nil, nil, syncCreatedPasswords{accounts: map[string]string{"account-jules": "jules"}, password: pwd})
+			wantBatches, wantSingles, wantOps := []int{4, 4}, 1, 9
+			switch mode {
+			case "old":
+				wantBatches = []int{4}
+				wantSingles = 9
+				wantOps = 10
+			case "unknown", "short":
+				wantOps = 2
+			}
+			if (err != nil) != (mode == "unknown" || mode == "short") || !slices.Equal(h.sizes, wantBatches) || len(h.resets) != wantSingles || len(operations) != wantOps {
+				t.Fatalf("mode=%s batches=%v singles=%v ops=%d err=%v", mode, h.sizes, h.resets, len(operations), err)
+			}
+		})
+	}
+}

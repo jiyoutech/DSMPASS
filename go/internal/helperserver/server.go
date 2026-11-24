@@ -153,7 +153,7 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	ctx := context.Background()
-	if payload["action"] == "scoped_provision_users" {
+	if payload["action"] == "scoped_provision_users" || payload["action"] == "scoped_reset_synced_user_passwords" {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 15*time.Minute)
 		defer cancel()
@@ -297,6 +297,8 @@ func (s *Server) handlePayloadContext(ctx context.Context, payload map[string]an
 		}
 		diaglog.Append(cfg.DataDir, requestID, "helper.complete_browser_login.success_response", cfg.LoginDiagnosticsEnabled, diaglog.Event{})
 		return map[string]any{"success": true}
+	case "scoped_reset_synced_user_passwords":
+		return s.resetSyncedPasswordBatch(ctx, cfg, payload)
 	case "scoped_reset_synced_user_password":
 		if err := s.resetSyncedUserPassword(cfg, payload); err != nil {
 			if errors.Is(err, errDingTalkMembershipOnly) {

@@ -400,6 +400,10 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 		return nil, err
 	}
 	defer conn.Close()
+	if action == "scoped_reset_synced_user_passwords" {
+		stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		defer stop()
+	}
 	// Include account/global lock waits, hashing and (for relay) DSM HTTP and
 	// recovery. Health checks and unrelated actions retain their short timeout.
 	timeout := c.Timeout
@@ -454,6 +458,9 @@ func (c UnixSocketClient) send(ctx context.Context, payload map[string]any) (map
 			}
 			if action == "scoped_add_group_members" && (code == "GROUP_BATCH_UNSUPPORTED" || (code == "BAD_REQUEST" && response["error"] == "unsupported action")) {
 				return nil, ErrGroupBatchUnsupported
+			}
+			if action == "scoped_reset_synced_user_passwords" && code == "BAD_REQUEST" && response["error"] == "unsupported action" {
+				return nil, ErrPasswordBatchUnsupported
 			}
 			if action == "scoped_reset_synced_user_password" && code == "DINGTALK_MEMBERSHIP_ONLY" {
 				return nil, ErrDingTalkMembershipOnly
