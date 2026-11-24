@@ -44,13 +44,13 @@ func dsmUserNotFound(err error) bool {
 	return errors.As(err, &exitErr) && bytes.Contains(bytes.ToLower(exitErr.Stderr), []byte("synoerr=[0x1d00]"))
 }
 
-func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig, rows []map[string]any, password string) map[string]map[string]any {
+func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig, rows []map[string]any, password string) (map[string]map[string]any, error) {
 	if len(rows) < 2 || password == "" || cfg.AccountPolicyPath == "" || cfg.PasswdPath == "" || cfg.GroupPath == "" || cfg.JournalDir == "" || cfg.SynoUserPath == "" {
-		return nil
+		return nil, nil
 	}
 	users, err := systemAccounts(cfg.PasswdPath, false)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var missing []newDSMUser
 	for _, row := range rows {
@@ -60,11 +60,20 @@ func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig
 		}
 	}
 	results := map[string]map[string]any{}
-	for group := range slices.Chunk(missing, maxConcurrentUserCreates) {
-		if len(group) < 2 || ctx.Err() != nil {
-			break
-		}
-		err := withUserCreateLocks(userCreateLockPaths(cfg.LockDir, group), func() error {
+	if len(missing) < 2 {
+		return results, nil
+	}
+	createdIDs := map[string]int{}
+	// Keep account locks through the common readback. Other accounts can use
+	// the global writer between the native create windows.
+	err = withUserCreateLocks(userCreateLockPaths(cfg.LockDir, missing), func() error {
+		for group := range slices.Chunk(missing, maxConcurrentUserCreates) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if len(group) < 2 {
+				break
+			}
 			var absent []newDSMUser
 			for _, u := range group {
 				if _, err := getSynoUser(cfg.SynoUserPath, u.name); dsmUserNotFound(err) {
@@ -72,22 +81,60 @@ func (s *Server) createMissingUsers(ctx context.Context, cfg config.HelperConfig
 				}
 			}
 			if len(absent) < 2 {
-				return nil
+				continue
 			}
-			return withFileLock(cfg.ShadowLockPath, func() error {
-				return s.createUsersUnderWriter(ctx, cfg, absent, password, results)
-			})
-		})
-		if err != nil {
-			// Attempted rows already have individual outcomes. Return to the
-			// normal single-account path for all rows not yet submitted.
-			break
+			if err := withFileLock(cfg.ShadowLockPath, func() error {
+				return s.createUsersUnderWriter(ctx, cfg, absent, password, results, createdIDs)
+			}); err != nil {
+				return err
+			}
 		}
+		if len(createdIDs) == 0 {
+			return nil
+		}
+		return withFileLock(cfg.ShadowLockPath, func() error {
+			local, err := systemAccounts(cfg.PasswdPath, false)
+			if err != nil {
+				return err
+			}
+			groups, err := systemAccounts(cfg.GroupPath, true)
+			if err != nil {
+				return err
+			}
+			policy, err := readAccountPolicy(cfg)
+			if err != nil {
+				return err
+			}
+			profiles, err := completeDSMProfiles(ctx, cfg.SynoWebAPIPath, local)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				name := row["dsm_username"].(string)
+				id, created := createdIDs[name]
+				if !created {
+					continue
+				}
+				user := local[name]
+				p, ok := profiles[name]
+				grant, err := enrolledLocalUser(policy, name, local, groups)
+				if err != nil || grant != nil || !ok || user.id != id || !p.matches(user, row) {
+					results[name] = errorResponse("DSM_PROFILE_UNCONFIRMED", "DSM did not confirm the new account UID and profile")
+					continue
+				}
+				results[name] = map[string]any{"success": true, "created": true, "initial_password_applied": checkPasswordResetPending(cfg, name) == nil}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
 	}
-	return results
+
+	return results, nil
 }
 
-func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperConfig, users []newDSMUser, password string, results map[string]map[string]any) error {
+func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperConfig, users []newDSMUser, password string, results map[string]map[string]any, createdIDs map[string]int) error {
 	local, err := systemAccounts(cfg.PasswdPath, false)
 	if err != nil {
 		return err
@@ -140,12 +187,16 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 		})
 	}
 	workers.Wait()
-	var firstErr error
 	for i, u := range eligible {
 		if errs[i] == nil {
 			// Only this goroutine updates the shared policy. confirm binds the
 			// actual ordinary UID and rejects missing, privileged or duplicate UIDs.
-			errs[i] = (creationTarget{cfg: cfg, name: u.name}).confirm()
+			var id int
+			id, errs[i] = (creationTarget{cfg: cfg, name: u.name}).confirmID()
+			if errs[i] == nil && cfg.SynoWebAPIPath != "" {
+				createdIDs[u.name] = id
+				continue
+			}
 		}
 		if errs[i] == nil {
 			info, err := getSynoUser(cfg.SynoUserPath, u.name)
@@ -155,12 +206,9 @@ func (s *Server) createUsersUnderWriter(ctx context.Context, cfg config.HelperCo
 		}
 		if errs[i] != nil {
 			results[u.name] = errorResponse("SYNOUSER_FAILED", errs[i].Error())
-			if firstErr == nil {
-				firstErr = errs[i]
-			}
 			continue
 		}
 		results[u.name] = map[string]any{"success": true, "created": true, "initial_password_applied": checkPasswordResetPending(cfg, u.name) == nil}
 	}
-	return firstErr
+	return nil
 }

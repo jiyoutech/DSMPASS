@@ -33,7 +33,10 @@ func (s *Server) provisionAccounts(ctx context.Context, cfg config.HelperConfig,
 		rows[i] = map[string]any{"dsm_username": name, "display_name": displayName, "email": email, "initial_password": password}
 	}
 	unchanged := s.unchangedAccounts(ctx, cfg, rows)
-	created := s.createMissingUsers(ctx, cfg, rows, password)
+	created, err := s.createMissingUsers(ctx, cfg, rows, password)
+	if err != nil {
+		return errorResponse("DSM_BATCH_UNCONFIRMED", err.Error())
+	}
 	results := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		if ctx.Err() != nil {

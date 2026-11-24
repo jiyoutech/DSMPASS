@@ -104,3 +104,69 @@ func TestCreateLocksForCollidingNames(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCreateBatchReadsBackNativeReceiptsTogether(t *testing.T) {
+	for _, broken := range []bool{false, true} {
+		cfg := policyTestConfig(t)
+		names := []string{"fresh-a", "fresh-b"}
+		s := NewWithStore(cfg, batchMemberTestStore(t, names, "engineering"))
+		dir := t.TempDir()
+		t.Setenv("TEST_PASSWD", cfg.PasswdPath)
+		t.Setenv("TEST_DIR", dir)
+		cfg.SynoUserPath = filepath.Join(dir, "synouser")
+		cfg.SynoWebAPIPath = filepath.Join(dir, "list")
+		native := `#!/bin/sh
+case "$1" in
+--get) echo get >> "$TEST_DIR/gets"; echo 'synoerr=[0x1D00]' >&2; exit 1;;
+--add) case "$2" in fresh-a) uid=2071;; fresh-b) uid=2072;; *) exit 1;; esac
+  echo add >> "$TEST_DIR/adds"
+  printf '%s:x:%s:100:%s:/:/bin/false\n' "$2" "$uid" "$4" >> "$TEST_PASSWD";;
+*) exit 1;;
+esac
+`
+		web := `#!/bin/sh
+echo read >> "$TEST_DIR/lists"
+echo '{"success":true,"data":{"total":2,"offset":0,"users":[{"name":"fresh-b","uid":2072,"description":"fresh-b","email":"","expired":"normal"},{"name":"fresh-a","uid":2071,"description":"fresh-a","email":"","expired":"normal"}]}}'
+`
+		if broken {
+			web = "#!/bin/sh\necho read >> \"$TEST_DIR/lists\"\nexit 1\n"
+		}
+		if err := os.WriteFile(cfg.SynoUserPath, []byte(native), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg.SynoWebAPIPath, []byte(web), 0700); err != nil {
+			t.Fatal(err)
+		}
+		rows := []any{}
+		for _, name := range names {
+			rows = append(rows, map[string]any{"dsm_username": name, "display_name": name, "email": ""})
+		}
+		payload := map[string]any{"dsm_users": rows, "initial_password": "fixture-password"}
+		answer := s.provisionAccounts(context.Background(), cfg, payload)
+		if broken == (answer["success"] == true) {
+			t.Fatal(answer)
+		}
+		listReads := 1
+		if broken {
+			listReads++
+		}
+		for file, n := range map[string]int{"gets": 2, "adds": 2, "lists": listReads} {
+			data, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil || len(strings.Fields(string(data))) != n {
+				t.Fatalf("%s %q %v", file, data, err)
+			}
+		}
+		for _, name := range names {
+			if err := requireManagedUser(cfg, name); err != nil {
+				t.Fatal("lost native UID receipt", err)
+			}
+		}
+		if !broken {
+			for _, r := range answer["user_results"].([]map[string]any) {
+				if r["created"] != true || r["initial_password_applied"] != true {
+					t.Fatal(r)
+				}
+			}
+		}
+	}
+}

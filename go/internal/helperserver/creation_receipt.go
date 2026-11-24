@@ -59,17 +59,22 @@ func (t creationTarget) clear() error {
 }
 
 func (t creationTarget) confirm() error {
+	_, err := t.confirmID()
+	return err
+}
+
+func (t creationTarget) confirmID() (int, error) {
 	if t.cfg.AccountPolicyPath == "" && !t.cfg.Privileged {
-		return nil
+		return 0, nil
 	}
 	a, err := t.account()
 	if err != nil {
-		return fmt.Errorf("DSM 已创建 %q，读取系统编号失败: %w", t.name, err)
+		return 0, fmt.Errorf("DSM 已创建 %q，读取系统编号失败: %w", t.name, err)
 	}
 	if err = t.write(a.id); err != nil {
-		return fmt.Errorf("DSM 已创建 %q，保存系统编号失败: %w", t.name, err)
+		return 0, fmt.Errorf("DSM 已创建 %q，保存系统编号失败: %w", t.name, err)
 	}
-	return t.resume()
+	return a.id, t.resume()
 }
 
 func (t creationTarget) resume() error {
